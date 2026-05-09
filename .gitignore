@@ -1,0 +1,32 @@
+node_modules/
+dist/
+data/
+*.db
+*.log
+
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local-only docs
+CLAUDE.md
+TODO.md
+DESIGN.md
+PRODUCT.md
+docs/providers/
+docs/superpowers/
+
+# Optional vendor-specific extensions (loaded at runtime if present)
+src/routes/extensions.ts
+src/public/extensions.js
+
+# Playwright MCP
+.playwright-mcp/
+mailhub_test.html
+logo-preview.html

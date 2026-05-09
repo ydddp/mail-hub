@@ -1,0 +1,11 @@
+services:
+  mail-hub:
+    image: ghcr.io/ydddp/mail-hub:latest
+    # build: .
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - API_SECRET=${API_SECRET}
+    restart: unless-stopped
