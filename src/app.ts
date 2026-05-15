@@ -36,16 +36,16 @@ function preloadFiles(): void {
   cachedIndexHtml = readFileSync(resolve(__dirname, 'public/index.html'), 'utf-8');
   try {
     cachedExtensionsJs = readFileSync(resolve(__dirname, 'public/extensions.js'), 'utf-8');
-  } catch (error) {
-    log.warn('failed to preload extensions script', { error: errorMessage(error) });
+  } catch {
+    // extensions.js not present — optional
   }
 }
 
 try {
   const extModule = await import('./routes/extensions.js');
   extRoutes = extModule.extRoutes;
-} catch (e) {
-  log.warn('failed to load extensions', { error: errorMessage(e) });
+} catch {
+  // extensions module not present — optional
 }
 
 const LLMS_TXT = `# Mail Hub — Temporary Email Aggregation API
