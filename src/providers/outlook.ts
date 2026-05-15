@@ -131,6 +131,11 @@ export class OutlookProvider extends BaseProvider {
     },
   };
 
+  private getFreshRefreshToken(email: string): string | null {
+    const row = getRow<{ refresh_token: string }>(getDb(), `SELECT refresh_token FROM outlook_accounts WHERE email = ?`, email);
+    return row?.refresh_token || null;
+  }
+
   async getDomains(): Promise<string[]> {
     const db = getDb();
     const rows = allRows<{ domain: string }>(db,
@@ -203,8 +208,10 @@ export class OutlookProvider extends BaseProvider {
   }
 
   async getMessages(inbox: InboxData): Promise<Message[]> {
-    const { clientId, refreshToken } = inbox.authData;
-    let accessToken = await obtainAccessToken(clientId, refreshToken);
+    const { clientId } = inbox.authData;
+    const email = inbox.authData.email || inbox.address;
+    const freshToken = this.getFreshRefreshToken(email) || inbox.authData.refreshToken;
+    let accessToken = await obtainAccessToken(clientId, freshToken);
     if (!accessToken) throw new Error('OAuth2 认证失败');
 
       const fetchBoth = async (token: string): Promise<GraphMessage[]> => {
@@ -226,8 +233,8 @@ export class OutlookProvider extends BaseProvider {
       return msgs.map(graphMsgToMessage);
     } catch (e) {
       if (errorMessage(e).includes('401')) {
-        evictCachedToken(clientId, refreshToken);
-        accessToken = await obtainAccessToken(clientId, refreshToken);
+        evictCachedToken(clientId, freshToken);
+        accessToken = await obtainAccessToken(clientId, freshToken);
         if (!accessToken) throw new Error('Graph API 认证失败，令牌已过期');
         const msgs = await fetchBoth(accessToken);
         return msgs.map(graphMsgToMessage);
@@ -237,16 +244,18 @@ export class OutlookProvider extends BaseProvider {
   }
 
   async getMessage(inbox: InboxData, messageId: string): Promise<MessageDetail> {
-    const { clientId, refreshToken } = inbox.authData;
+    const { clientId } = inbox.authData;
+    const email = inbox.authData.email || inbox.address;
+    const freshToken = this.getFreshRefreshToken(email) || inbox.authData.refreshToken;
     const url = `https://graph.microsoft.com/v1.0/me/messages/${messageId}?$select=id,subject,from,receivedDateTime,body,bodyPreview`;
 
-    let accessToken = await obtainAccessToken(clientId, refreshToken);
+    let accessToken = await obtainAccessToken(clientId, freshToken);
     if (!accessToken) throw new Error('OAuth2 认证失败');
 
     let res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (res.status === 401) {
-      evictCachedToken(clientId, refreshToken);
-      accessToken = await obtainAccessToken(clientId, refreshToken);
+      evictCachedToken(clientId, freshToken);
+      accessToken = await obtainAccessToken(clientId, freshToken);
       if (!accessToken) throw new Error('Graph API 认证失败，令牌已过期');
       res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     }
