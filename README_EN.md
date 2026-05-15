@@ -20,6 +20,31 @@ Multi-provider temporary email aggregation — unified API across 10+ email prov
 
 ## Quick Start
 
+### Docker Compose (Recommended)
+
+```bash
+git clone https://github.com/ydddp/mail-hub.git
+cd mail-hub
+echo "API_SECRET=your-secret" > .env
+docker compose up -d
+```
+
+Open `http://localhost:3100` and log in with the `API_SECRET` from your `.env`.
+
+### Docker
+
+```bash
+docker run -d \
+  --name mail-hub \
+  -p 3100:3100 \
+  -v ./data:/app/data \
+  -e API_SECRET=your-secret \
+  --restart unless-stopped \
+  ghcr.io/ydddp/mail-hub:latest
+```
+
+### Node.js (Development)
+
 Requires Node.js 18+:
 
 ```bash
@@ -31,38 +56,12 @@ cp .env.example .env
 npm run dev
 ```
 
-Open `http://localhost:3100` and log in with the `API_SECRET` from your `.env`.
-
-## Deployment
-
-### Docker
+### PM2 (Production)
 
 ```bash
-# Quick test
-docker run -p 3100:3100 -e API_SECRET=your-secret ghcr.io/ydddp/mail-hub:latest
-
-# Production (persistent data)
-docker run -d \
-  --name mail-hub \
-  -p 3100:3100 \
-  -v ./data:/app/data \
-  -e API_SECRET=your-secret \
-  --restart unless-stopped \
-  ghcr.io/ydddp/mail-hub:latest
-```
-
-### Docker Compose
-
-```bash
-echo "API_SECRET=your-secret" > .env
-docker compose up -d
-```
-
-### PM2
-
-```bash
+npm install
 npm run build
-pm2 start dist/index.js --name mail-hub
+pm2 start ecosystem.config.cjs
 ```
 
 ## Configuration

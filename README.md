@@ -20,7 +20,32 @@
 
 ## 快速开始
 
-Node.js 18+：
+### Docker Compose（推荐）
+
+```bash
+git clone https://github.com/ydddp/mail-hub.git
+cd mail-hub
+echo "API_SECRET=your-secret" > .env
+docker compose up -d
+```
+
+浏览器打开 `http://localhost:3100`，用 `.env` 中设置的 `API_SECRET` 登录。
+
+### Docker
+
+```bash
+docker run -d \
+  --name mail-hub \
+  -p 3100:3100 \
+  -v ./data:/app/data \
+  -e API_SECRET=your-secret \
+  --restart unless-stopped \
+  ghcr.io/ydddp/mail-hub:latest
+```
+
+### Node.js（开发）
+
+需要 Node.js 18+：
 
 ```bash
 git clone https://github.com/ydddp/mail-hub.git
@@ -31,38 +56,12 @@ cp .env.example .env
 npm run dev
 ```
 
-浏览器打开 `http://localhost:3100`，用 `.env` 中设置的 `API_SECRET` 登录。
-
-## 部署
-
-### Docker
+### PM2（生产）
 
 ```bash
-# 快速体验
-docker run -p 3100:3100 -e API_SECRET=your-secret ghcr.io/ydddp/mail-hub:latest
-
-# 生产部署（持久化数据）
-docker run -d \
-  --name mail-hub \
-  -p 3100:3100 \
-  -v ./data:/app/data \
-  -e API_SECRET=your-secret \
-  --restart unless-stopped \
-  ghcr.io/ydddp/mail-hub:latest
-```
-
-### Docker Compose
-
-```bash
-echo "API_SECRET=your-secret" > .env
-docker compose up -d
-```
-
-### PM2
-
-```bash
+npm install
 npm run build
-pm2 start dist/index.js --name mail-hub
+pm2 start ecosystem.config.cjs
 ```
 
 ## 配置

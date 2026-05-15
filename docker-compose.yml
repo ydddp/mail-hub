@@ -1,5 +1,6 @@
 services:
   mail-hub:
+    # 默认拉取 GHCR 镜像；本地构建请注释 image 并取消 build 的注释
     image: ghcr.io/ydddp/mail-hub:latest
     # build: .
     ports:
