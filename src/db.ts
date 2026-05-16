@@ -185,6 +185,7 @@ export function initDb(): Database.Database {
     `ALTER TABLE api_keys ADD COLUMN daily_limit INTEGER`,
     `ALTER TABLE api_keys ADD COLUMN daily_calls INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE api_keys ADD COLUMN daily_reset_at TEXT`,
+    `ALTER TABLE outlook_accounts ADD COLUMN api_type TEXT NOT NULL DEFAULT ''`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (e) {

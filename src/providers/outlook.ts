@@ -8,6 +8,8 @@ import { errorMessage } from '../errors.js';
 const OAUTH2_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 const GRAPH_INBOX_URL = 'https://graph.microsoft.com/v1.0/me/mailFolders/Inbox/messages';
 const GRAPH_JUNK_URL = 'https://graph.microsoft.com/v1.0/me/mailFolders/junkemail/messages';
+const OUTLOOK_INBOX_URL = 'https://outlook.office.com/api/v2.0/me/mailfolders/inbox/messages';
+const OUTLOOK_JUNK_URL = 'https://outlook.office.com/api/v2.0/me/mailfolders/junkemail/messages';
 const IMAP_HOST = 'outlook.office365.com';
 const IMAP_PORT = 993;
 
@@ -85,10 +87,61 @@ async function fetchMailsGraph(accessToken: string, folderUrl: string, count = 2
   const res = await fetchWithTimeout(`${folderUrl}?${params}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (res.status === 401) throw new Error('Graph API 401');
+  if (res.status === 401) throw new Error('API 401');
   if (!res.ok) return [];
   const data = await res.json() as { value?: GraphMessage[] };
   return data.value || [];
+}
+
+async function fetchMailsBothApis(accessToken: string, apiType: string, count = 20): Promise<{ messages: GraphMessage[]; apiType: string }> {
+  if (apiType === 'outlook') {
+    const [inboxMsgs, junkMsgs] = await Promise.all([
+      fetchMailsGraph(accessToken, OUTLOOK_INBOX_URL, count),
+      fetchMailsGraph(accessToken, OUTLOOK_JUNK_URL, count),
+    ]);
+    return { messages: mergeMessages(inboxMsgs, junkMsgs), apiType: 'outlook' };
+  }
+  try {
+    const [inboxMsgs, junkMsgs] = await Promise.all([
+      fetchMailsGraph(accessToken, GRAPH_INBOX_URL, count),
+      fetchMailsGraph(accessToken, GRAPH_JUNK_URL, count),
+    ]);
+    return { messages: mergeMessages(inboxMsgs, junkMsgs), apiType: 'graph' };
+  } catch (e) {
+    if (errorMessage(e).includes('401')) {
+      const [inboxMsgs, junkMsgs] = await Promise.all([
+        fetchMailsGraph(accessToken, OUTLOOK_INBOX_URL, count),
+        fetchMailsGraph(accessToken, OUTLOOK_JUNK_URL, count),
+      ]);
+      return { messages: mergeMessages(inboxMsgs, junkMsgs), apiType: 'outlook' };
+    }
+    throw e;
+  }
+}
+
+function mergeMessages(inboxMsgs: GraphMessage[], junkMsgs: GraphMessage[]): GraphMessage[] {
+  const merged = new Map<string, GraphMessage>();
+  for (const m of [...inboxMsgs, ...junkMsgs]) {
+    if (!merged.has(m.id)) merged.set(m.id, m);
+  }
+  return [...merged.values()]
+    .sort((a, b) => (b.receivedDateTime || '').localeCompare(a.receivedDateTime || ''))
+    .slice(0, 20);
+}
+
+async function fetchSingleMessage(accessToken: string, messageId: string, apiType: string): Promise<GraphMessage> {
+  const urls = apiType === 'outlook'
+    ? [`https://outlook.office.com/api/v2.0/me/messages/${messageId}?$select=id,subject,from,receivedDateTime,body,bodyPreview`]
+    : [
+        `https://graph.microsoft.com/v1.0/me/messages/${messageId}?$select=id,subject,from,receivedDateTime,body,bodyPreview`,
+        `https://outlook.office.com/api/v2.0/me/messages/${messageId}?$select=id,subject,from,receivedDateTime,body,bodyPreview`,
+      ];
+  for (const url of urls) {
+    const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (res.status === 401) throw new Error('API 401');
+    if (res.ok) return res.json() as Promise<GraphMessage>;
+  }
+  throw new Error('无法获取邮件详情');
 }
 
 function graphMsgToMessage(msg: GraphMessage): Message {
@@ -210,33 +263,27 @@ export class OutlookProvider extends BaseProvider {
     const { clientId } = inbox.authData;
     const email = inbox.authData.email || inbox.address;
     const freshToken = this.getFreshRefreshToken(email) || inbox.authData.refreshToken;
+    const db = getDb();
+    const apiType = getRow<{ api_type: string }>(db, `SELECT api_type FROM outlook_accounts WHERE email = ?`, email)?.api_type || '';
     let accessToken = await obtainAccessToken(clientId, freshToken);
     if (!accessToken) throw new Error('OAuth2 认证失败');
 
-      const fetchBoth = async (token: string): Promise<GraphMessage[]> => {
-      const [inboxMsgs, junkMsgs] = await Promise.all([
-        fetchMailsGraph(token, GRAPH_INBOX_URL, 20),
-        fetchMailsGraph(token, GRAPH_JUNK_URL, 20),
-      ]);
-      const merged = new Map<string, GraphMessage>();
-      for (const m of [...inboxMsgs, ...junkMsgs]) {
-        if (!merged.has(m.id)) merged.set(m.id, m);
-      }
-      return [...merged.values()]
-        .sort((a, b) => (b.receivedDateTime || '').localeCompare(a.receivedDateTime || ''))
-        .slice(0, 20);
-    };
-
     try {
-      const msgs = await fetchBoth(accessToken);
-      return msgs.map(graphMsgToMessage);
+      const result = await fetchMailsBothApis(accessToken, apiType);
+      if (result.apiType && result.apiType !== apiType) {
+        db.prepare(`UPDATE outlook_accounts SET api_type = ? WHERE email = ?`).run(result.apiType, email);
+      }
+      return result.messages.map(graphMsgToMessage);
     } catch (e) {
       if (errorMessage(e).includes('401')) {
         evictCachedToken(clientId, freshToken);
         accessToken = await obtainAccessToken(clientId, freshToken);
-        if (!accessToken) throw new Error('Graph API 认证失败，令牌已过期');
-        const msgs = await fetchBoth(accessToken);
-        return msgs.map(graphMsgToMessage);
+        if (!accessToken) throw new Error('OAuth2 认证失败，令牌已过期');
+        const result = await fetchMailsBothApis(accessToken, apiType);
+        if (result.apiType && result.apiType !== apiType) {
+          db.prepare(`UPDATE outlook_accounts SET api_type = ? WHERE email = ?`).run(result.apiType, email);
+        }
+        return result.messages.map(graphMsgToMessage);
       }
       throw e;
     }
@@ -246,20 +293,24 @@ export class OutlookProvider extends BaseProvider {
     const { clientId } = inbox.authData;
     const email = inbox.authData.email || inbox.address;
     const freshToken = this.getFreshRefreshToken(email) || inbox.authData.refreshToken;
-    const url = `https://graph.microsoft.com/v1.0/me/messages/${messageId}?$select=id,subject,from,receivedDateTime,body,bodyPreview`;
+    const apiType = getRow<{ api_type: string }>(getDb(), `SELECT api_type FROM outlook_accounts WHERE email = ?`, email)?.api_type || '';
 
     let accessToken = await obtainAccessToken(clientId, freshToken);
     if (!accessToken) throw new Error('OAuth2 认证失败');
 
-    let res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (res.status === 401) {
-      evictCachedToken(clientId, freshToken);
-      accessToken = await obtainAccessToken(clientId, freshToken);
-      if (!accessToken) throw new Error('Graph API 认证失败，令牌已过期');
-      res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    try {
+      const msg = await fetchSingleMessage(accessToken, messageId, apiType);
+      return graphMsgToDetail(msg);
+    } catch (e) {
+      if (errorMessage(e).includes('401')) {
+        evictCachedToken(clientId, freshToken);
+        accessToken = await obtainAccessToken(clientId, freshToken);
+        if (!accessToken) throw new Error('OAuth2 认证失败，令牌已过期');
+        const msg = await fetchSingleMessage(accessToken, messageId, apiType);
+        return graphMsgToDetail(msg);
+      }
+      throw e;
     }
-    if (!res.ok) throw new Error(`Graph API ${res.status}`);
-    return graphMsgToDetail(await res.json() as GraphMessage);
   }
 
   async deleteInbox(inbox: InboxData): Promise<void> {

@@ -25,6 +25,7 @@ docs/superpowers/
 # Optional vendor-specific extensions (loaded at runtime if present)
 src/routes/extensions.ts
 src/public/extensions.js
+vendor-extensions/
 
 # Playwright MCP
 .playwright-mcp/
