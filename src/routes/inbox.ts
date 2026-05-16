@@ -392,9 +392,7 @@ inboxRoutes.post('/inbox/:id/report', async (c) => {
   const svc = service || targetService || undefined;
   const domain = address.split('@')[1];
 
-  const shouldRecordService = success || (() => {
-    return getSetting('outlook_record_fail_service') !== '0';
-  })();
+  const shouldRecordService = success || getSetting('outlook_record_fail_service') === '1';
 
   if (svc && providerName === PROVIDER.OUTLOOK && shouldRecordService) {
     const email = address;
