@@ -148,28 +148,31 @@ export class OutlookProvider extends BaseProvider {
   async createInbox(opts?: { domain?: string; for?: string; inboxId?: string }): Promise<InboxData> {
     const db = getDb();
     const inboxId = opts?.inboxId ?? `pending-${randomUUID()}`;
-    let sql = `SELECT email, password, client_id, refresh_token FROM outlook_accounts
-               WHERE assigned_inbox_id IS NULL AND token_status != 'invalid'`;
-    const params: unknown[] = [];
+
+    let whereClauses = `assigned_inbox_id IS NULL AND token_status != 'invalid'`;
+    const params: unknown[] = [inboxId];
     if (opts?.domain) {
-      sql += ` AND email LIKE ?`;
+      whereClauses += ` AND email LIKE ?`;
       params.push(`%@${opts.domain}`);
     }
     if (opts?.for) {
-      sql += ` AND (used_services IS NULL OR used_services NOT LIKE ?)`;
+      whereClauses += ` AND (used_services IS NULL OR used_services NOT LIKE ?)`;
       params.push(`%"${opts.for.replace(/"/g, '\\"')}"%`);
     }
-    sql += ` ORDER BY CASE WHEN token_status = 'valid' THEN 0 ELSE 1 END, created_at ASC LIMIT 1`;
+
+    const sql = `UPDATE outlook_accounts SET assigned_inbox_id = ?
+      WHERE email = (
+        SELECT email FROM outlook_accounts
+        WHERE ${whereClauses}
+        ORDER BY CASE WHEN token_status = 'valid' THEN 0 ELSE 1 END, created_at ASC
+        LIMIT 1
+      ) AND assigned_inbox_id IS NULL
+      RETURNING email, password, client_id, refresh_token`;
 
     const allocate = db.transaction(() => {
-      const selected = getRow<{
-        email: string;
-        password: string;
-        client_id: string;
-        refresh_token: string;
-      }>(db, sql, ...params);
+      const row = db.prepare(sql).get(...params) as { email: string; password: string; client_id: string; refresh_token: string } | undefined;
 
-      if (!selected) {
+      if (!row) {
         const total = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts`)?.c ?? 0;
         const invalid = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE token_status = 'invalid'`)?.c ?? 0;
         const assigned = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE assigned_inbox_id IS NOT NULL AND token_status != 'invalid'`)?.c ?? 0;
@@ -181,15 +184,11 @@ export class OutlookProvider extends BaseProvider {
         if (valid === 0 && !opts?.for) parts.push(`无空闲账号`);
         throw new Error(`Outlook 账号池中无可用账号 (${parts.join(', ')})`);
       }
-      const { email, password, client_id: clientId, refresh_token: refreshToken } = selected;
+
+      const { email, password, client_id: clientId, refresh_token: refreshToken } = row;
       if (!clientId || !refreshToken) {
         throw new Error(`Outlook 账号 ${email} 缺少令牌凭据`);
       }
-
-      const info = db.prepare(
-        `UPDATE outlook_accounts SET assigned_inbox_id = ? WHERE email = ? AND assigned_inbox_id IS NULL`,
-      ).run(inboxId, email);
-      if (info.changes !== 1) throw new Error('Outlook 账号已被占用，请重试');
 
       return {
         address: email,
