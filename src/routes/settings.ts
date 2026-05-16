@@ -4,6 +4,7 @@ import { allRows, DEFAULT_SETTINGS, backupDb, deleteBackup, getDb, getSetting, l
 import { config } from '../config.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
 import { APP_VERSION } from '../version.js';
+import { rescheduleBackup } from '../backup-scheduler.js';
 
 const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as (keyof typeof DEFAULT_SETTINGS)[];
 
@@ -39,11 +40,18 @@ settingsRoutes.patch('/admin/settings', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const updates = body.settings && typeof body.settings === 'object' ? body.settings : body;
   const saved: Record<string, string> = {};
+  let backupScheduleChanged = false;
   for (const key of SETTING_KEYS) {
     if (updates[key] === undefined) continue;
     const value = normalizeSettingValue(key, updates[key]);
     setSetting(key, value);
     saved[key] = value;
+    if (key === 'backup_enabled' || key === 'backup_interval_hours') {
+      backupScheduleChanged = true;
+    }
+  }
+  if (backupScheduleChanged) {
+    rescheduleBackup('settings updated');
   }
   return c.json({ ok: true, settings: saved });
 });
