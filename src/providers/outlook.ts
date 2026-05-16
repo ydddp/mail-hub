@@ -144,20 +144,41 @@ async function fetchSingleMessage(accessToken: string, messageId: string, apiTyp
   throw new Error('无法获取邮件详情');
 }
 
-function graphMsgToMessage(msg: GraphMessage): Message {
-  const sender = formatSender(msg.from?.emailAddress || {});
+function normalizeMessage(msg: any): GraphMessage {
   return {
-    id: msg.id,
+    id: msg.id || msg.Id || '',
+    subject: msg.subject || msg.Subject || '',
+    from: msg.from || msg.From ? {
+      emailAddress: {
+        name: (msg.from?.emailAddress || msg.From?.EmailAddress)?.name || (msg.from?.emailAddress || msg.From?.EmailAddress)?.Name || '',
+        address: (msg.from?.emailAddress || msg.From?.EmailAddress)?.address || (msg.from?.emailAddress || msg.From?.EmailAddress)?.Address || '',
+      }
+    } : undefined,
+    receivedDateTime: msg.receivedDateTime || msg.ReceivedDateTime || '',
+    body: msg.body || msg.Body ? {
+      content: (msg.body || msg.Body)?.content || (msg.body || msg.Body)?.Content || '',
+      contentType: ((msg.body || msg.Body)?.contentType || (msg.body || msg.Body)?.ContentType || '').toLowerCase(),
+    } : undefined,
+    bodyPreview: msg.bodyPreview || msg.BodyPreview || '',
+  };
+}
+
+function graphMsgToMessage(msg: GraphMessage): Message {
+  const normalized = normalizeMessage(msg);
+  const sender = formatSender(normalized.from?.emailAddress || {});
+  return {
+    id: normalized.id,
     from: sender,
-    subject: msg.subject || '',
-    excerpt: msg.bodyPreview || '',
-    receivedAt: msg.receivedDateTime || '',
+    subject: normalized.subject || '',
+    excerpt: normalized.bodyPreview || '',
+    receivedAt: normalized.receivedDateTime || '',
   };
 }
 
 function graphMsgToDetail(msg: GraphMessage): MessageDetail {
-  const base = graphMsgToMessage(msg);
-  const bodyObj = msg.body || {};
+  const normalized = normalizeMessage(msg);
+  const base = graphMsgToMessage(normalized);
+  const bodyObj = normalized.body || {};
   const content = bodyObj.content || '';
   const isHtml = bodyObj.contentType === 'html';
   return {
