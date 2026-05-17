@@ -210,11 +210,18 @@ export class OutlookProvider extends BaseProvider {
     return row?.refresh_token || null;
   }
 
-  async getDomains(): Promise<string[]> {
+  async getDomains(opts?: { for?: string }): Promise<string[]> {
     const db = getDb();
+    let whereClauses = `assigned_inbox_id IS NULL AND token_status != 'invalid'`;
+    const params: unknown[] = [];
+    if (opts?.for) {
+      whereClauses += ` AND (used_services IS NULL OR used_services NOT LIKE ?)`;
+      params.push(`%"${opts.for.replace(/"/g, '\\"')}"%`);
+    }
     const rows = allRows<{ domain: string }>(db,
       `SELECT DISTINCT SUBSTR(email, INSTR(email, '@') + 1) as domain
-       FROM outlook_accounts WHERE assigned_inbox_id IS NULL AND token_status != 'invalid'`,
+       FROM outlook_accounts WHERE ${whereClauses}`,
+      ...params,
     );
     return rows.map((r) => r.domain);
   }
@@ -224,15 +231,16 @@ export class OutlookProvider extends BaseProvider {
     const inboxId = opts?.inboxId ?? `pending-${randomUUID()}`;
 
     let whereClauses = `assigned_inbox_id IS NULL AND token_status != 'invalid'`;
-    const params: unknown[] = [inboxId];
+    const selectParams: unknown[] = [];
     if (opts?.domain) {
       whereClauses += ` AND email LIKE ?`;
-      params.push(`%@${opts.domain}`);
+      selectParams.push(`%@${opts.domain}`);
     }
     if (opts?.for) {
       whereClauses += ` AND (used_services IS NULL OR used_services NOT LIKE ?)`;
-      params.push(`%"${opts.for.replace(/"/g, '\\"')}"%`);
+      selectParams.push(`%"${opts.for.replace(/"/g, '\\"')}"%`);
     }
+    const params: unknown[] = [inboxId, ...selectParams];
 
     const sql = `UPDATE outlook_accounts SET assigned_inbox_id = ?
       WHERE email = (
@@ -250,7 +258,8 @@ export class OutlookProvider extends BaseProvider {
         const total = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts`)?.c ?? 0;
         const invalid = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE token_status = 'invalid'`)?.c ?? 0;
         const assigned = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE assigned_inbox_id IS NOT NULL AND token_status != 'invalid'`)?.c ?? 0;
-        const valid = total - invalid - assigned;
+        const available = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE ${whereClauses}`, ...selectParams)?.c ?? 0;
+        const valid = available;
         const parts: string[] = [`共${total}个账号`];
         if (invalid > 0) parts.push(`${invalid}个无效`);
         if (assigned > 0) parts.push(`${assigned}个已分配`);

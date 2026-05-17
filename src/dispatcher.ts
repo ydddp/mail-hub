@@ -73,7 +73,8 @@ function pickDomain(providerName: string, domains: string[]): string {
 async function selectAllowedDomain(
   provider: BaseProvider,
   requestedDomain: string | undefined,
-  blockedDomains: Set<string>
+  blockedDomains: Set<string>,
+  targetService?: string
 ): Promise<string | undefined> {
   if (requestedDomain) {
     if (isDomainBlocked(requestedDomain, blockedDomains)) {
@@ -84,7 +85,7 @@ async function selectAllowedDomain(
 
   if (provider.meta.type === 'alias') return undefined;
 
-  const domains = await provider.getDomains();
+  const domains = await provider.getDomains(targetService ? { for: targetService } : undefined);
   const allowed = domains.filter((d) => !isDomainBlocked(d, blockedDomains));
   if (allowed.length === 0) {
     throw new Error(`${provider.meta.name}: all domains blocked`);
@@ -115,7 +116,8 @@ function getAllProviderStats(): Map<string, { success: number; fail: number }> {
 async function scoreProviders(
   providers: BaseProvider[],
   blockedDomains: Set<string>,
-  needPolling: boolean
+  needPolling: boolean,
+  targetService?: string
 ): Promise<ProviderScore[]> {
   const scored: ProviderScore[] = [];
   const allStats = getAllProviderStats();
@@ -135,7 +137,7 @@ async function scoreProviders(
 
     let domains: string[];
     try {
-      domains = await p.getDomains();
+      domains = await p.getDomains(targetService ? { for: targetService } : undefined);
     } catch (e) {
       domains = [];
       console.warn(`[dispatcher] getDomains failed for ${p.meta.name}:`, (e as Error)?.message);
@@ -198,8 +200,13 @@ async function tryCreateInbox(
     inboxId: id,
   };
   const inbox = await provider.createInbox(createOpts);
+  try {
+    saveInbox(id, inbox, opts.for, opts.ownerKey);
+  } catch (error) {
+    await provider.releaseInbox(inbox, id).catch(() => {});
+    throw error;
+  }
   rateLimiter.recordCreate(providerName);
-  saveInbox(id, inbox, opts.for, opts.ownerKey);
   return {
     id,
     address: inbox.address,
@@ -227,14 +234,14 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
     }
     const blockedDomains = opts.for ? getBlockedDomains(opts.for) : new Set<string>();
     const domain = opts.domain
-      ? await selectAllowedDomain(p, opts.domain, blockedDomains)
-      : await selectAllowedDomain(p, undefined, blockedDomains);
+      ? await selectAllowedDomain(p, opts.domain, blockedDomains, opts.for)
+      : await selectAllowedDomain(p, undefined, blockedDomains, opts.for);
 
     return tryCreateInbox(p, p.meta.name, opts, domain);
   }
 
   const blockedDomains = opts.for ? getBlockedDomains(opts.for) : new Set<string>();
-  const scored = await scoreProviders(enabledProviders, blockedDomains, needPolling);
+  const scored = await scoreProviders(enabledProviders, blockedDomains, needPolling, opts.for);
   const errors: string[] = [];
 
   for (const { provider: p, reason } of scored) {
@@ -245,7 +252,7 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
         const pairCfg = registry.getConfig(pairName);
         if (pair && pairCfg.enabled && rateLimiter.isCreateAvailable(pairName)) {
           try {
-            let domains = await pair.getDomains();
+            let domains = await pair.getDomains(opts.for ? { for: opts.for } : undefined);
             domains = domains.filter((d) => !isDomainBlocked(d, blockedDomains));
             if (domains.length === 0) continue;
 
@@ -261,7 +268,7 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
     }
 
     try {
-      let domains = await p.getDomains();
+      let domains = await p.getDomains(opts.for ? { for: opts.for } : undefined);
       domains = domains.filter((d) => !isDomainBlocked(d, blockedDomains));
 
       if (domains.length === 0 && p.meta.type !== 'alias') {

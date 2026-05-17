@@ -34,7 +34,7 @@ Response 200:
 ```json
 {
   "status": "ok",
-  "version": "0.9.0",
+  "version": "0.9.2",
   "startedAt": "2025-01-01T00:00:00Z",
   "uptime": 3600,
   "db": "connected"
@@ -1126,7 +1126,7 @@ Mounted under `/api/admin`.
 **Response 200**:
 ```json
 {
-  "version": "0.9.0",
+  "version": "0.9.2",
   "uptime": 3600,
   "dbPath": "/app/data/mail.db",
   "dbSize": "1.2 MB",

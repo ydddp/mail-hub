@@ -53,7 +53,7 @@ export interface MessageDetail extends Message {
 export abstract class BaseProvider {
   abstract meta: ProviderMeta;
 
-  abstract getDomains(): Promise<string[]>;
+  abstract getDomains(opts?: { for?: string }): Promise<string[]>;
   abstract createInbox(opts?: { domain?: string; username?: string; for?: string; subdomain?: string; inboxId?: string }): Promise<InboxData>;
   abstract getMessages(inbox: InboxData): Promise<Message[]>;
   abstract getMessage(inbox: InboxData, messageId: string): Promise<MessageDetail>;
