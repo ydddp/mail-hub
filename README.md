@@ -103,7 +103,7 @@ pm2 start ecosystem.config.cjs
 
 | 渠道 | 类型 | 说明 |
 |------|------|------|
-| Outlook | 账号池 | 导入 Outlook 账号，1:1 分配，关闭后回池 |
+| Outlook | 账号池 | 导入 Outlook 账号，支持裸账号授权补全；1:1 分配，关闭后回池 |
 | YYDS Mail | API Key 池 | 导入 Key，按 key 轮转，单 Key 每日 20,000 次调用 |
 | IMAP 域名邮箱 | 账号池 | 连接自有域名邮箱（catch-all），信任度最高 |
 
@@ -135,27 +135,31 @@ Authorization: Bearer <your-api-secret-or-api-key>
 
 ```bash
 # 创建收件箱
-curl -X POST http://localhost:3100/api/inboxes \
+curl -X POST http://localhost:3100/api/inbox \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"for": "twitter.com"}'
 
 # 获取邮件
-curl http://localhost:3100/api/inboxes/{id}/messages \
+curl http://localhost:3100/api/inbox/{id}/messages \
   -H "Authorization: Bearer YOUR_KEY"
 
 # 提取验证码（支持长轮询）
-curl "http://localhost:3100/api/inboxes/{id}/code?wait=true" \
+curl "http://localhost:3100/api/inbox/{id}/code?wait=true" \
+  -H "Authorization: Bearer YOUR_KEY"
+
+# 多次取件：用上次响应的 receivedAt 作为 since，避免重复返回同一封
+curl "http://localhost:3100/api/inbox/{id}/code?wait=true&since=2026-06-05T00%3A01%3A00.000Z" \
   -H "Authorization: Bearer YOUR_KEY"
 
 # 上报结果
-curl -X POST http://localhost:3100/api/inboxes/{id}/report \
+curl -X POST http://localhost:3100/api/inbox/{id}/report \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"success": true, "service": "twitter.com"}'
 
 # 关闭收件箱
-curl -X DELETE http://localhost:3100/api/inboxes/{id} \
+curl -X DELETE http://localhost:3100/api/inbox/{id} \
   -H "Authorization: Bearer YOUR_KEY"
 ```
 

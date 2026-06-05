@@ -26,6 +26,18 @@
   --amber-dim: rgba(251,191,36,.08);
   --rose: #fb7185;
   --rose-dim: rgba(251,113,133,.08);
+  --accent-contrast: #111318;
+  --accent-hover: #2bc48a;
+  --app-bg: linear-gradient(180deg,var(--bg) 0%,#101218 100%);
+  --sidebar-bg: var(--bg2);
+  --panel-bg: var(--bg2);
+  --panel-header-bg: var(--bg3);
+  --control-bg: var(--bg);
+  --control-subtle-bg: var(--bg3);
+  --row-hover: rgba(52,211,153,.02);
+  --overlay-bg: rgba(0,0,0,.5);
+  --surface-shadow: none;
+  --surface-filter: none;
   --bg1: var(--bg2);
   --text1: var(--text);
   --card: var(--bg2);
@@ -34,7 +46,13 @@
   --radius-sm: 7px;
   --shadow-sm: 0 1px 2px rgba(0,0,0,.2);
   --shadow-md: 0 4px 16px rgba(0,0,0,.25);
-  --transition: all .2s cubic-bezier(.4,0,.2,1);
+  --ease-out: cubic-bezier(.23,1,.32,1);
+  --ease-in-out: cubic-bezier(.77,0,.175,1);
+  --ease-soft: cubic-bezier(.2,.8,.2,1);
+  --dur-quick: 120ms;
+  --dur-fast: 180ms;
+  --dur-med: 240ms;
+  --transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 
   /* Typography tokens — see README/CONTRIBUTING for usage guidelines */
   --font-sans: 'Outfit','Noto Sans SC',sans-serif;
@@ -63,73 +81,99 @@
   --disabled-opacity: .5;
 }
 :root[data-theme='light'] {
-  --bg: #f7f8fa;
-  --bg2: #ffffff;
-  --bg3: #f1f3f7;
-  --bg4: #e7eaf0;
-  --border: #dde1ea;
-  --border2: #c8cdd9;
-  --text: #1a1d24;
-  --text2: #4a5160;
-  --text3: #7a8290;
-  --emerald: #10a373;
-  --emerald-dim: rgba(16,163,115,.10);
-  --emerald-mid: rgba(16,163,115,.18);
-  --blue: #2563eb;
-  --blue-dim: rgba(37,99,235,.10);
-  --amber: #b45309;
-  --amber-dim: rgba(180,83,9,.10);
-  --rose: #be123c;
-  --rose-dim: rgba(190,18,60,.10);
-   --bg1: var(--bg2);
-   --text1: var(--text);
-   --card: var(--bg2);
-   --text-dim: var(--text3);
-  --shadow-sm: 0 1px 2px rgba(15,23,42,.06);
-  --shadow-md: 0 4px 16px rgba(15,23,42,.10);
+  --bg: #eef3f0;
+  --bg2: #fbfcfb;
+  --bg3: #f3f7f5;
+  --bg4: #e7eeeb;
+  --border: #d9e2de;
+  --border2: #bac9c4;
+  --text: #17211f;
+  --text2: #53635e;
+  --text3: #81908b;
+  --emerald: #0d7f64;
+  --emerald-dim: rgba(13,127,100,.10);
+  --emerald-mid: rgba(13,127,100,.17);
+  --blue: #2f65a7;
+  --blue-dim: rgba(47,101,167,.10);
+  --amber: #9a5b18;
+  --amber-dim: rgba(154,91,24,.11);
+  --rose: #b4234f;
+  --rose-dim: rgba(180,35,79,.10);
+  --accent-contrast: #fff;
+  --accent-hover: #086d57;
+  --app-bg: radial-gradient(900px 420px at 15% -10%,rgba(13,127,100,.10),transparent 62%),radial-gradient(720px 380px at 96% 0%,rgba(47,101,167,.08),transparent 58%),linear-gradient(180deg,#f8fbf9 0%,#edf3f0 100%);
+  --sidebar-bg: rgba(251,252,251,.92);
+  --panel-bg: rgba(255,255,255,.88);
+  --panel-header-bg: rgba(243,247,245,.82);
+  --control-bg: #f9fbfa;
+  --control-subtle-bg: #eef4f1;
+  --row-hover: rgba(13,127,100,.045);
+  --overlay-bg: rgba(16,27,24,.35);
+  --surface-shadow: 0 1px 2px rgba(16,24,40,.04);
+  --surface-filter: saturate(120%) blur(10px);
+  --bg1: var(--bg2);
+  --text1: var(--text);
+  --card: var(--bg2);
+  --text-dim: var(--text3);
+  --shadow-sm: 0 1px 2px rgba(16,24,40,.06),0 8px 24px rgba(16,24,40,.05);
+  --shadow-md: 0 12px 32px rgba(16,24,40,.12);
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
-    --bg: #f7f8fa;
-    --bg2: #ffffff;
-    --bg3: #f1f3f7;
-    --bg4: #e7eaf0;
-    --border: #dde1ea;
-    --border2: #c8cdd9;
-    --text: #1a1d24;
-    --text2: #4a5160;
-    --text3: #7a8290;
-    --emerald: #10a373;
-    --emerald-dim: rgba(16,163,115,.10);
-    --emerald-mid: rgba(16,163,115,.18);
-    --blue: #2563eb;
-    --blue-dim: rgba(37,99,235,.10);
-    --amber: #b45309;
-    --amber-dim: rgba(180,83,9,.10);
-    --rose: #be123c;
-    --rose-dim: rgba(190,18,60,.10);
+    --bg: #eef3f0;
+    --bg2: #fbfcfb;
+    --bg3: #f3f7f5;
+    --bg4: #e7eeeb;
+    --border: #d9e2de;
+    --border2: #bac9c4;
+    --text: #17211f;
+    --text2: #53635e;
+    --text3: #81908b;
+    --emerald: #0d7f64;
+    --emerald-dim: rgba(13,127,100,.10);
+    --emerald-mid: rgba(13,127,100,.17);
+    --blue: #2f65a7;
+    --blue-dim: rgba(47,101,167,.10);
+    --amber: #9a5b18;
+    --amber-dim: rgba(154,91,24,.11);
+    --rose: #b4234f;
+    --rose-dim: rgba(180,35,79,.10);
+    --accent-contrast: #fff;
+    --accent-hover: #086d57;
+    --app-bg: radial-gradient(900px 420px at 15% -10%,rgba(13,127,100,.10),transparent 62%),radial-gradient(720px 380px at 96% 0%,rgba(47,101,167,.08),transparent 58%),linear-gradient(180deg,#f8fbf9 0%,#edf3f0 100%);
+    --sidebar-bg: rgba(251,252,251,.92);
+    --panel-bg: rgba(255,255,255,.88);
+    --panel-header-bg: rgba(243,247,245,.82);
+    --control-bg: #f9fbfa;
+    --control-subtle-bg: #eef4f1;
+    --row-hover: rgba(13,127,100,.045);
+    --overlay-bg: rgba(16,27,24,.35);
+    --surface-shadow: 0 1px 2px rgba(16,24,40,.04);
+    --surface-filter: saturate(120%) blur(10px);
     --bg1: var(--bg2);
     --text1: var(--text);
     --card: var(--bg2);
     --text-dim: var(--text3);
-    --shadow-sm: 0 1px 2px rgba(15,23,42,.06);
-    --shadow-md: 0 4px 16px rgba(15,23,42,.10);
+    --shadow-sm: 0 1px 2px rgba(16,24,40,.06),0 8px 24px rgba(16,24,40,.05);
+    --shadow-md: 0 12px 32px rgba(16,24,40,.12);
   }
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:var(--font-sans);background:var(--bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
+body{font-family:var(--font-sans);background:var(--app-bg);color:var(--text);min-height:100vh;-webkit-font-smoothing:antialiased}
 a{color:var(--blue);text-decoration:none}
 code,kbd,samp,pre{font-family:var(--font-mono)}
 
 .app{display:flex;height:100vh}
 
 /* ─── Sidebar ─── */
-.sidebar{width:60px;padding:14px 0;border-right:1px solid var(--border);background:var(--bg2);display:flex;flex-direction:column;align-items:center;gap:2px;flex-shrink:0;position:relative;z-index:10}
+.sidebar{width:60px;padding:14px 0;border-right:1px solid var(--border);background:var(--sidebar-bg);backdrop-filter:var(--surface-filter);display:flex;flex-direction:column;align-items:center;gap:2px;flex-shrink:0;position:relative;z-index:10}
 .sidebar::after{content:'';position:absolute;top:0;right:-1px;width:1px;height:100%;background:linear-gradient(180deg,var(--emerald) 0%,transparent 30%,transparent 70%,rgba(96,165,250,.3) 100%);opacity:.3}
-.logo-icon{width:34px;height:34px;background:linear-gradient(135deg,var(--emerald),#2dd4bf);border-radius:9px;margin-bottom:20px;display:flex;align-items:center;justify-content:center;font-weight:var(--fw-bold);font-size:var(--text-lg);color:var(--bg);box-shadow:0 2px 8px rgba(52,211,153,.25);transition:var(--transition);cursor:default}
+.logo-icon{width:34px;height:34px;background:linear-gradient(135deg,var(--emerald),#2dd4bf);border-radius:9px;margin-bottom:20px;display:flex;align-items:center;justify-content:center;font-weight:var(--fw-bold);font-size:var(--text-lg);color:var(--accent-contrast);box-shadow:0 2px 8px rgba(52,211,153,.25);transition:transform var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out);cursor:default}
 .logo-icon:hover{transform:scale(1.05);box-shadow:0 4px 16px rgba(52,211,153,.35)}
-.nav-icon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:9px;cursor:pointer;transition:var(--transition);color:var(--text3);position:relative}
+.nav-icon{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:9px;cursor:pointer;transition:background-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out),transform var(--dur-quick) var(--ease-out);color:var(--text3);position:relative}
+.nav-icon:focus-visible{outline:none;box-shadow:var(--focus-ring)}
 .nav-icon:hover{background:var(--bg3);color:var(--text2)}
+.nav-icon:active{transform:scale(.96)}
 .nav-icon.active{background:var(--emerald-dim);color:var(--emerald)}
 .nav-icon.active::before{content:'';position:absolute;left:-14px;width:3px;height:18px;background:var(--emerald);border-radius:0 3px 3px 0}
 .nav-icon svg{width:18px;height:18px}
@@ -137,10 +181,10 @@ code,kbd,samp,pre{font-family:var(--font-mono)}
 .sidebar-bottom{margin-top:auto;display:flex;flex-direction:column;align-items:center;gap:2px}
 .tooltip-wrap{position:relative}
 .tooltip-wrap:hover .tooltip{opacity:1;transform:translateX(0);pointer-events:auto}
-.tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateX(4px) translateY(-50%);background:var(--bg4);border:1px solid var(--border2);border-radius:6px;padding:4px 10px;font-size:var(--text-sm);color:var(--text2);white-space:nowrap;opacity:0;pointer-events:none;transition:var(--transition);z-index:20}
+.tooltip{position:absolute;left:calc(100% + 10px);top:50%;transform:translateX(4px) translateY(-50%);background:var(--bg4);border:1px solid var(--border2);border-radius:6px;padding:4px 10px;font-size:var(--text-sm);color:var(--text2);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity 140ms var(--ease-out),transform 140ms var(--ease-out);z-index:20}
 
 /* ─── Main ─── */
-.main{flex:1;padding:28px 36px;overflow-y:auto;background:linear-gradient(180deg,var(--bg) 0%,rgba(17,19,24,.98) 100%)}
+.main{flex:1;padding:28px 36px;overflow-y:auto;background:var(--app-bg)}
 
 /* ─── Views ─── */
 .view{display:none}
@@ -155,7 +199,7 @@ code,kbd,samp,pre{font-family:var(--font-mono)}
 
 /* ─── Stat cards ─── */
 .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
-.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;transition:var(--transition);position:relative;overflow:hidden;display:flex;align-items:center;gap:14px}
+.card{background:var(--panel-bg);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out);position:relative;overflow:hidden;display:flex;align-items:center;gap:14px;box-shadow:var(--surface-shadow)}
 .card:hover{border-color:var(--border2);box-shadow:var(--shadow-md);transform:translateY(-1px)}
 .card-icon{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .card-icon svg{width:20px;height:20px}
@@ -168,8 +212,8 @@ code,kbd,samp,pre{font-family:var(--font-mono)}
 .card-value .sub{font-size:var(--text-md);color:var(--text3);font-weight:var(--fw-normal)}
 
 /* ─── Panel ─── */
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;overflow:hidden;transition:var(--transition)}
-.panel-header{padding:13px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);background:var(--bg3)}
+.panel{background:var(--panel-bg);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:16px;overflow:hidden;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out);box-shadow:var(--surface-shadow)}
+.panel-header{padding:13px 20px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border);background:var(--panel-header-bg)}
 .panel-title{font-size:var(--text-md);font-weight:var(--fw-semibold);display:flex;align-items:center;gap:8px}
 .panel-title .indicator{width:6px;height:6px;border-radius:50%;background:var(--emerald);box-shadow:0 0 6px rgba(52,211,153,.4)}
 .panel-actions{display:flex;gap:6px;align-items:center}
@@ -177,9 +221,9 @@ code,kbd,samp,pre{font-family:var(--font-mono)}
 
 /* ─── Table ─── */
 table{width:100%;border-collapse:collapse}
-th{text-align:left;padding:9px 20px;font-size:var(--text-sm);color:var(--text2);font-weight:var(--fw-medium);text-transform:uppercase;letter-spacing:.4px;background:var(--bg3)}
+th{text-align:left;padding:9px 20px;font-size:var(--text-sm);color:var(--text2);font-weight:var(--fw-medium);text-transform:uppercase;letter-spacing:.4px;background:var(--panel-header-bg)}
 td{padding:11px 20px;border-top:1px solid var(--border);font-size:var(--text-md);transition:background .15s}
-tr:hover td{background:rgba(52,211,153,.02)}
+tr:hover td{background:var(--row-hover)}
 .mono{font-family:var(--font-mono);font-size:var(--text-base);color:var(--text2);letter-spacing:-.2px}
 .target{display:inline-flex;align-items:center;gap:5px;color:var(--text)}
 .target-icon{width:18px;height:18px;border-radius:4px;background:var(--bg4);display:flex;align-items:center;justify-content:center;font-size:var(--text-xs);font-weight:var(--fw-semibold);color:var(--text3)}
@@ -200,12 +244,14 @@ tr:hover td{background:rgba(52,211,153,.02)}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(52,211,153,.4)}70%{box-shadow:0 0 0 6px rgba(52,211,153,0)}100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}}
 
 /* ─── Buttons ─── */
-.btn{position:relative;height:var(--ctl-h-md);padding:0 var(--ctl-px-md);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:var(--ctl-fs-md);font-weight:var(--fw-medium);font-family:inherit;transition:var(--transition);background:var(--bg3);color:var(--text2);display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
+.btn{position:relative;height:var(--ctl-h-md);padding:0 var(--ctl-px-md);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:var(--ctl-fs-md);font-weight:var(--fw-medium);font-family:inherit;transition:background-color var(--dur-fast) var(--ease-out),border-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),transform var(--dur-quick) var(--ease-out),opacity var(--dur-fast) var(--ease-out);background:var(--control-subtle-bg);color:var(--text2);display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
 .btn:hover{background:var(--bg4);border-color:var(--border2);color:var(--text)}
+.btn:active{transform:scale(.97)}
 .btn:focus-visible{outline:none;box-shadow:var(--focus-ring)}
 .btn:disabled,.btn[disabled]{opacity:var(--disabled-opacity);cursor:not-allowed;pointer-events:none}
-.btn-primary{background:var(--emerald);border-color:var(--emerald);color:var(--bg);font-weight:var(--fw-semibold);box-shadow:0 2px 8px rgba(52,211,153,.2)}
-.btn-primary:hover{background:#2bc48a;border-color:#2bc48a;box-shadow:0 4px 16px rgba(52,211,153,.3);transform:translateY(-1px)}
+.btn-primary{background:var(--emerald);border-color:var(--emerald);color:var(--accent-contrast);font-weight:var(--fw-semibold);box-shadow:0 2px 8px rgba(52,211,153,.2)}
+.btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);box-shadow:0 4px 16px rgba(52,211,153,.3)}
+.btn-primary:active{transform:scale(.97)}
 .btn-primary:focus-visible{box-shadow:var(--focus-ring),0 2px 8px rgba(52,211,153,.2)}
 .btn-danger{background:transparent;border:1px solid var(--rose);color:var(--rose)}
 .btn-danger:hover{background:var(--rose-dim)}
@@ -232,7 +278,7 @@ tr:hover td{background:rgba(52,211,153,.02)}
 .key-secret-value:hover{color:var(--text)}
 .btn[data-loading]{pointer-events:none;opacity:.7;color:transparent}
 .btn[data-loading]::after{content:'';position:absolute;width:14px;height:14px;border:2px solid var(--text2);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite}
-.btn-primary[data-loading]::after{border-color:var(--bg);border-top-color:transparent}
+.btn-primary[data-loading]::after{border-color:var(--accent-contrast);border-top-color:transparent}
 @keyframes spin{to{transform:rotate(360deg)}}
 .nav-icon.spinning svg{animation:spin .6s ease-in-out}
 
@@ -242,7 +288,7 @@ tr:hover td{background:rgba(52,211,153,.02)}
 .toggle-track{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--border);border-radius:5px;transition:background .18s ease,border-color .18s ease}
 .toggle input:checked+.toggle-track{background:var(--emerald);border-color:var(--emerald)}
 .toggle-thumb{position:absolute;top:50%;left:0;width:12px;height:12px;background:var(--text2);border-radius:3px;transform:translate(3px,-50%);transition:transform .18s cubic-bezier(.4,0,.2,1),background .18s ease;pointer-events:none;will-change:transform}
-.toggle input:checked~.toggle-thumb{transform:translate(19px,-50%);background:var(--bg)}
+.toggle input:checked~.toggle-thumb{transform:translate(19px,-50%);background:var(--accent-contrast)}
 .toggle:hover .toggle-track{border-color:var(--border2)}
 .toggle:hover input:checked+.toggle-track{border-color:var(--emerald)}
 .toggle input:focus-visible+.toggle-track{box-shadow:var(--focus-ring)}
@@ -252,45 +298,58 @@ tr:hover td{background:rgba(52,211,153,.02)}
 .form-group{display:flex;flex-direction:column;gap:5px;flex:1;min-width:140px}
 .form-group.auto-width{flex:0 0 auto;min-width:auto}
 .form-group label{font-size:var(--text-sm);color:var(--text3);font-weight:var(--fw-medium);letter-spacing:.2px}
-input,select{background:var(--bg);border:1px solid var(--border);color:var(--text);height:var(--ctl-h-md);padding:0 12px;border-radius:var(--radius-sm);font-size:var(--ctl-fs-md);font-family:inherit;outline:none;transition:var(--transition)}
+input,select{background:var(--control-bg);border:1px solid var(--border);color:var(--text);height:var(--ctl-h-md);padding:0 12px;border-radius:var(--radius-sm);font-size:var(--ctl-fs-md);font-family:inherit;outline:none;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out),opacity var(--dur-fast) var(--ease-out)}
 input:focus,select:focus{border-color:var(--emerald);box-shadow:var(--focus-ring)}
 input:disabled,select:disabled{opacity:var(--disabled-opacity);cursor:not-allowed}
 input::placeholder{color:var(--text3)}
 select{cursor:pointer}
-.textarea{width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:var(--radius-sm);font-size:var(--ctl-fs-md);font-family:var(--font-mono);outline:none;transition:var(--transition);resize:vertical}
+.textarea{width:100%;background:var(--control-bg);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:var(--radius-sm);font-size:var(--ctl-fs-md);font-family:var(--font-mono);outline:none;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out);resize:vertical}
 .textarea:focus{border-color:var(--emerald);box-shadow:var(--focus-ring)}
 
 /* ─── Search ─── */
-.search-box{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);height:var(--ctl-h-md);padding:0 12px 0 32px;font-size:var(--text-md);color:var(--text);font-family:inherit;outline:none;width:200px;transition:var(--transition);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235c6370' stroke-width='2'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:10px center}
-.search-box:focus{border-color:var(--emerald);box-shadow:var(--focus-ring);width:260px}
+.search-box{background:var(--control-subtle-bg);border:1px solid var(--border);border-radius:var(--radius-sm);height:var(--ctl-h-md);padding:0 12px 0 32px;font-size:var(--text-md);color:var(--text);font-family:inherit;outline:none;width:220px;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),background-color var(--dur-fast) var(--ease-out);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235c6370' stroke-width='2'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:10px center}
+.search-box:focus{border-color:var(--emerald);box-shadow:var(--focus-ring);background-color:var(--bg2)}
 .search-box::placeholder{color:var(--text3)}
 
 /* ─── Grid layouts ─── */
 .grid-2col{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+.grid-2col>*{min-width:0}
 @media(max-width:1100px){.grid-2col{grid-template-columns:1fr}}
 
 /* ─── Provider cards ─── */
-.provider-grid{display:flex;gap:12px}
+.provider-grid{display:flex;flex-direction:column;gap:20px}
+.provider-section{display:flex;flex-direction:column;gap:10px}
+.provider-section-title{display:flex;align-items:center;gap:8px;font-size:var(--text-sm);font-weight:var(--fw-semibold);color:var(--text3);text-transform:uppercase;letter-spacing:.4px}
+.provider-section-title::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--emerald)}
+.provider-section-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;align-items:start}
 .provider-col{flex:1;min-width:0;display:flex;flex-direction:column;gap:12px}
-.provider-card{background:var(--bg2);border:1px solid var(--border);border-radius:9px;padding:16px;transition:var(--transition);position:relative}
-.provider-card:hover{border-color:var(--border2);box-shadow:var(--shadow-sm);transform:translateY(-1px)}
+.provider-card{background:var(--panel-bg);border:1px solid var(--border);border-radius:9px;padding:16px;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out),opacity var(--dur-fast) var(--ease-out);position:relative;box-shadow:var(--surface-shadow)}
+.provider-card:hover{border-color:var(--border2);box-shadow:var(--shadow-sm)}
 .provider-card.disabled{opacity:.45}
-.provider-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.provider-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border);gap:10px}
 .provider-name{font-weight:var(--fw-semibold);font-size:var(--text-md);display:flex;align-items:center;gap:8px}
 .provider-avatar{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:var(--text-sm);font-weight:var(--fw-bold)}
 .pa-emerald{background:var(--emerald-dim);color:var(--emerald)}
 .pa-blue{background:var(--blue-dim);color:var(--blue)}
 .pa-amber{background:var(--amber-dim);color:var(--amber)}
 .pa-rose{background:var(--rose-dim);color:var(--rose)}
-.provider-stat{display:flex;justify-content:space-between;font-size:var(--text-base);color:var(--text2);padding:4px 0}
+.provider-stat{display:flex;justify-content:space-between;font-size:var(--text-base);color:var(--text2);padding:4px 0;gap:10px}
 .provider-stat strong{color:var(--text2);font-weight:var(--fw-medium)}
-.provider-actions-row{display:flex;gap:6px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.provider-metrics{display:grid;grid-template-columns:1fr 1fr;gap:4px 14px}
+.provider-feature-line{font-size:var(--text-sm);color:var(--text3);margin-top:10px;line-height:1.5;overflow-wrap:anywhere}
+.provider-actions-row{display:flex;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.provider-config-row{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.provider-config-row label{font-size:var(--text-sm);color:var(--text3)}
+.provider-inline-check{display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none}
+.provider-priority-input{width:56px}
 .trust-bar{display:flex;gap:3px;align-items:center}
 .trust-pip{width:14px;height:4px;border-radius:2px;background:var(--border)}
 .trust-pip.filled{background:var(--emerald)}
 .trust-pip.high{background:var(--amber)}
-.provider-extra{margin-top:10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:var(--text-base)}
+.provider-extra{margin-top:10px;padding:10px;background:var(--control-bg);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:var(--text-base)}
 .provider-extra .domain-tag{display:inline-block;padding:2px 8px;border-radius:4px;background:var(--emerald-dim);color:var(--emerald);font-size:var(--text-sm);margin:2px}
+.table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.table-wrap table{min-width:720px}
 
 #ol-account-list{user-select:none;-webkit-user-select:none}
 
@@ -307,7 +366,7 @@ select{cursor:pointer}
 .activity-hl{color:var(--text);font-weight:var(--fw-medium)}
 
 /* ─── Message viewer ─── */
-.msg-viewer{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-top:12px}
+.msg-viewer{background:var(--control-bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-top:12px}
 .msg-header{border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:10px}
 .msg-header h3{font-size:var(--text-lg);font-weight:var(--fw-semibold);margin-bottom:4px}
 .msg-header p{font-size:var(--text-base);color:var(--text3)}
@@ -315,14 +374,14 @@ select{cursor:pointer}
 .msg-body iframe{width:100%;min-height:200px;border:none;background:#fff;border-radius:4px}
 
 /* ─── Code display ─── */
-.code-box{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-top:12px}
-.code-value{font-size:var(--text-3xl);font-weight:var(--fw-bold);font-family:var(--font-mono);letter-spacing:4px;color:var(--emerald);margin:8px 0;cursor:pointer;transition:var(--transition)}
+.code-box{background:var(--control-bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-top:12px}
+.code-value{font-size:var(--text-3xl);font-weight:var(--fw-bold);font-family:var(--font-mono);letter-spacing:4px;color:var(--emerald);margin:8px 0;cursor:pointer;transition:text-shadow var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out)}
 .code-value:hover{text-shadow:0 0 12px rgba(52,211,153,.4)}
 .code-meta{font-size:var(--text-base);color:var(--text3)}
 
 /* ─── Inbox detail ─── */
 .detail-area{margin-top:16px}
-.detail-panel{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.detail-panel{background:var(--panel-bg);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--surface-shadow)}
 .detail-panel h3{font-size:var(--text-lg);font-weight:var(--fw-semibold);margin-bottom:12px}
 
 /* ─── Filter row ─── */
@@ -330,33 +389,35 @@ select{cursor:pointer}
 .filter-row input,.filter-row select{height:var(--ctl-h-sm);padding:0 var(--ctl-px-sm);font-size:var(--ctl-fs-sm);min-width:120px}
 
 /* ─── Toast ─── */
-.toast{position:fixed;top:16px;right:16px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 20px;font-size:var(--text-md);z-index:999;transform:translateX(120%);transition:.3s;display:flex;align-items:center;gap:8px;box-shadow:var(--shadow-md)}
-.toast.show{transform:translateX(0)}
+.toast{position:fixed;top:16px;right:16px;background:var(--panel-bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px 20px;font-size:var(--text-md);z-index:999;transform:translateY(-6px) scale(.98);opacity:0;visibility:hidden;pointer-events:none;transition:opacity var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out),visibility 0s linear var(--dur-fast);display:flex;align-items:center;gap:8px;box-shadow:var(--shadow-md);max-width:min(420px,calc(100vw - 32px))}
+.toast.show{transform:translateY(0) scale(1);opacity:1;visibility:visible;transition-delay:0s}
 .toast.success{border-color:var(--emerald)}
 .toast.success::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--emerald)}
 .toast.error{border-color:var(--rose)}
 .toast.error::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--rose)}
 
 /* ─── Confirm dialog ─── */
-.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;align-items:center;justify-content:center}
-.overlay.show{display:flex}
-.dialog{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:380px;box-shadow:var(--shadow-md)}
+.overlay{display:flex;position:fixed;inset:0;background:var(--overlay-bg);z-index:50;align-items:center;justify-content:center;opacity:0;visibility:hidden;pointer-events:none;transition:opacity var(--dur-fast) var(--ease-out),visibility 0s linear var(--dur-fast)}
+.overlay.show{opacity:1;visibility:visible;pointer-events:auto;transition-delay:0s}
+.dialog{background:var(--panel-bg);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:380px;box-shadow:var(--shadow-md);transform:scale(.97);opacity:0;transition:opacity var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out);transform-origin:center}
+.overlay.show .dialog{transform:scale(1);opacity:1}
 .dialog h3{font-size:var(--text-lg);font-weight:var(--fw-semibold);margin-bottom:8px}
 .dialog p{font-size:var(--text-md);color:var(--text2);margin-bottom:16px}
 .dialog-actions{display:flex;gap:8px;justify-content:flex-end}
 .dialog input{width:100%;margin-bottom:12px}
 
 /* ─── Login ─── */
-.login-screen{position:fixed;inset:0;background:var(--bg);z-index:100;display:flex;align-items:center;justify-content:center}
+.login-screen{position:fixed;inset:0;background:var(--app-bg);z-index:100;display:flex;align-items:center;justify-content:center}
 .login-screen.hidden{display:none}
 .login-box{width:360px;text-align:center}
-.login-logo{width:56px;height:56px;background:linear-gradient(135deg,var(--emerald),#2dd4bf);border-radius:14px;display:flex;align-items:center;justify-content:center;font-weight:var(--fw-bold);font-size:var(--text-2xl);color:var(--bg);margin:0 auto 20px;box-shadow:0 4px 20px rgba(52,211,153,.3)}
+.login-logo{width:56px;height:56px;background:linear-gradient(135deg,var(--emerald),#2dd4bf);border-radius:14px;display:flex;align-items:center;justify-content:center;font-weight:var(--fw-bold);font-size:var(--text-2xl);color:var(--accent-contrast);margin:0 auto 20px;box-shadow:0 4px 20px rgba(52,211,153,.3)}
 .login-box h2{font-size:var(--text-xl);font-weight:var(--fw-semibold);margin-bottom:6px}
 .login-box p{font-size:var(--text-md);color:var(--text3);margin-bottom:24px}
-.login-input{width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);height:var(--ctl-h-lg);padding:0 16px;border-radius:var(--radius);font-size:var(--ctl-fs-lg);font-family:var(--font-mono);outline:none;transition:var(--transition);text-align:center;letter-spacing:1px}
+.login-input{width:100%;background:var(--panel-bg);border:1px solid var(--border);color:var(--text);height:var(--ctl-h-lg);padding:0 16px;border-radius:var(--radius);font-size:var(--ctl-fs-lg);font-family:var(--font-mono);outline:none;transition:border-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out);text-align:center;letter-spacing:1px}
 .login-input:focus{border-color:var(--emerald);box-shadow:var(--focus-ring)}
-.login-btn{width:100%;margin-top:12px;height:var(--ctl-h-lg);background:var(--emerald);border:none;border-radius:var(--radius);color:var(--bg);font-size:var(--ctl-fs-lg);font-weight:var(--fw-semibold);font-family:inherit;cursor:pointer;transition:var(--transition);box-shadow:0 2px 8px rgba(52,211,153,.2)}
-.login-btn:hover{background:#2bc48a;box-shadow:0 4px 16px rgba(52,211,153,.3);transform:translateY(-1px)}
+.login-btn{width:100%;margin-top:12px;height:var(--ctl-h-lg);background:var(--emerald);border:none;border-radius:var(--radius);color:var(--accent-contrast);font-size:var(--ctl-fs-lg);font-weight:var(--fw-semibold);font-family:inherit;cursor:pointer;transition:background-color var(--dur-fast) var(--ease-out),box-shadow var(--dur-fast) var(--ease-out),transform var(--dur-quick) var(--ease-out),opacity var(--dur-fast) var(--ease-out);box-shadow:0 2px 8px rgba(52,211,153,.2)}
+.login-btn:hover{background:var(--accent-hover);box-shadow:0 4px 16px rgba(52,211,153,.3)}
+.login-btn:active{transform:scale(.98)}
 .login-btn:disabled{opacity:var(--disabled-opacity);cursor:not-allowed;transform:none}
 .login-error{color:var(--rose);font-size:var(--text-base);margin-top:10px;min-height:18px}
 
@@ -371,7 +432,7 @@ select{cursor:pointer}
 .docs-nav{border-right:1px solid var(--border);padding:16px 0;overflow-y:auto;position:sticky;top:0}
 .docs-nav-group{padding:0 16px;margin-bottom:16px}
 .docs-nav-group-title{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.6px;color:var(--text3);font-weight:var(--fw-semibold);margin-bottom:8px;padding:0 8px}
-.docs-nav a{display:block;padding:5px 8px;font-size:var(--text-base);color:var(--text2);border-radius:5px;transition:var(--transition);text-decoration:none;line-height:1.4}
+.docs-nav a{display:block;padding:5px 8px;font-size:var(--text-base);color:var(--text2);border-radius:5px;transition:background-color var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out);text-decoration:none;line-height:1.4}
 .docs-nav a:hover{background:var(--bg3);color:var(--text)}
 .docs-nav a.active{background:var(--emerald-dim);color:var(--emerald)}
 .docs-nav .method{display:inline-block;font-size:var(--text-xs);font-weight:var(--fw-bold);font-family:var(--font-mono);padding:1px 5px;border-radius:3px;margin-right:4px;min-width:32px;text-align:center}
@@ -385,14 +446,16 @@ select{cursor:pointer}
 .docs-section h2{font-size:var(--text-xl);font-weight:var(--fw-semibold);margin-bottom:6px;display:flex;align-items:center;gap:8px;scroll-margin-top:20px}
 .docs-section h3{font-size:var(--text-lg);font-weight:var(--fw-semibold);margin:20px 0 10px;display:flex;align-items:center;gap:8px;scroll-margin-top:20px}
 .docs-section p{font-size:var(--text-md);color:var(--text2);line-height:1.6;margin:6px 0}
-.docs-endpoint{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);margin:12px 0;overflow:hidden}
-.docs-endpoint-header{padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);background:rgba(22,24,31,.5);cursor:pointer;transition:var(--transition)}
+.docs-endpoint{background:var(--panel-bg);border:1px solid var(--border);border-radius:var(--radius);margin:12px 0;overflow:hidden;box-shadow:var(--surface-shadow)}
+.docs-endpoint-header{padding:12px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);background:var(--panel-header-bg);cursor:pointer;transition:background-color var(--dur-fast) var(--ease-out);position:relative}
 .docs-endpoint-header:hover{background:var(--bg3)}
+.docs-endpoint-header::after{content:'›';font-size:18px;color:var(--text3);margin-left:8px;transform:rotate(0deg);transition:transform var(--dur-fast) var(--ease-out),color var(--dur-fast) var(--ease-out)}
+.docs-endpoint.open .docs-endpoint-header::after{transform:rotate(90deg);color:var(--emerald)}
 .docs-endpoint-header .method-tag{font-size:var(--text-sm);font-weight:var(--fw-bold);font-family:var(--font-mono);padding:3px 8px;border-radius:4px;min-width:52px;text-align:center}
 .docs-endpoint-header .path{font-size:var(--text-md);font-family:var(--font-mono);color:var(--text);font-weight:var(--fw-medium)}
 .docs-endpoint-header .desc{font-size:var(--text-base);color:var(--text3);margin-left:auto}
-.docs-endpoint-body{padding:16px;display:none}
-.docs-endpoint.open .docs-endpoint-body{display:block}
+.docs-endpoint-body{display:block;max-height:0;overflow:hidden;opacity:0;padding:0 16px;transition:max-height var(--dur-med) var(--ease-out),opacity var(--dur-fast) var(--ease-out),padding-top var(--dur-med) var(--ease-out),padding-bottom var(--dur-med) var(--ease-out)}
+.docs-endpoint.open .docs-endpoint-body{max-height:6000px;opacity:1;padding-top:16px;padding-bottom:16px}
 .docs-param-table{width:100%;border-collapse:collapse;margin:8px 0}
 .docs-param-table th{text-align:left;padding:6px 10px;font-size:var(--text-xs);color:var(--text3);font-weight:var(--fw-semibold);text-transform:uppercase;letter-spacing:.3px;border-bottom:1px solid var(--border)}
 .docs-param-table td{padding:6px 10px;font-size:var(--text-base);border-bottom:1px solid var(--border)}
@@ -401,7 +464,7 @@ select{cursor:pointer}
 .docs-param-table .param-req{font-size:var(--text-xs);padding:1px 6px;border-radius:3px;font-weight:var(--fw-semibold)}
 .param-req.yes{background:var(--rose-dim);color:var(--rose)}
 .param-req.no{background:rgba(92,99,112,.1);color:var(--text3)}
-pre.docs-code{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;font-size:var(--text-base);overflow-x:auto;color:var(--text2);line-height:1.5;margin:8px 0;white-space:pre;tab-size:2}
+pre.docs-code{background:var(--control-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;font-size:var(--text-base);overflow-x:auto;color:var(--text2);line-height:1.5;margin:8px 0;white-space:pre;tab-size:2;max-width:100%}
 pre.docs-code .ck{color:var(--text3)}
 pre.docs-code .cv{color:var(--emerald)}
 pre.docs-code .cs{color:var(--amber)}
@@ -412,7 +475,7 @@ pre.docs-code .cs{color:var(--amber)}
 /* ─── Responsive ─── */
 @media(max-width:900px){
   .cards{grid-template-columns:repeat(2,1fr)}
-  .provider-grid{flex-direction:column}
+  .provider-grid{grid-template-columns:1fr}
   .main{padding:20px 16px}
 }
 tr.row-selected td{background:rgba(52,211,153,.13) !important;color:var(--text) !important}
@@ -423,7 +486,7 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
 .pager button:disabled{opacity:var(--disabled-opacity);cursor:default}
 .pager button:focus-visible{outline:none;box-shadow:var(--focus-ring)}
 .pager .pager-info{display:flex;align-items:center;gap:4px;color:var(--text3);font-size:var(--text-base)}
-.pager input[type="number"]{width:44px;text-align:center;height:var(--ctl-h-sm);padding:0 2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--ctl-fs-sm);-moz-appearance:textfield}
+.pager input[type="number"]{width:44px;text-align:center;height:var(--ctl-h-sm);padding:0 2px;background:var(--control-bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--ctl-fs-sm);-moz-appearance:textfield}
 .pager input[type="number"]::-webkit-inner-spin-button,.pager input[type="number"]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 .pager select{height:var(--ctl-h-sm);padding:0 4px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text2);font-size:var(--ctl-fs-sm);cursor:pointer}
 .pager select option{background:var(--bg2);color:var(--text)}
@@ -432,7 +495,7 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
 @media(max-width:600px){
   /* App layout: sidebar becomes bottom nav */
   .app{flex-direction:column}
-  .sidebar{width:100%;height:56px;flex-direction:row;padding:0 8px;border-right:none;border-top:1px solid var(--border);position:fixed;bottom:0;left:0;right:0;z-index:100;justify-content:space-around;overflow-x:auto;gap:0}
+  .sidebar{width:100%;height:58px;flex-direction:row;padding:0 8px;border-right:none;border-top:1px solid var(--border);position:fixed;bottom:0;left:0;right:0;z-index:100;justify-content:space-around;overflow:hidden;gap:0;box-shadow:0 -8px 24px rgba(0,0,0,.16)}
   .sidebar::after{display:none}
   .logo-icon{display:none}
   .nav-sep{display:none}
@@ -440,7 +503,9 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
   .nav-icon{width:44px;height:44px}
   .nav-icon.active::before{display:none}
   .tooltip{display:none}
-  .main{padding:16px 12px;padding-bottom:72px}
+  .mobile-secondary{display:none !important}
+  .mobile-more-wrap{display:block}
+  .main{padding:16px 12px;padding-bottom:76px;overflow-x:hidden}
 
   /* Page header: stack vertically */
   .page-header{flex-direction:column;align-items:stretch;gap:10px;margin-bottom:16px}
@@ -466,6 +531,8 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
 
   /* Tables: horizontal scroll */
   .panel table,.panel>table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .table-wrap{border-radius:var(--radius-sm)}
+  .table-wrap table{min-width:680px}
   th,td{padding:8px 12px;white-space:nowrap}
 
   /* Outlook grid: single column */
@@ -475,25 +542,38 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
   .dialog{width:calc(100vw - 32px);max-width:380px}
 
   /* Toast */
-  .toast{right:8px;left:8px;width:auto}
+  .toast{top:auto;right:10px;left:10px;bottom:72px;width:auto;max-width:none;transform:translateY(8px) scale(.98)}
+  .toast.show{transform:translateY(0) scale(1)}
 
   /* Login */
   .login-box{width:calc(100% - 32px);max-width:360px}
 
   /* Docs */
   .docs-content{padding:0 12px 40px}
+  .docs-endpoint-header{align-items:flex-start;flex-wrap:wrap;gap:8px}
+  .docs-endpoint-header .path{max-width:100%;overflow-wrap:anywhere}
+  .docs-endpoint-header .desc{margin-left:0;width:100%;line-height:1.4}
+  .docs-param-table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .docs-note{overflow-wrap:anywhere}
   pre.docs-code{font-size:var(--text-xs)}
 }
+.mobile-more-wrap{display:none}
+.mobile-more-panel{position:fixed;left:10px;right:10px;bottom:70px;z-index:120;background:var(--panel-bg);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-md);padding:10px;opacity:0;visibility:hidden;pointer-events:none;transform:translateY(8px) scale(.98);transition:opacity var(--dur-fast) var(--ease-out),transform var(--dur-fast) var(--ease-out),visibility 0s linear var(--dur-fast)}
+.mobile-more-panel.show{opacity:1;visibility:visible;pointer-events:auto;transform:translateY(0) scale(1);transition-delay:0s}
+.mobile-more-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.mobile-more-item{height:40px;border:1px solid var(--border);background:var(--control-subtle-bg);border-radius:var(--radius-sm);color:var(--text2);font:inherit;font-size:var(--text-sm);display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;transition:var(--transition)}
+.mobile-more-item:focus-visible{outline:none;box-shadow:var(--focus-ring)}
+.mobile-more-item:active{transform:scale(.97)}
+.mobile-more-item svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+@media(max-width:600px){.mobile-more-wrap{display:block}}
+@media (hover:none) {
+  .logo-icon:hover,.card:hover,.provider-card:hover{transform:none;box-shadow:none}
+}
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+  *, *::before, *::after { scroll-behavior: auto !important; }
+  .toast,.dialog,.overlay,.mobile-more-panel,.docs-endpoint-body { transition:opacity 120ms ease !important; transform:none !important; }
   .dot-pulse { animation: none !important; box-shadow: 0 0 0 0 rgba(52,211,153,.4) !important; }
   .btn-primary:hover { transform: none !important; }
-  .search-box:focus { width: 200px !important; }
   .nav-icon.spinning svg { animation: none !important; }
   .btn[data-loading]::after { animation: none !important; }
 }
@@ -502,14 +582,14 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
 <body>
 
 <div class="login-screen" id="login-screen">
-  <div class="login-box">
+  <form class="login-box" onsubmit="return doLogin(event)">
     <div class="login-logo">M</div>
     <h2>Mail Hub</h2>
     <p data-i18n="login.prompt">请输入 API 密钥登录</p>
     <input class="login-input" id="login-token" type="password" placeholder="Bearer Token" autofocus>
-    <button class="login-btn" id="login-btn" onclick="return doLogin()" data-i18n="login.btn">登录</button>
+    <button class="login-btn" id="login-btn" type="submit" data-i18n="login.btn">登录</button>
     <div class="login-error" id="login-error"></div>
-  </div>
+  </form>
 </div>
 
 <div class="app" id="app-main" style="display:none">
@@ -1010,6 +1090,7 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
                     <tr><td class="param-name">wait</td><td class="param-type">boolean</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.get_code_param_wait">设为 <code>true</code> 会轮询等待邮件到达</td></tr>
                     <tr><td class="param-name">timeout</td><td class="param-type">number</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n="docs.get_code_param_timeout">等待超时（秒），默认 60，最大 120</td></tr>
                     <tr><td class="param-name">type</td><td class="param-type">string</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.get_code_param_type">按类型过滤：<code>numeric</code>、<code>alphanumeric</code>、<code>link</code></td></tr>
+                    <tr><td class="param-name">since</td><td class="param-type">string/number</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.get_code_param_since">只提取此时间之后收到的新邮件，支持 ISO 时间或毫秒时间戳</td></tr>
                   </tbody>
                 </table>
                 <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
@@ -1018,9 +1099,11 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
     { <span class="ck">"type"</span>: <span class="cs">"numeric"</span>, <span class="ck">"value"</span>: <span class="cs">"483921"</span>,
       <span class="ck">"confidence"</span>: <span class="cv">0.95</span>, <span class="ck">"context"</span>: <span class="cs" data-i18n="docs.example_code_context">您的验证码是 483921</span> }
   ],
-  <span class="ck">"email"</span>: { <span class="ck">"from"</span>: <span class="cs">"..."</span>, <span class="ck">"subject"</span>: <span class="cs">"..."</span> }
+  <span class="ck">"email"</span>: { <span class="ck">"from"</span>: <span class="cs">"..."</span>, <span class="ck">"subject"</span>: <span class="cs">"..."</span> },
+  <span class="ck">"messageId"</span>: <span class="cs">"message-123"</span>,
+  <span class="ck">"receivedAt"</span>: <span class="cs">"2025-01-01T00:01:00Z"</span>
 }</pre>
-                <div class="docs-note" data-i18n-html="docs.get_code_note">典型集成方式：先 <code>POST /api/inbox</code> 创建邮箱 → 用邮箱注册目标服务 → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> 等待验证码。</div>
+                <div class="docs-note" data-i18n-html="docs.get_code_note">典型集成方式：先 <code>POST /api/inbox</code> 创建邮箱 → 用邮箱注册目标服务 → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> 等待验证码。需要多次取件时，把上次响应的 <code>receivedAt</code> 作为 <code>since</code> 传入，避免重复返回同一封邮件。</div>
               </div>
             </div>
 
@@ -1239,7 +1322,9 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
   <span class="ck">"available"</span>: <span class="cv">35</span>,
   <span class="ck">"assigned"</span>: <span class="cv">15</span>,
   <span class="ck">"validToken"</span>: <span class="cv">42</span>,
-  <span class="ck">"invalidToken"</span>: <span class="cv">3</span>
+  <span class="ck">"invalidToken"</span>: <span class="cv">3</span>,
+  <span class="ck">"pendingOAuth"</span>: <span class="cv">2</span>,
+  <span class="ck">"noToken"</span>: <span class="cv">0</span>
 }</pre>
               </div>
             </div>
@@ -1255,7 +1340,7 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
                 <table class="docs-param-table">
                   <thead><tr><th data-i18n="docs.param">参数</th><th data-i18n="docs.type">类型</th><th data-i18n="docs.required">必填</th><th data-i18n="docs.description">说明</th></tr></thead>
                   <tbody>
-                    <tr><td class="param-name">accounts</td><td class="param-type">string</td><td><span class="param-req yes" data-i18n="docs.yes">是</span></td><td data-i18n-html="docs.ol_import_param_accounts">每行一个账号，格式：<code>邮箱----密码----ClientID----令牌</code></td></tr>
+                    <tr><td class="param-name">accounts</td><td class="param-type">string</td><td><span class="param-req yes" data-i18n="docs.yes">是</span></td><td data-i18n-html="docs.ol_import_param_accounts">每行一个账号，支持：<code>邮箱----密码</code> 或 <code>邮箱----密码----ClientID----refresh_token</code>。</td></tr>
                   </tbody>
                 </table>
                 <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
@@ -1264,7 +1349,7 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
   <span class="ck">"skipped"</span>: <span class="cv">2</span>,
   <span class="ck">"errors"</span>: [<span class="cs" data-i18n="docs.example_format_error">格式错误: ...</span>]
 }</pre>
-                <div class="docs-note" data-i18n-html="docs.ol_import_note">分隔符为 <code>----</code>（4 个减号）。ClientID 和令牌可选，不填则无法通过 Graph API 读信。已存在的邮箱会被跳过（INSERT OR IGNORE）。</div>
+                <div class="docs-note" data-i18n-html="docs.ol_import_note">分隔符为 <code>----</code>（4 个减号）。未完成授权的账号会进入待授权状态，可在账号列表中补全。已存在的邮箱会被跳过（INSERT OR IGNORE）。</div>
               </div>
             </div>
 
@@ -1279,7 +1364,7 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
                 <table class="docs-param-table">
                   <thead><tr><th data-i18n="docs.param">参数</th><th data-i18n="docs.type">类型</th><th data-i18n="docs.required">必填</th><th data-i18n="docs.description">说明</th></tr></thead>
                   <tbody>
-                    <tr><td class="param-name">status</td><td class="param-type">string</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.ol_list_param_status">令牌状态：<code>valid</code>、<code>invalid</code></td></tr>
+                    <tr><td class="param-name">status</td><td class="param-type">string</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.ol_list_param_status">令牌状态：<code>valid</code>、<code>invalid</code>、<code>pending_oauth</code>、<code>no_token</code></td></tr>
                     <tr><td class="param-name">available</td><td class="param-type">string</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.ol_list_param_available"><code>true</code> 只看空闲，<code>false</code> 只看已分配</td></tr>
                     <tr><td class="param-name">group</td><td class="param-type">string</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n="docs.ol_list_param_group">按分组名筛选</td></tr>
                   </tbody>
@@ -1341,7 +1426,7 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
     { <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>, <span class="ck">"valid"</span>: <span class="cv">true</span> }
   ]
 }</pre>
-                <div class="docs-note" data-i18n="docs.ol_check_note">检测原理：使用 refresh_token 向 Microsoft OAuth2 换取 access_token，成功即有效。会同步更新数据库中的 token_status 字段。</div>
+                <div class="docs-note" data-i18n="docs.ol_check_note">检测原理：使用已保存的授权凭据向 Microsoft 验证，成功即有效。会同步更新数据库中的 token_status 字段。</div>
               </div>
             </div>
 
@@ -1368,7 +1453,155 @@ tr.row-selected td:first-child{box-shadow:inset 3px 0 0 var(--emerald)}
     { <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>, <span class="ck">"renewed"</span>: <span class="cv">true</span> }
   ]
 }</pre>
-                <div class="docs-note" data-i18n="docs.ol_renew_note">续期会获取新的 refresh_token 并替换旧的。Microsoft 的 refresh_token 有 90 天有效期，建议定期续期。续期成功后 token_status 自动更新为 valid。</div>
+                <div class="docs-note" data-i18n="docs.ol_renew_note">续期会刷新已保存的授权凭据。Microsoft 授权有有效期，建议定期续期。续期成功后 token_status 自动更新为 valid。</div>
+              </div>
+            </div>
+
+            <div class="docs-endpoint" id="doc-ol-oauth-start">
+              <div class="docs-endpoint-header" onclick="return this.parentElement.classList.toggle('open')">
+                <span class="method-tag m-post">POST</span>
+                <span class="path">/api/outlook/oauth/start</span>
+                <span class="desc" data-i18n="docs.ol_oauth_start_desc">创建授权补全会话</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-label" data-i18n="docs.req_body_json">请求体 (JSON)</div>
+                <pre class="docs-code">{
+  <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>,
+  <span class="ck">"preset"</span>: <span class="cs">"thunderbird"</span>
+}</pre>
+                <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
+                <pre class="docs-code">{
+  <span class="ck">"sessionId"</span>: <span class="cs">"..."</span>,
+  <span class="ck">"authorizeUrl"</span>: <span class="cs">"https://..."</span>,
+  <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>,
+  <span class="ck">"preset"</span>: <span class="cs">"thunderbird"</span>,
+  <span class="ck">"redirectUri"</span>: <span class="cs">"https://localhost"</span>,
+  <span class="ck">"serverProxyConfigured"</span>: <span class="cv">true</span>,
+  <span class="ck">"status"</span>: <span class="cs">"pending"</span>
+}</pre>
+                <div class="docs-note" data-i18n="docs.ol_oauth_start_note">默认使用内置授权预设；自定义 OAuth App 仍可通过 API 传入 custom 配置。</div>
+              </div>
+            </div>
+
+            <div class="docs-endpoint" id="doc-ol-oauth-code">
+              <div class="docs-endpoint-header" onclick="return this.parentElement.classList.toggle('open')">
+                <span class="method-tag m-post">POST</span>
+                <span class="path">/api/outlook/oauth/code</span>
+                <span class="desc" data-i18n="docs.ol_oauth_code_desc">提交授权回跳结果</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-label" data-i18n="docs.req_body_json">请求体 (JSON)</div>
+                <pre class="docs-code">{
+  <span class="ck">"sessionId"</span>: <span class="cs">"..."</span>,
+  <span class="ck">"finalUrl"</span>: <span class="cs">"https://localhost/?code=...&amp;state=..."</span>
+}</pre>
+                <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
+                <pre class="docs-code">{
+  <span class="ck">"ok"</span>: <span class="cv">true</span>,
+  <span class="ck">"sessionId"</span>: <span class="cs">"..."</span>,
+  <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>,
+  <span class="ck">"status"</span>: <span class="cs">"completed"</span>
+}</pre>
+                <div class="docs-note" data-i18n="docs.ol_oauth_code_note">也可以提交 code + state。敏感令牌只写入服务端，不会在响应中返回。</div>
+              </div>
+            </div>
+
+            <div class="docs-endpoint" id="doc-ol-oauth-status">
+              <div class="docs-endpoint-header" onclick="return this.parentElement.classList.toggle('open')">
+                <span class="method-tag m-get">GET</span>
+                <span class="path">/api/outlook/oauth/status/:sessionId</span>
+                <span class="desc" data-i18n="docs.ol_oauth_status_desc">查询授权补全状态</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
+                <pre class="docs-code">{
+  <span class="ck">"sessionId"</span>: <span class="cs">"..."</span>,
+  <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>,
+  <span class="ck">"preset"</span>: <span class="cs">"thunderbird"</span>,
+  <span class="ck">"status"</span>: <span class="cs">"completed"</span>,
+  <span class="ck">"error"</span>: <span class="cs">""</span>
+}</pre>
+              </div>
+            </div>
+
+            <div class="docs-endpoint" id="doc-ol-oauth-password">
+              <div class="docs-endpoint-header" onclick="return this.parentElement.classList.toggle('open')">
+                <span class="method-tag m-post">POST</span>
+                <span class="path">/api/outlook/oauth/password</span>
+                <span class="desc" data-i18n="docs.ol_oauth_manual_password_desc">读取待补全账号密码</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-label" data-i18n="docs.req_body_json">请求体 (JSON)</div>
+                <pre class="docs-code">{ <span class="ck">"sessionId"</span>: <span class="cs">"..."</span> }</pre>
+                <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
+                <pre class="docs-code">{ <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>, <span class="ck">"password"</span>: <span class="cs">"..."</span> }</pre>
+                <div class="docs-note" data-i18n="docs.ol_oauth_manual_password_note">管理员接口，仅用于 pending/no_token 账号的授权补全辅助，不返回任何令牌。</div>
+              </div>
+            </div>
+
+            <div class="docs-endpoint" id="doc-ol-oauth-callback">
+              <div class="docs-endpoint-header" onclick="return this.parentElement.classList.toggle('open')">
+                <span class="method-tag m-get">GET</span>
+                <span class="path">/api/outlook/oauth/callback</span>
+                <span class="desc" data-i18n="docs.ol_oauth_callback_desc">自定义 OAuth 回调</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-note" data-i18n="docs.ol_oauth_callback_note">仅用于自定义 OAuth App 兼容流程。默认补全路径使用外部回跳 URL 提交接口。</div>
+              </div>
+            </div>
+
+            <div class="docs-endpoint" id="doc-ol-oauth-automation-claim">
+              <div class="docs-endpoint-header" onclick="return this.parentElement.classList.toggle('open')">
+                <span class="method-tag m-post">POST</span>
+                <span class="path">/api/outlook/oauth/automation/claim</span>
+                <span class="desc" data-i18n="docs.ol_oauth_claim_desc">领取待补全任务</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-label" data-i18n="docs.req_body_json">请求体 (JSON)</div>
+                <pre class="docs-code">{ <span class="ck">"preset"</span>: <span class="cs">"thunderbird"</span>, <span class="ck">"includeProxy"</span>: <span class="cv">true</span>, <span class="ck">"includeFailed"</span>: <span class="cv">false</span> }</pre>
+                <div class="docs-note" data-i18n-html="docs.ol_oauth_claim_note">默认跳过带有 <code>oauth_last_error</code> 的失败账号；只有明确重试失败任务时才传 <code>includeFailed: true</code>。</div>
+                <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
+                <pre class="docs-code">{
+  <span class="ck">"sessionId"</span>: <span class="cs">"..."</span>,
+  <span class="ck">"authorizeUrl"</span>: <span class="cs">"https://..."</span>,
+  <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>,
+  <span class="ck">"redirectUri"</span>: <span class="cs">"https://localhost"</span>,
+  <span class="ck">"serverProxyConfigured"</span>: <span class="cv">true</span>,
+  <span class="ck">"proxyUrl"</span>: <span class="cs">"http://user:pass@host:port"</span>,
+  <span class="ck">"status"</span>: <span class="cs">"pending"</span>
+}</pre>
+              </div>
+            </div>
+
+            <div class="docs-endpoint" id="doc-ol-oauth-automation-password">
+              <div class="docs-endpoint-header" onclick="return this.parentElement.classList.toggle('open')">
+                <span class="method-tag m-post">POST</span>
+                <span class="path">/api/outlook/oauth/automation/password</span>
+                <span class="desc" data-i18n="docs.ol_oauth_password_desc">读取已领取任务密码</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-label" data-i18n="docs.req_body_json">请求体 (JSON)</div>
+                <pre class="docs-code">{ <span class="ck">"sessionId"</span>: <span class="cs">"..."</span> }</pre>
+                <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
+                <pre class="docs-code">{ <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>, <span class="ck">"password"</span>: <span class="cs">"..."</span> }</pre>
+                <div class="docs-note" data-i18n="docs.ol_oauth_password_note">管理员接口，仅用于外部自动化对已领取任务的安全取用。</div>
+              </div>
+            </div>
+
+            <div class="docs-endpoint" id="doc-ol-oauth-automation-report">
+              <div class="docs-endpoint-header" onclick="return this.parentElement.classList.toggle('open')">
+                <span class="method-tag m-post">POST</span>
+                <span class="path">/api/outlook/oauth/automation/report</span>
+                <span class="desc" data-i18n="docs.ol_oauth_report_desc">上报自动化状态</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-label" data-i18n="docs.req_body_json">请求体 (JSON)</div>
+                <pre class="docs-code">{
+  <span class="ck">"sessionId"</span>: <span class="cs">"..."</span>,
+  <span class="ck">"status"</span>: <span class="cs">"waiting_user"</span>,
+  <span class="ck">"error"</span>: <span class="cs">""</span>
+}</pre>
+                <div class="docs-note" data-i18n="docs.ol_oauth_report_note">状态可为 started、waiting_user、failed、completed。令牌写入仍由授权 code 提交流程完成。</div>
               </div>
             </div>
 
@@ -1797,7 +2030,7 @@ curl -X POST http://localhost:3100/api/inbox \
 <span class="ck" data-i18n="docs.integration_curl_import"># 导入 Outlook 账号</span>
 curl -X POST http://localhost:3100/api/outlook/import \
   -H <span class="cs">"Content-Type: application/json"</span> \
-  -d <span class="cs">'{"accounts":"user@outlook.com----pass123----clientid----token"}'</span></pre>
+  -d <span class="cs">'{"accounts":"user@outlook.com----pass123\\nuser2@outlook.com----pass123----clientid----refresh_token"}'</span></pre>
           </div>
 
           <!-- ── AI / LLM 集成 ── -->
@@ -1828,7 +2061,7 @@ Authorization: Bearer &lt;your-api-key&gt;
 <span class="cv" data-i18n="docs.example_llms_summary">... (完整端点文档，含参数与响应格式)</span></pre>
                 <div class="docs-note" style="margin-top:12px">
                   <span data-i18n-html="docs.llms_usage_title"><strong>使用方式：</strong>在与 AI 助手对话时，告诉它读取此端点即可快速理解 Mail Hub 的全部公开 API。例如：<br></span>
-                  <code id="llms-example-url" style="display:block;margin-top:6px;padding:8px 12px;background:var(--bg);border-radius:6px;font-size:var(--text-base);color:var(--text2)"></code>
+                  <code id="llms-example-url" style="display:block;margin-top:6px;padding:8px 12px;background:var(--control-bg);border-radius:6px;font-size:var(--text-base);color:var(--text2)"></code>
                 </div>
                 <div style="margin-top:16px;display:flex;gap:8px;align-items:center">
                   <button class="btn btn-primary btn-sm" onclick="return copyLlmsUrl()" data-i18n="docs.llms_copy_btn">复制端点 URL</button>
@@ -1856,11 +2089,13 @@ Authorization: Bearer &lt;your-api-key&gt;
         <div class="card"><div class="card-icon ci-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div><div class="card-label" data-i18n="outlook.available">可用</div><div class="card-value" id="ol-available">-</div></div>
         <div class="card"><div class="card-icon ci-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><div class="card-label" data-i18n="outlook.assigned">已分配</div><div class="card-value" id="ol-assigned">-</div></div>
         <div class="card"><div class="card-icon ci-emerald"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div class="card-label" data-i18n="outlook.valid_token">有效令牌</div><div class="card-value" id="ol-valid">-</div></div>
+        <div class="card"><div class="card-icon ci-amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8V1"/><path d="M9 4h6"/><circle cx="12" cy="17" r="4"/><path d="M12 13v4"/><circle cx="12" cy="17" r="0.8"/></svg></div><div class="card-label" data-i18n="outlook.pending_oauth">待补全</div><div class="card-value" id="ol-pending-oauth">-</div></div>
+        <div class="card"><div class="card-icon ci-rose"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11h6"/><path d="M12 7v8"/><circle cx="12" cy="17" r="4"/><path d="M12 7v4"/></svg></div><div class="card-label" data-i18n="outlook.no_token">无令牌</div><div class="card-value" id="ol-no-token">-</div></div>
       </div>
 
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px;padding:10px 16px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius)">
         <label style="font-size:var(--text-base);color:var(--text2);display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none">
-          <input type="checkbox" id="ol-record-fail" onchange="setOlRecordFail(this.checked)">
+          <input type="checkbox" id="ol-record-fail" onchange="saveOlSettings()">
           <span data-i18n="outlook.record_fail">Report failure时记录已用服务</span>
         </label>
         <span style="font-size:var(--text-sm);color:var(--text3)" data-i18n="outlook.record_fail_hint">关闭后，仅在Reported success时记录 Outlook 账号的已用服务</span>
@@ -1870,24 +2105,53 @@ Authorization: Bearer &lt;your-api-key&gt;
         <div class="panel">
           <div class="panel-header"><span class="panel-title"><span data-i18n="outlook.import">导入账号</span></span></div>
           <div style="padding:16px 20px">
-            <textarea id="ol-import-text" class="textarea" rows="5" placeholder="邮箱----密码----ClientID----令牌&#10;每行一个账号" data-i18n-ph="outlook.import_placeholder"></textarea>
+            <textarea id="ol-import-text" class="textarea" rows="5" placeholder="邮箱----密码&#10;邮箱----密码----ClientID----refresh_token&#10;每行一个账号" data-i18n-ph="outlook.import_placeholder"></textarea>
             <div style="display:flex;gap:8px;margin-top:10px;align-items:center">
               <select id="ol-import-type"><option value="long" data-i18n="outlook.long">长效</option><option value="short" data-i18n="outlook.short">短效</option></select>
-              <button class="btn btn-primary" onclick="return importOutlook()"data-i18n="common.import">导入</button>
+              <button class="btn btn-primary" onclick="return importOutlook()" data-i18n="common.import">导入</button>
               <span id="ol-import-status" style="font-size:var(--text-base);color:var(--text3);line-height:32px"></span>
             </div>
           </div>
         </div>
       </div>
 
+      <div class="panel" id="ol-oauth-panel" style="margin-bottom:16px">
+          <div class="panel-header">
+            <span class="panel-title"><span data-i18n="outlook.oauth_settings">Thunderbird 授权补全</span></span>
+          </div>
+          <div style="padding:16px 20px">
+            <p data-i18n="outlook.oauth_thunderbird_hint" style="margin:0 0 8px;font-size:var(--text-sm);color:var(--text2);line-height:1.6"></p>
+            <p data-i18n="outlook.oauth_manual_hint" style="margin:0 0 12px;font-size:var(--text-sm);color:var(--text3);line-height:1.6"></p>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input id="ol-oauth-final-url" data-i18n-ph="outlook.oauth_final_url_ph" placeholder="https://localhost/?code=...&state=..." style="flex:1 1 260px;min-width:0;font-family:var(--font-mono);font-size:var(--text-sm)">
+              <button class="btn btn-primary" onclick="return submitOutlookOauthFinalUrl()" data-i18n="outlook.submit_final_url" style="white-space:nowrap">提交最终 URL</button>
+            </div>
+            <details style="margin-top:12px;color:var(--text3);font-size:var(--text-sm)">
+              <summary data-i18n="outlook.advanced_custom_oauth" style="cursor:pointer;user-select:none">高级：自定义 OAuth（可选）</summary>
+              <div class="form-row" style="margin-top:12px">
+                <div class="form-group"><label data-i18n="outlook.oauth_client_id">OAuth Client ID</label><input id="ol-oauth-client-id" data-i18n-ph="outlook.oauth_client_id_ph" placeholder="Client ID" onchange="saveOlSettings()"></div>
+                <div class="form-group"><label data-i18n="outlook.oauth_redirect_uri">Redirect URI</label><input id="ol-oauth-redirect-uri" data-i18n-ph="outlook.oauth_redirect_uri_ph" placeholder="https://your-callback" onchange="saveOlSettings()"></div>
+                <div class="form-group"><label data-i18n="outlook.oauth_scopes">Scopes</label><input id="ol-oauth-scopes" data-i18n-ph="outlook.oauth_scopes_ph" placeholder="offline_access https://graph.microsoft.com/Mail.Read" onchange="saveOlSettings()" style="font-family:var(--font-mono)"></div>
+                <div class="form-group"><label data-i18n="outlook.oauth_tenant">Tenant</label><input id="ol-oauth-tenant" data-i18n-ph="outlook.oauth_tenant_ph" placeholder="common or tenant-id" onchange="saveOlSettings()"></div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+                <button class="btn btn-sm" onclick="return saveOlSettings()" data-i18n="common.save">保存</button>
+                <span data-i18n="outlook.oauth_hint">仅在需要非 Thunderbird 预设时使用。</span>
+              </div>
+            </details>
+          </div>
+        </div>
+
       <div class="panel">
         <div class="panel-header">
           <span class="panel-title" data-i18n="outlook.accounts">账号列表</span>
-          <div class="panel-actions">
+            <div class="panel-actions">
             <select id="ol-filter-status" onchange="loadOutlookAccounts()">
               <option value="" data-i18n="common.all_status">全部状态</option>
               <option value="valid" data-i18n="outlook.valid">有效令牌</option>
               <option value="invalid" data-i18n="outlook.invalid">无效令牌</option>
+              <option value="pending_oauth" data-i18n="outlook.pending_oauth">待补全</option>
+              <option value="no_token" data-i18n="outlook.no_token">无令牌</option>
             </select>
             <select id="ol-filter-avail" onchange="loadOutlookAccounts()">
               <option value="" data-i18n="common.all">全部</option>
@@ -1899,9 +2163,9 @@ Authorization: Bearer &lt;your-api-key&gt;
               <option value="long" data-i18n="outlook.long">长效</option>
               <option value="short" data-i18n="outlook.short">短效</option>
             </select>
-            <button class="btn btn-sm" onclick="return batchCheckOutlook()"data-i18n="outlook.batch_check">批量检测</button>
-            <button class="btn btn-sm" onclick="return batchRenewOutlook()"data-i18n="outlook.batch_renew">批量续期</button>
-            <button class="btn btn-sm btn-danger" onclick="return batchDeleteOutlook()"data-i18n="outlook.batch_delete">批量删除</button>
+            <button class="btn btn-sm" onclick="return batchCheckOutlook()" data-i18n="outlook.batch_check">批量检测</button>
+            <button class="btn btn-sm" onclick="return batchRenewOutlook()" data-i18n="outlook.batch_renew">批量续期</button>
+            <button class="btn btn-sm btn-danger" onclick="return batchDeleteOutlook()" data-i18n="outlook.batch_delete">批量删除</button>
           </div>
         </div>
         <table>
@@ -2220,10 +2484,10 @@ Authorization: Bearer &lt;your-api-key&gt;
   </main>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<div class="overlay" id="overlay">
-  <div class="dialog" id="dialog"></div>
+<div class="overlay" id="overlay" aria-hidden="true">
+  <div class="dialog" id="dialog" role="dialog" aria-modal="true" tabindex="-1"></div>
 </div>
 
 <script>
@@ -2239,7 +2503,7 @@ zh: {
 'block.title':'封禁表','block.add':'添加','block.rules_title':'自动封禁规则','block.list_title':'封禁列表','block.threshold':'阈值','block.window':'窗口(h)','block.scope':'范围','block.scope_per_service':'按服务封禁','block.scope_global':'全局封禁','block.domain_level':'域名级别','block.level_2':'二级 (example.com)','block.level_3':'三级 (sub.example.com)','block.time':'封禁时间','block.reason':'原因','block.rule_service_ph':'* = 全部',
 'svc.title':'目标服务','svc.search':'搜索服务…','svc.total':'追踪服务','svc.inboxes':'总邮箱','svc.failures':'失败 (近7天)','svc.blocks':'总封禁','svc.col_inboxes':'总邮箱','svc.col_active':'活跃','svc.col_failures':'失败','svc.col_blocks':'封禁',
 'provider.title':'渠道管理','provider.trust':'Trust','provider.create_limit':'创建限流','provider.poll_limit':'轮询限流','provider.retention':'保留时间','provider.rate_usage':'限流用量','provider.success_rate':'成功率','provider.features':'功能','provider.priority':'优先级','provider.no_limit':'无限制','provider.domains':'域名','provider.stats':'统计','provider.auto_dispatch':'自动调度','provider.toggled_on':'{name} 已启用','provider.toggled_off':'{name} 已禁用','provider.priority_set':'{name} 优先级已设为 {val}','provider.dispatch_joined':'{name} 已加入自动调度','provider.dispatch_left':'{name} 已退出自动调度','provider.available_domains':'可用域名:','provider.none':'无','provider.success_count':'成功次数','provider.fail_count':'失败次数','provider.last_success':'最后成功','provider.last_fail':'最后失败','provider.last_error':'错误信息',
-'outlook.title':'Outlook 账号池','outlook.import':'导入账号','outlook.total':'总账号','outlook.available':'可用','outlook.assigned':'已分配','outlook.valid_token':'有效令牌','outlook.batch_check':'批量检测','outlook.batch_renew':'批量续期','outlook.batch_delete':'批量删除','outlook.record_fail':'失败时也标记已用服务','outlook.record_fail_hint':'默认关闭。开启后，即使接收失败也会标记该账号"已用于此服务"，防止再次分配。通常无需开启。','outlook.import_placeholder':'邮箱----密码----ClientID----令牌\n每行一个账号','outlook.long':'长效','outlook.short':'短效','outlook.accounts':'账号列表','outlook.all_status':'全部状态','outlook.valid':'有效令牌','outlook.invalid':'无效令牌','outlook.all_avail':'全部','outlook.avail_yes':'可用','outlook.avail_no':'已分配','outlook.all_type':'全部类型','outlook.check':'检测','outlook.renew':'续期','outlook.col_token':'令牌状态','outlook.col_assign':'分配状态','outlook.col_group':'分组','outlook.col_renewed':'续期时间','outlook.status_valid':'有效','outlook.status_invalid':'无效','outlook.status_unchecked':'未检测','outlook.assigned':'已分配','outlook.free':'空闲','outlook.empty':'账号池为空','outlook.import_first':'导入账号','outlook.unavailable':'不可用','outlook.no_data':'暂无账号，请先导入',
+'outlook.title':'Outlook 账号池','outlook.import':'导入账号','outlook.total':'总账号','outlook.available':'可用','outlook.assigned':'已分配','outlook.valid_token':'有效令牌','outlook.batch_check':'批量检测','outlook.batch_renew':'批量续期','outlook.batch_delete':'批量删除','outlook.record_fail':'失败时也标记已用服务','outlook.record_fail_hint':'默认关闭。开启后，即使接收失败也会标记该账号"已用于此服务"，防止再次分配。通常无需开启。','outlook.import_placeholder':'邮箱----密码\n邮箱----密码----ClientID----refresh_token\n每行一个账号','outlook.oauth_settings':'Thunderbird 授权补全','outlook.oauth_client_id':'OAuth Client ID','outlook.oauth_client_id_ph':'应用（客户端）ID / Client ID','outlook.oauth_redirect_uri':'Redirect URI','outlook.oauth_redirect_uri_ph':'应用重定向地址','outlook.oauth_scopes':'Scopes','outlook.oauth_scopes_ph':'offline_access https://graph.microsoft.com/Mail.Read','outlook.oauth_tenant':'Tenant','outlook.oauth_tenant_ph':'common 或 tenant-id','outlook.oauth_hint':'仅在需要非 Thunderbird 预设时使用。','outlook.oauth_thunderbird_hint':'点击待补全账号的授权按钮，会使用 Thunderbird 预设启动 Microsoft 授权；外部自动化可捕获 https://localhost 重定向。','outlook.oauth_manual_hint':'普通网页无法跨域读取登录弹窗的最终地址。若服务端配置了代理，授权链接会复制到剪贴板，请用带代理的浏览器或外部自动化助手打开；完成后把最终 URL 粘贴到这里提交。','outlook.oauth_final_url_ph':'https://localhost/?code=...&state=...','outlook.submit_final_url':'提交最终 URL','outlook.advanced_custom_oauth':'高级：自定义 OAuth（可选）','outlook.pending_oauth':'待授权','outlook.no_token':'需授权','outlook.long':'长效','outlook.short':'短效','outlook.accounts':'账号列表','outlook.all_status':'全部状态','outlook.valid':'有效令牌','outlook.invalid':'无效令牌','outlook.status_pending_oauth':'待 Thunderbird 授权','outlook.status_no_token':'需 Thunderbird 授权','outlook.complete_oauth':'完成 Thunderbird 授权','outlook.copy_password':'复制密码','outlook.password_copied':'密码已复制','outlook.password_missing':'账号密码为空','outlook.all_avail':'全部','outlook.avail_yes':'可用','outlook.avail_no':'已分配','outlook.all_type':'全部类型','outlook.check':'检测','outlook.renew':'续期','outlook.col_token':'令牌状态','outlook.col_assign':'分配状态','outlook.col_group':'分组','outlook.col_renewed':'续期时间','outlook.status_valid':'有效','outlook.status_invalid':'无效','outlook.status_unchecked':'未检测','outlook.assigned':'已分配','outlook.free':'空闲','outlook.empty':'账号池为空','outlook.import_first':'导入账号','outlook.unavailable':'不可用','outlook.no_data':'暂无账号，请先导入',
 'yyds.title':'YYDS Mail','yyds.import':'导入 API Key','yyds.import_placeholder':'每行一个 API Key，支持 AC-xxx----备注 格式\nAC-abcdef123456\nAC-xyz789----测试Key','yyds.total':'总 Key','yyds.active':'可用','yyds.invalid':'无效','yyds.inbox_count':'创建邮箱数','yyds.batch_check':'批量验证','yyds.batch_delete':'批量删除','yyds.accounts':'API Key 列表','yyds.wildcard':'Wildcard','yyds.daily_calls':'今日调用','yyds.check':'验证','yyds.own_domain':'自有域名','yyds.public':'公共','yyds.status_active':'可用','yyds.status_disabled':'已停用','yyds.empty':'API Key 池为空','yyds.import_first':'导入 API Key','yyds.status_invalid':'无效','yyds.no_data':'暂无 API Key，请先导入',
 'imap.title':'IMAP 域名邮箱','imap.ready':'就绪','imap.no_active':'无活跃账号','imap.total':'总账号','imap.add_account':'添加 IMAP 账号','imap.host_ph':'IMAP 服务器 (如 imap.gmail.com)','imap.user_ph':'邮箱用户名','imap.password_ph':'邮箱密码','imap.domain_ph':'域名 (如 example.com)','imap.add_btn':'添加账号','imap.adding':'添加中...','imap.added':'添加成功','imap.add_failed':'失败: ','imap.fill_all_fields':'请填写所有必填字段','imap.accounts':'账号列表','imap.batch_delete':'批量删除','imap.confirm_delete_hint':'删除后依赖此账号的收件箱将无法拉取邮件。确定删除？','imap.confirm_batch_delete':'确认删除选中的 {n} 个账号？','imap.empty':'尚未添加 IMAP 账号','imap.add_first':'添加第一个','imap.test_ok':'IMAP 连接测试成功: ','imap.test_fail':'IMAP 连接测试失败: ','imap.tls':'TLS','imap.last_checked':'最后检测','imap.password':'密码',
 'key.title':'密钥管理','key.create_title':'创建密钥','key.list':'密钥列表','key.name_placeholder':'给小明、自动化脚本…','key.generate':'生成密钥','key.call_count':'调用次数','key.daily_quota':'日配额','key.last_used':'最后使用','key.show':'显示密钥','key.hide':'隐藏密钥',
@@ -2248,7 +2512,7 @@ zh: {
 'settings.title':'系统设置','settings.backup_title':'数据库备份','settings.auto_backup':'自动备份','settings.interval':'间隔 (小时)','settings.max_count':'保留数量','settings.retention_title':'数据保留','settings.activity_days':'活动日志保留天数','settings.fail_days':'失败日志保留天数','settings.inbox_days':'已关闭邮箱保留天数','settings.proxy_title':'出站代理','settings.proxy_hint':'留空则直连。支持 HTTP/SOCKS5 代理。设置后所有上游请求经代理出站。','settings.proxy_reset':'重置','settings.backup_list':'备份列表','settings.manual_backup':'手动备份','settings.system_info':'系统信息','settings.batch_title':'批量操作','settings.batch_concurrency':'批量并发数','settings.batch_hint':'Outlook/YYDS 批量检测、续期时的最大并发请求数。默认 5。','settings.shortcuts':'快捷键','settings.filename':'文件名','settings.size':'大小','backup.empty':'暂无备份',
 'toast.copied':'已复制','toast.inbox_created':'邮箱已创建','toast.inbox_closed':'邮箱已关闭','toast.reported_success':'已记录成功','toast.reported_fail':'已记录失败','toast.block_added':'封禁已添加','toast.block_deleted':'封禁已删除','toast.rule_created':'规则已创建','toast.rule_deleted':'规则已删除','toast.key_created':'密钥已创建','toast.key_deleted':'密钥已删除','toast.imported':'导入完成','toast.deleted':'已删除','toast.saved':'保存成功','toast.testing':'测试中…','toast.checking':'检测中…','toast.renewing':'续期中…','toast.verifying':'验证中…','toast.backup_started':'正在备份…','toast.backup_done':'备份完成','toast.backup_deleted':'备份已删除','toast.settings_saved':'设置已保存','toast.synced':'已同步','toast.tpl_loaded':'已加载模板',
 'dialog.confirm_delete':'确认删除','dialog.confirm_close':'确认关闭','dialog.delete_tpl':'确定删除渠道 "{name}"？','dialog.delete_backup':'确定删除备份 "{name}"？','dialog.delete_key':'确定要删除此 Key 吗？','dialog.delete_account':'确定要删除 {name} 吗？','dialog.delete_account_hint':'仅可删除未分配的账号','dialog.batch_delete':'确定要删除选中的 {n} 项吗？','dialog.batch_delete_account_hint':'仅会删除未分配的账号',
-'op.importing':'导入中…','op.imported_n':'导入 {imported} 个，跳过 {skipped} 个','op.import_success':'成功导入 {n} 个','op.import_error':'错误: {msg}','op.checking_n':'正在检测 {label}…','op.check_done':'检测完成: {valid} 有效, {invalid} 无效','op.renewing_n':'正在续期 {label}…','op.renew_done':'续期完成: {renewed} 成功, {failed} 失败','op.verifying_n':'正在验证 {label}…','op.verify_done':'验证完成: {valid} 有效, {invalid} 无效','op.deleted_n':'已删除 {n} 个','op.token_valid':'{name} 令牌有效','op.token_invalid':'{name} 令牌无效','op.renew_success':'{name} 续期成功','op.renew_fail':'{name} 续期失败','op.key_valid':'Key 有效','op.key_invalid':'Key 无效','op.wildcard_own':'已标记为自有域名','op.wildcard_public':'已标记为公共','op.enabled':'已启用','op.disabled':'已停用','op.record_fail_on':'已开启失败时记录已用服务','op.record_fail_off':'已关闭失败时记录已用服务','op.key_toggled':'密钥已{action}','op.quota_set':'日配额设为 {n}','op.quota_removed':'已取消日配额','op.key_created':'创建密钥','op.n_available':'{n} 可用','op.no_available_key':'无可用 Key','op.no_available_account':'无可用账号','op.n_items':'{n} 个','op.all':'全部','op.no_keys':'暂无 API Key，请先导入','op.no_accounts':'暂无账号，请先导入','op.no_keys_short':'暂无密钥','op.copied_n':'已复制 {n} 个别名',
+'op.importing':'导入中…','op.imported_n':'导入 {imported} 个，跳过 {skipped} 个','op.import_success':'成功导入 {n} 个','op.import_error':'错误: {msg}','op.checking_n':'正在检测 {label}…','op.check_done':'检测完成: {valid} 有效, {invalid} 无效','op.renewing_n':'正在续期 {label}…','op.renew_done':'续期完成: {renewed} 成功, {failed} 失败','op.verifying_n':'正在验证 {label}…','op.verify_done':'验证完成: {valid} 有效, {invalid} 无效','op.deleted_n':'已删除 {n} 个','op.token_valid':'{name} 令牌有效','op.token_invalid':'{name} 令牌无效','op.renew_success':'{name} 续期成功','op.renew_fail':'{name} 续期失败','op.key_valid':'Key 有效','op.key_invalid':'Key 无效','op.wildcard_own':'已标记为自有域名','op.wildcard_public':'已标记为公共','op.enabled':'已启用','op.disabled':'已停用','op.record_fail_on':'已开启失败时记录已用服务','op.record_fail_off':'已关闭失败时记录已用服务','op.key_toggled':'密钥已{action}','op.quota_set':'日配额设为 {n}','op.quota_removed':'已取消日配额','op.key_created':'创建密钥','op.n_available':'{n} 可用','op.no_available_key':'无可用 Key','op.no_available_account':'无可用账号','op.n_items':'{n} 个','op.all':'全部','op.no_keys':'暂无 API Key，请先导入','op.no_accounts':'暂无账号，请先导入','op.no_keys_short':'暂无密钥','op.copied_n':'已复制 {n} 个别名','op.oauth_starting':'正在启动 Thunderbird 授权…','op.oauth_waiting':'请在弹窗中完成授权；普通网页无法自动读取回跳，请手动粘贴最终 URL，或使用外部自动化助手捕获。','op.oauth_completed':'Thunderbird 授权补全完成','op.oauth_failed':'Thunderbird 授权失败：{reason}','op.oauth_popup_blocked':'请允许弹窗后重试','op.oauth_timeout':'授权流程超时，请重试','op.oauth_cancelled':'授权流程已取消','op.oauth_code_submitting':'正在提交最终 URL…','op.oauth_password_copy_hint':'未能自动复制密码，请使用账号行内的复制密码按钮。','op.oauth_proxy_link_copied':'已复制密码和授权链接；检测到服务端代理，未打开当前浏览器直连弹窗，请用带代理的浏览器或外部自动化助手打开授权链接。',
 'login.enter_key':'请输入密钥','login.invalid_key':'密钥无效','login.failed':'登录失败',
 'settings.version':'版本','settings.db_path':'数据库路径','settings.db_size':'数据库大小','settings.uptime':'运行时间',
 'gmail.dot_name':'点号变形','gmail.dot_desc':'在用户名中插入点，如 a.bc.def','gmail.plus_name':'加号后缀','gmail.plus_desc':'在用户名后追加 +随机字符，如 abc+xy7','gmail.case_name':'大小写混合','gmail.case_desc':'随机大小写字符，如 aBcDef','gmail.domain_name':'域名替换','gmail.domain_desc':'使用 googlemail.com 替代 gmail.com',
@@ -2281,7 +2545,7 @@ zh: {
 // Docs - Get message endpoint
 'docs.get_message_desc':'获取单封邮件详情（含 HTML/Text 正文）','docs.get_message_param_id':'邮箱 ID','docs.get_message_param_mid':'邮件 ID（由邮件列表返回）',
 // Docs - Get code endpoint
-'docs.get_code_desc':'自动提取验证码/链接','docs.get_code_param_wait':'设为 <code>true</code> 会轮询等待邮件到达','docs.get_code_param_timeout':'等待超时（秒），默认 60，最大 120','docs.get_code_param_type':'按类型过滤：<code>numeric</code>、<code>alphanumeric</code>、<code>link</code>','docs.get_code_note':'典型集成方式：先 <code>POST /api/inbox</code> 创建邮箱 → 用邮箱注册目标服务 → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> 等待验证码。',
+'docs.get_code_desc':'自动提取验证码/链接','docs.get_code_param_wait':'设为 <code>true</code> 会轮询等待邮件到达','docs.get_code_param_timeout':'等待超时（秒），默认 60，最大 120','docs.get_code_param_type':'按类型过滤：<code>numeric</code>、<code>alphanumeric</code>、<code>link</code>','docs.get_code_param_since':'只提取此时间之后收到的新邮件，支持 ISO 时间或毫秒时间戳','docs.get_code_note':'典型集成方式：先 <code>POST /api/inbox</code> 创建邮箱 → 用邮箱注册目标服务 → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> 等待验证码。需要多次取件时，把上次响应的 <code>receivedAt</code> 作为 <code>since</code> 传入，避免重复返回同一封邮件。',
 // Docs - Report inbox endpoint
 'docs.report_inbox_desc':'上报邮箱使用结果（成功/失败）','docs.report_inbox_param_success':'<code>true</code> 记录成功，<code>false</code> 记录失败（可触发自动封禁规则）','docs.report_inbox_param_service':'目标服务名，用于统计和自动封禁规则匹配','docs.report_inbox_note':'上报失败会记录日志。若管理员配置了自动封禁规则（如「某服务失败 3 次/24h 自动封禁」），达到阈值时域名会被自动封禁。',
 // Docs - Close inbox endpoint
@@ -2300,11 +2564,12 @@ zh: {
 // Docs - Outlook pool section
 'docs.outlook_title':'Outlook 账号池','docs.outlook_desc':'Outlook 是池化渠道：从预导入的账号中分配邮箱，而非创建新邮箱。需先通过导入接口补充账号池。',
 'docs.ol_stats_desc':'账号池统计',
-'docs.ol_import_desc':'批量导入账号','docs.ol_import_param_accounts':'每行一个账号，格式：<code>邮箱----密码----ClientID----令牌</code>','docs.ol_import_note':'分隔符为 <code>----</code>（4 个减号）。ClientID 和令牌可选，不填则无法通过 Graph API 读信。已存在的邮箱会被跳过（INSERT OR IGNORE）。',
-'docs.ol_list_desc':'查询账号列表','docs.ol_list_param_status':'令牌状态：<code>valid</code>、<code>invalid</code>','docs.ol_list_param_available':'<code>true</code> 只看空闲，<code>false</code> 只看已分配','docs.ol_list_param_group':'按分组名筛选',
+'docs.ol_import_desc':'批量导入账号','docs.ol_import_param_accounts':'每行一个账号，支持：<code>邮箱----密码</code> 或 <code>邮箱----密码----ClientID----refresh_token</code>。','docs.ol_import_note':'分隔符为 <code>----</code>（4 个减号）。未完成授权的账号会进入待授权状态，可在账号列表中用 Thunderbird 授权补全。已存在的邮箱会被跳过（INSERT OR IGNORE）。',
+'docs.ol_list_desc':'查询账号列表','docs.ol_list_param_status':'令牌状态：<code>valid</code>、<code>invalid</code>、<code>pending_oauth</code>、<code>no_token</code>','docs.ol_list_param_available':'<code>true</code> 只看空闲，<code>false</code> 只看已分配','docs.ol_list_param_group':'按分组名筛选',
 'docs.ol_delete_desc':'批量删除账号（仅未分配的）','docs.ol_delete_param_emails':'要删除的邮箱地址列表','docs.ol_delete_note':'已分配给活跃邮箱的账号无法删除，需先关闭对应邮箱释放账号。',
-'docs.ol_check_desc':'批量检测令牌有效性','docs.ol_check_param_emails':'要检测的邮箱列表，不传则检测全部','docs.ol_check_note':'检测原理：使用 refresh_token 向 Microsoft OAuth2 换取 access_token，成功即有效。会同步更新数据库中的 token_status 字段。',
-'docs.ol_renew_desc':'批量续期令牌','docs.ol_renew_param_emails':'要续期的邮箱列表，不传则全部续期','docs.ol_renew_note':'续期会获取新的 refresh_token 并替换旧的。Microsoft 的 refresh_token 有 90 天有效期，建议定期续期。续期成功后 token_status 自动更新为 valid。',
+'docs.ol_check_desc':'批量检测令牌有效性','docs.ol_check_param_emails':'要检测的邮箱列表，不传则检测全部','docs.ol_check_note':'检测原理：使用已保存的授权凭据向 Microsoft 验证，成功即有效。会同步更新数据库中的 token_status 字段。',
+'docs.ol_renew_desc':'批量续期令牌','docs.ol_renew_param_emails':'要续期的邮箱列表，不传则全部续期','docs.ol_renew_note':'续期会刷新已保存的授权凭据。Microsoft 授权有有效期，建议定期续期。续期成功后 token_status 自动更新为 valid。',
+'docs.ol_oauth_start_desc':'创建授权补全会话','docs.ol_oauth_start_note':'默认使用内置授权预设；自定义 OAuth App 仍可通过 API 传入 custom 配置。','docs.ol_oauth_code_desc':'提交授权回跳结果','docs.ol_oauth_code_note':'也可以提交 code + state。敏感令牌只写入服务端，不会在响应中返回。','docs.ol_oauth_status_desc':'查询授权补全状态','docs.ol_oauth_manual_password_desc':'读取待补全账号密码','docs.ol_oauth_manual_password_note':'管理员接口，仅用于 pending/no_token 账号的授权补全辅助，不返回任何令牌。','docs.ol_oauth_callback_desc':'自定义 OAuth 回调','docs.ol_oauth_callback_note':'仅用于自定义 OAuth App 兼容流程。默认补全路径使用外部回跳 URL 提交接口。','docs.ol_oauth_claim_desc':'领取待补全任务','docs.ol_oauth_claim_note':'默认跳过带有 <code>oauth_last_error</code> 的失败账号；只有明确重试失败任务时才传 <code>includeFailed: true</code>。','docs.ol_oauth_password_desc':'读取已领取任务密码','docs.ol_oauth_password_note':'管理员接口，仅用于外部自动化对已领取任务的安全取用。','docs.ol_oauth_report_desc':'上报自动化状态','docs.ol_oauth_report_note':'状态可为 started、waiting_user、failed、completed。令牌写入仍由授权 code 提交流程完成。',
 // Docs - YYDS pool section
 'docs.yyds_title':'YYDS Mail 池','docs.yyds_desc':'YYDS Mail 是池化渠道：通过多个 API Key 调用上游 <a href="https://maliapi.215.im/v1/llms.txt" target="_blank" style="color:var(--accent)">YYDS Mail API</a> 创建临时邮箱。支持固定域名和泛子域名（wildcard），每个 Key 每日 20,000 次调用配额。所有 YYDS 管理接口仅限管理员调用。',
 'docs.yd_stats_desc':'Key 池统计',
@@ -2344,7 +2609,7 @@ en: {
 'block.title':'Block List','block.add':'Add','block.rules_title':'Auto-Block Rules','block.list_title':'Block List','block.threshold':'Threshold','block.window':'Window (h)','block.scope':'Scope','block.scope_per_service':'Per Service','block.scope_global':'Global','block.domain_level':'Domain Level','block.level_2':'2nd level (example.com)','block.level_3':'3rd level (sub.example.com)','block.time':'Blocked At','block.reason':'Reason','block.rule_service_ph':'* = all',
 'svc.title':'Services','svc.search':'Search services…','svc.total':'Tracked Services','svc.inboxes':'Total Inboxes','svc.failures':'Failures (7d)','svc.blocks':'Total Blocks','svc.col_inboxes':'Inboxes','svc.col_active':'Active','svc.col_failures':'Failures','svc.col_blocks':'Blocks',
 'provider.title':'Providers','provider.trust':'Trust Level','provider.create_limit':'Create Limit','provider.poll_limit':'Poll Limit','provider.retention':'Retention','provider.rate_usage':'Rate Usage','provider.success_rate':'Success Rate','provider.features':'Features','provider.priority':'Priority','provider.no_limit':'Unlimited','provider.domains':'Domains','provider.stats':'Stats','provider.auto_dispatch':'Auto Dispatch','provider.toggled_on':'{name} enabled','provider.toggled_off':'{name} disabled','provider.priority_set':'{name} priority set to {val}','provider.dispatch_joined':'{name} joined auto dispatch','provider.dispatch_left':'{name} left auto dispatch','provider.available_domains':'Available domains:','provider.none':'None','provider.success_count':'Successes','provider.fail_count':'Failures','provider.last_success':'Last Success','provider.last_fail':'Last Failure','provider.last_error':'Error',
-'outlook.title':'Outlook Account Pool','outlook.import':'Import Accounts','outlook.total':'Total Accounts','outlook.available':'Available','outlook.assigned':'Assigned','outlook.valid_token':'Valid Tokens','outlook.batch_check':'Batch Check','outlook.batch_renew':'Batch Renew','outlook.batch_delete':'Batch Delete','outlook.record_fail':'Also mark used service on failure','outlook.record_fail_hint':'Off by default. When on, even failed attempts mark the account as \"used for this service\", preventing reassignment. Usually not needed.','outlook.import_placeholder':'email----password----ClientID----token\nOne account per line','outlook.long':'Long-lived','outlook.short':'Short-lived','outlook.accounts':'Account List','outlook.all_status':'All Status','outlook.valid':'Valid Token','outlook.invalid':'Invalid Token','outlook.all_avail':'All','outlook.avail_yes':'Available','outlook.avail_no':'Assigned','outlook.all_type':'All Types','outlook.check':'Check','outlook.renew':'Renew','outlook.col_token':'Token','outlook.col_assign':'Assignment','outlook.col_group':'Group','outlook.col_renewed':'Renewed','outlook.status_valid':'Valid','outlook.status_invalid':'Invalid','outlook.status_unchecked':'Not checked','outlook.assigned':'Assigned','outlook.free':'Free','outlook.empty':'Outlook pool is empty','outlook.import_first':'Import accounts','outlook.unavailable':'Unavailable','outlook.no_data':'No accounts, please import first',
+'outlook.title':'Outlook Account Pool','outlook.import':'Import Accounts','outlook.total':'Total Accounts','outlook.available':'Available','outlook.assigned':'Assigned','outlook.valid_token':'Valid Tokens','outlook.batch_check':'Batch Check','outlook.batch_renew':'Batch Renew','outlook.batch_delete':'Batch Delete','outlook.record_fail':'Also mark used service on failure','outlook.record_fail_hint':'Off by default. When on, even failed attempts mark the account as \"used for this service\", preventing reassignment. Usually not needed.','outlook.import_placeholder':'email----password\nemail----password----ClientID----refresh_token\nOne account per line','outlook.oauth_settings':'Thunderbird Authorization','outlook.oauth_client_id':'OAuth Client ID','outlook.oauth_client_id_ph':'OAuth client application ID','outlook.oauth_redirect_uri':'Redirect URI','outlook.oauth_redirect_uri_ph':'OAuth redirect callback URL','outlook.oauth_scopes':'Scopes','outlook.oauth_scopes_ph':'offline_access https://graph.microsoft.com/Mail.Read','outlook.oauth_tenant':'Tenant','outlook.oauth_tenant_ph':'common or tenant-id','outlook.oauth_hint':'Use only when a non-Thunderbird preset is required.','outlook.oauth_thunderbird_hint':'Use the authorization button on a pending account to start Microsoft authorization with the Thunderbird preset; external automation can capture the https://localhost redirect.','outlook.oauth_manual_hint':'A normal web page cannot read the final popup URL cross-origin. When a server proxy is configured, the authorize URL is copied instead of opening this browser directly; open it in a proxied browser or automation helper, then paste the final URL here.','outlook.oauth_final_url_ph':'https://localhost/?code=...&state=...','outlook.submit_final_url':'Submit Final URL','outlook.advanced_custom_oauth':'Advanced: custom OAuth (optional)','outlook.pending_oauth':'Pending Auth','outlook.no_token':'Needs Auth','outlook.long':'Long-lived','outlook.short':'Short-lived','outlook.accounts':'Account List','outlook.all_status':'All Status','outlook.valid':'Valid Token','outlook.invalid':'Invalid Token','outlook.status_pending_oauth':'Pending Thunderbird authorization','outlook.status_no_token':'Needs Thunderbird authorization','outlook.complete_oauth':'Complete Thunderbird authorization','outlook.copy_password':'Copy Password','outlook.password_copied':'Password copied','outlook.password_missing':'Account password is empty','outlook.all_avail':'All','outlook.avail_yes':'Available','outlook.avail_no':'Assigned','outlook.all_type':'All Types','outlook.check':'Check','outlook.renew':'Renew','outlook.col_token':'Token','outlook.col_assign':'Assignment','outlook.col_group':'Group','outlook.col_renewed':'Renewed','outlook.status_valid':'Valid','outlook.status_invalid':'Invalid','outlook.status_unchecked':'Not checked','outlook.assigned':'Assigned','outlook.free':'Free','outlook.empty':'Outlook pool is empty','outlook.import_first':'Import accounts','outlook.unavailable':'Unavailable','outlook.no_data':'No accounts, please import first',
 'yyds.title':'YYDS Mail','yyds.import':'Import API Key','yyds.import_placeholder':'One API Key per line, supports AC-xxx----note format\nAC-abcdef123456\nAC-xyz789----TestKey','yyds.total':'Total Keys','yyds.active':'Active','yyds.invalid':'Invalid','yyds.inbox_count':'Inboxes Created','yyds.batch_check':'Batch Verify','yyds.batch_delete':'Batch Delete','yyds.accounts':'API Key List','yyds.wildcard':'Wildcard','yyds.daily_calls':'Today Calls','yyds.check':'Verify','yyds.own_domain':'Own domain','yyds.public':'Public','yyds.status_active':'Active','yyds.status_disabled':'Disabled','yyds.empty':'YYDS pool is empty','yyds.import_first':'Import API key','yyds.status_invalid':'Invalid','yyds.no_data':'No API keys, please import first',
 'imap.title':'IMAP Domain Mail','imap.ready':'Ready','imap.no_active':'No active accounts','imap.total':'Total Accounts','imap.add_account':'Add IMAP Account','imap.host_ph':'IMAP server (e.g. imap.gmail.com)','imap.user_ph':'Email username','imap.password_ph':'Email password','imap.domain_ph':'Domain (e.g. example.com)','imap.add_btn':'Add Account','imap.adding':'Adding...','imap.added':'Added','imap.add_failed':'Failed: ','imap.fill_all_fields':'Please fill all required fields','imap.accounts':'Account List','imap.batch_delete':'Batch Delete','imap.confirm_delete_hint':'Inboxes depending on this account will not be able to fetch emails. Confirm delete?','imap.confirm_batch_delete':'Confirm delete {n} selected accounts?','imap.empty':'No IMAP accounts yet','imap.add_first':'Add the first','imap.test_ok':'IMAP connection test OK: ','imap.test_fail':'IMAP connection test FAILED: ','imap.tls':'TLS','imap.last_checked':'Last Checked','imap.password':'Password',
 'key.title':'API Keys','key.create_title':'Create Key','key.list':'Key List','key.name_placeholder':'For user, automation script…','key.generate':'Generate Key','key.call_count':'Calls','key.daily_quota':'Daily Quota','key.last_used':'Last Used','key.show':'Show key','key.hide':'Hide key',
@@ -2353,7 +2618,7 @@ en: {
 'settings.title':'Settings','settings.backup_title':'Database Backup','settings.auto_backup':'Auto Backup','settings.interval':'Interval (hours)','settings.max_count':'Max Backups','settings.retention_title':'Data Retention','settings.activity_days':'Activity log retention (days)','settings.fail_days':'Failure log retention (days)','settings.inbox_days':'Closed inbox retention (days)','settings.proxy_title':'Outbound Proxy','settings.proxy_hint':'Leave empty for direct connection. Supports HTTP/SOCKS5 proxy. All upstream requests will go through the proxy.','settings.proxy_reset':'Reset','settings.backup_list':'Backup List','settings.manual_backup':'Manual Backup','settings.system_info':'System Info','settings.batch_title':'Batch Operations','settings.batch_concurrency':'Batch Concurrency','settings.batch_hint':'Max concurrent requests for Outlook/YYDS batch check and renew. Default 5.','settings.shortcuts':'Keyboard Shortcuts','settings.filename':'Filename','settings.size':'Size','backup.empty':'No backups yet',
 'toast.copied':'Copied','toast.inbox_created':'Inbox created','toast.inbox_closed':'Inbox closed','toast.reported_success':'Success reported','toast.reported_fail':'Failure reported','toast.block_added':'Block added','toast.block_deleted':'Block removed','toast.rule_created':'Rule created','toast.rule_deleted':'Rule deleted','toast.key_created':'Key created','toast.key_deleted':'Key deleted','toast.imported':'Import complete','toast.deleted':'Deleted','toast.saved':'Saved','toast.testing':'Testing…','toast.checking':'Checking…','toast.renewing':'Renewing…','toast.verifying':'Verifying…','toast.backup_started':'Backing up…','toast.backup_done':'Backup complete','toast.backup_deleted':'Backup deleted','toast.settings_saved':'Settings saved','toast.synced':'Synced','toast.tpl_loaded':'Template loaded',
 'dialog.confirm_delete':'Confirm Delete','dialog.confirm_close':'Confirm Close','dialog.delete_tpl':'Delete provider "{name}"?','dialog.delete_backup':'Delete backup "{name}"?','dialog.delete_key':'Delete this key?','dialog.delete_account':'Delete {name}?','dialog.delete_account_hint':'Only unassigned accounts can be deleted','dialog.batch_delete':'Delete selected {n} items?','dialog.batch_delete_account_hint':'Only unassigned accounts will be deleted',
-'op.importing':'Importing…','op.imported_n':'Imported {imported}, skipped {skipped}','op.import_success':'{n} imported successfully','op.import_error':'Error: {msg}','op.checking_n':'Checking {label}…','op.check_done':'Done: {valid} valid, {invalid} invalid','op.renewing_n':'Renewing {label}…','op.renew_done':'Done: {renewed} renewed, {failed} failed','op.verifying_n':'Verifying {label}…','op.verify_done':'Done: {valid} valid, {invalid} invalid','op.deleted_n':'{n} deleted','op.token_valid':'{name} token valid','op.token_invalid':'{name} token invalid','op.renew_success':'{name} renewed','op.renew_fail':'{name} renewal failed','op.key_valid':'Key valid','op.key_invalid':'Key invalid','op.wildcard_own':'Marked as own domain','op.wildcard_public':'Marked as public','op.enabled':'Enabled','op.disabled':'Disabled','op.record_fail_on':'Recording used service on failure enabled','op.record_fail_off':'Recording used service on failure disabled','op.key_toggled':'Key {action}','op.quota_set':'Daily quota set to {n}','op.quota_removed':'Daily quota removed','op.key_created':'Created key','op.n_available':'{n} available','op.no_available_key':'No available keys','op.no_available_account':'No available accounts','op.n_items':'{n}','op.all':'all','op.no_keys':'No API keys, please import first','op.no_accounts':'No accounts, please import first','op.no_keys_short':'No keys','op.copied_n':'Copied {n} aliases',
+'op.importing':'Importing…','op.imported_n':'Imported {imported}, skipped {skipped}','op.import_success':'{n} imported successfully','op.import_error':'Error: {msg}','op.checking_n':'Checking {label}…','op.check_done':'Done: {valid} valid, {invalid} invalid','op.renewing_n':'Renewing {label}…','op.renew_done':'Done: {renewed} renewed, {failed} failed','op.verifying_n':'Verifying {label}…','op.verify_done':'Done: {valid} valid, {invalid} invalid','op.deleted_n':'{n} deleted','op.token_valid':'{name} token valid','op.token_invalid':'{name} token invalid','op.renew_success':'{name} renewed','op.renew_fail':'{name} renewal failed','op.key_valid':'Key valid','op.key_invalid':'Key invalid','op.wildcard_own':'Marked as own domain','op.wildcard_public':'Marked as public','op.enabled':'Enabled','op.disabled':'Disabled','op.record_fail_on':'Recording used service on failure enabled','op.record_fail_off':'Recording used service on failure disabled','op.key_toggled':'Key {action}','op.quota_set':'Daily quota set to {n}','op.quota_removed':'Daily quota removed','op.key_created':'Created key','op.n_available':'{n} available','op.no_available_key':'No available keys','op.no_available_account':'No available accounts','op.n_items':'{n}','op.all':'all','op.no_keys':'No API keys, please import first','op.no_accounts':'No accounts, please import first','op.no_keys_short':'No keys','op.copied_n':'Copied {n} aliases','op.oauth_starting':'Starting Thunderbird authorization…','op.oauth_waiting':'Complete authorization in the popup; paste the final URL manually unless an external automation helper captures the redirect.','op.oauth_completed':'Thunderbird authorization completed','op.oauth_failed':'Thunderbird authorization failed: {reason}','op.oauth_popup_blocked':'Authorization popup was blocked. Please allow popups and try again','op.oauth_timeout':'Authorization flow timed out, please retry','op.oauth_cancelled':'Authorization flow was cancelled','op.oauth_code_submitting':'Submitting final URL…','op.oauth_password_copy_hint':'Password was not copied automatically. Use the copy-password button in the account row.','op.oauth_proxy_link_copied':'Password and authorize URL copied. A server proxy is configured, so this browser was not opened directly; use a proxied browser or automation helper to open the authorize URL.',
 'login.enter_key':'Please enter API key','login.invalid_key':'Invalid key','login.failed':'Login failed',
 'settings.version':'Version','settings.db_path':'Database Path','settings.db_size':'Database Size','settings.uptime':'Uptime',
 'gmail.dot_name':'Dot Insertion','gmail.dot_desc':'Insert dots in username, e.g. a.bc.def','gmail.plus_name':'Plus Suffix','gmail.plus_desc':'Append +random chars, e.g. abc+xy7','gmail.case_name':'Mixed Case','gmail.case_desc':'Random upper/lowercase, e.g. aBcDef','gmail.domain_name':'Domain Swap','gmail.domain_desc':'Use googlemail.com instead of gmail.com',
@@ -2386,7 +2651,7 @@ en: {
 // Docs - Get message endpoint
 'docs.get_message_desc':'Get message detail (includes HTML/Text body)','docs.get_message_param_id':'Inbox ID','docs.get_message_param_mid':'Message ID (returned by message list)',
 // Docs - Get code endpoint
-'docs.get_code_desc':'Auto extract code/link','docs.get_code_param_wait':'Set to <code>true</code> to poll and wait for mail arrival','docs.get_code_param_timeout':'Wait timeout (seconds), default 60, max 120','docs.get_code_param_type':'Filter by type: <code>numeric</code>, <code>alphanumeric</code>, <code>link</code>','docs.get_code_note':'Typical integration: <code>POST /api/inbox</code> create inbox → register on target service with the email → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> to wait for the code.',
+'docs.get_code_desc':'Auto extract code/link','docs.get_code_param_wait':'Set to <code>true</code> to poll and wait for mail arrival','docs.get_code_param_timeout':'Wait timeout (seconds), default 60, max 120','docs.get_code_param_type':'Filter by type: <code>numeric</code>, <code>alphanumeric</code>, <code>link</code>','docs.get_code_param_since':'Only consider messages received after this timestamp; supports ISO time or epoch milliseconds','docs.get_code_note':'Typical integration: <code>POST /api/inbox</code> create inbox → register on target service with the email → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> to wait for the code. For repeated retrieval, pass the previous response <code>receivedAt</code> as <code>since</code> to avoid returning the same email again.',
 // Docs - Report inbox endpoint
 'docs.report_inbox_desc':'Report inbox usage result (success/failure)','docs.report_inbox_param_success':'<code>true</code> records success, <code>false</code> records failure (may trigger auto-block rules)','docs.report_inbox_param_service':'Target service name, used for stats and auto-block rule matching','docs.report_inbox_note':'Reporting failure logs the event. If admin configured auto-block rules (e.g. "3 failures per service per 24h → auto-block"), the domain will be automatically blocked when the threshold is reached.',
 // Docs - Close inbox endpoint
@@ -2405,11 +2670,12 @@ en: {
 // Docs - Outlook pool section
 'docs.outlook_title':'Outlook Account Pool','docs.outlook_desc':'Outlook is a pool-based provider: it assigns inboxes from pre-imported accounts rather than creating new ones. Accounts must be imported first.',
 'docs.ol_stats_desc':'Account pool statistics',
-'docs.ol_import_desc':'Batch import accounts','docs.ol_import_param_accounts':'One account per line, format: <code>email----password----ClientID----token</code>','docs.ol_import_note':'Separator is <code>----</code> (4 dashes). ClientID and token are optional — without them, Graph API polling is unavailable. Existing emails are skipped (INSERT OR IGNORE).',
-'docs.ol_list_desc':'List accounts','docs.ol_list_param_status':'Token status: <code>valid</code>, <code>invalid</code>','docs.ol_list_param_available':'<code>true</code> for free only, <code>false</code> for assigned only','docs.ol_list_param_group':'Filter by group name',
+'docs.ol_import_desc':'Batch import accounts','docs.ol_import_param_accounts':'One account per line. Supported formats: <code>email----password</code> or <code>email----password----ClientID----refresh_token</code>.','docs.ol_import_note':'Separator is <code>----</code> (4 dashes). Accounts without completed authorization enter a pending state and can be completed from the account list with Thunderbird authorization. Existing emails are skipped (INSERT OR IGNORE).',
+'docs.ol_list_desc':'List accounts','docs.ol_list_param_status':'Token status: <code>valid</code>, <code>invalid</code>, <code>pending_oauth</code>, <code>no_token</code>','docs.ol_list_param_available':'<code>true</code> for free only, <code>false</code> for assigned only','docs.ol_list_param_group':'Filter by group name',
 'docs.ol_delete_desc':'Batch delete accounts (unassigned only)','docs.ol_delete_param_emails':'List of email addresses to delete','docs.ol_delete_note':'Accounts assigned to active inboxes cannot be deleted. Close the corresponding inbox to release the account first.',
-'docs.ol_check_desc':'Batch check token validity','docs.ol_check_param_emails':'List of emails to check, checks all if omitted','docs.ol_check_note':'Uses refresh_token to request an access_token from Microsoft OAuth2 — success means valid. Updates the token_status field in the database.',
-'docs.ol_renew_desc':'Batch renew tokens','docs.ol_renew_param_emails':'List of emails to renew, renews all if omitted','docs.ol_renew_note':'Obtains a new refresh_token to replace the old one. Microsoft refresh_tokens have a 90-day lifetime; renewal is recommended periodically. token_status is auto-updated to valid on success.',
+'docs.ol_check_desc':'Batch check token validity','docs.ol_check_param_emails':'List of emails to check, checks all if omitted','docs.ol_check_note':'Uses the saved authorization credentials to verify with Microsoft. Success means valid. Updates the token_status field in the database.',
+'docs.ol_renew_desc':'Batch renew tokens','docs.ol_renew_param_emails':'List of emails to renew, renews all if omitted','docs.ol_renew_note':'Refreshes the saved authorization credentials. Microsoft authorization expires over time, so periodic renewal is recommended. token_status is auto-updated to valid on success.',
+'docs.ol_oauth_start_desc':'Start authorization completion','docs.ol_oauth_start_note':'Uses the built-in authorization preset by default; custom OAuth app settings remain available through the API.','docs.ol_oauth_code_desc':'Submit authorization redirect result','docs.ol_oauth_code_note':'You may also submit code + state. Sensitive tokens are stored server-side and are not returned.','docs.ol_oauth_status_desc':'Check authorization completion status','docs.ol_oauth_manual_password_desc':'Read pending account password','docs.ol_oauth_manual_password_note':'Admin-only helper for pending/no_token authorization completion. It does not return any token.','docs.ol_oauth_callback_desc':'Custom OAuth callback','docs.ol_oauth_callback_note':'Compatibility endpoint for custom OAuth app flows. The default completion path uses the external redirect submission endpoint.','docs.ol_oauth_claim_desc':'Claim completion task','docs.ol_oauth_claim_note':'Accounts with <code>oauth_last_error</code> are skipped by default; pass <code>includeFailed: true</code> only for an explicit failed-task retry workflow.','docs.ol_oauth_password_desc':'Read claimed task password','docs.ol_oauth_password_note':'Admin-only helper for external automation after a task has been claimed.','docs.ol_oauth_report_desc':'Report automation status','docs.ol_oauth_report_note':'Allowed statuses: started, waiting_user, failed, completed. Token storage is still handled by the authorization code submission flow.',
 // Docs - YYDS pool section
 'docs.yyds_title':'YYDS Mail Pool','docs.yyds_desc':'YYDS Mail is a pool-based provider: creates temporary inboxes via multiple API keys calling the upstream <a href="https://maliapi.215.im/v1/llms.txt" target="_blank" style="color:var(--accent)">YYDS Mail API</a>. Supports fixed domains and wildcard subdomains; each key has 20,000 daily API calls. All YYDS management endpoints are admin-only.',
 'docs.yd_stats_desc':'Key pool statistics',
@@ -2468,6 +2734,8 @@ function setLang(lang) {
   _lang = lang;
   localStorage.setItem('mailhub_lang', lang);
   applyLang();
+  refreshNavLabels();
+  refreshMobileMoreChrome();
   refreshCurrentView();
 }
 function applyLang() {
@@ -2485,6 +2753,7 @@ let _activityLog = [];
 let _allDashInboxes = [];
 let _isAdmin = false;
 const _avatarColors = ['pa-emerald','pa-blue','pa-amber','pa-rose'];
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function getToken() { return localStorage.getItem('token') || ''; }
 
@@ -2525,11 +2794,13 @@ function renderEmpty(tbodyId, colspan, message, ctaText, ctaOnclick) {
     ${cta}
   </td></tr>`;
 }
+let _toastTimer = null;
 function toast(msg, type = 'success') {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.className = 'toast show ' + type;
-  setTimeout(() => el.className = 'toast', 3000);
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.className = 'toast', 2600);
 }
 function copyText(el) {
   navigator.clipboard.writeText(el.textContent.trim())
@@ -2590,6 +2861,7 @@ const ICONS = {
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   chart: '<path d="M3 3v18h18"/><path d="M7 16v-5"/><path d="M12 16V7"/><path d="M17 16v-3"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"/>',
+  more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
   info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
@@ -2669,12 +2941,137 @@ document.querySelectorAll('.nav-icon[data-view]').forEach(btn => {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('v-' + btn.dataset.view).classList.add('active');
+    closeMobileMore();
     loadView(btn.dataset.view);
   });
 });
 
+function labelForNavIcon(icon) {
+  return icon.closest('.tooltip-wrap')?.querySelector('.tooltip')?.textContent?.trim() || icon.dataset.view || icon.getAttribute('aria-label') || '';
+}
+function enhanceNavA11y() {
+  document.querySelectorAll('.nav-icon').forEach(icon => {
+    icon.setAttribute('role', 'button');
+    icon.setAttribute('tabindex', '0');
+    const label = labelForNavIcon(icon);
+    if (label) icon.setAttribute('aria-label', label);
+    icon.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        icon.click();
+      }
+    });
+  });
+}
+function refreshNavLabels() {
+  document.querySelectorAll('.nav-icon').forEach(icon => {
+    const label = labelForNavIcon(icon);
+    if (label) icon.setAttribute('aria-label', label);
+  });
+}
+
+const MOBILE_PRIMARY_VIEWS = new Set(['dashboard', 'inboxes', 'providers', 'gmail-tool', 'docs']);
+let _mobileMoreReady = false;
+function setupMobileNav() {
+  if (_mobileMoreReady) return;
+  const sidebar = document.querySelector('.sidebar');
+  if (!sidebar) return;
+  document.querySelectorAll('.tooltip-wrap').forEach(wrap => {
+    const icon = wrap.querySelector('.nav-icon');
+    if (!icon) return;
+    const view = icon.dataset.view;
+    if (!view || !MOBILE_PRIMARY_VIEWS.has(view)) wrap.classList.add('mobile-secondary');
+  });
+  const moreWrap = document.createElement('div');
+  moreWrap.className = 'tooltip-wrap mobile-more-wrap';
+  moreWrap.innerHTML = `<div class="nav-icon" id="nav-mobile-more" role="button" tabindex="0" aria-label="${_lang === 'zh' ? '更多' : 'More'}">${iconSvg('more')}</div><span class="tooltip">${_lang === 'zh' ? '更多' : 'More'}</span>`;
+  sidebar.appendChild(moreWrap);
+  const panel = document.createElement('div');
+  panel.id = 'mobile-more-panel';
+  panel.className = 'mobile-more-panel';
+  document.body.appendChild(panel);
+  const trigger = document.getElementById('nav-mobile-more');
+  trigger.addEventListener('click', e => {
+    e.stopPropagation();
+    toggleMobileMore();
+  });
+  trigger.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggleMobileMore();
+    }
+  });
+  document.addEventListener('click', e => {
+    if (!document.body.classList.contains('mobile-more-open')) return;
+    if (panel.contains(e.target) || trigger.contains(e.target)) return;
+    closeMobileMore();
+  });
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 600) closeMobileMore();
+  });
+  _mobileMoreReady = true;
+}
+function refreshMobileMoreChrome() {
+  const label = _lang === 'zh' ? '更多' : 'More';
+  const trigger = document.getElementById('nav-mobile-more');
+  const tooltip = trigger?.closest('.tooltip-wrap')?.querySelector('.tooltip');
+  if (trigger) trigger.setAttribute('aria-label', label);
+  if (tooltip) tooltip.textContent = label;
+  if (document.body.classList.contains('mobile-more-open')) renderMobileMore();
+}
+function mobileMoreItems() {
+  return [...document.querySelectorAll('.tooltip-wrap.mobile-secondary')]
+    .filter(wrap => wrap.style.display !== 'none')
+    .map(wrap => {
+      const icon = wrap.querySelector('.nav-icon');
+      if (!icon) return null;
+      const label = labelForNavIcon(icon);
+      return { icon, label, view: icon.dataset.view || '' };
+    })
+    .filter(item => item && item.label);
+}
+function renderMobileMore() {
+  const panel = document.getElementById('mobile-more-panel');
+  if (!panel) return;
+  const items = mobileMoreItems();
+  panel.innerHTML = `<div class="mobile-more-grid">${items.map((item, i) => `
+    <button class="mobile-more-item" data-mobile-more-index="${i}">
+      ${item.view ? iconSvg('info') : iconSvg('more')}
+      <span>${esc(item.label)}</span>
+    </button>
+  `).join('')}</div>`;
+  panel.querySelectorAll('[data-mobile-more-index]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const item = items[Number(btn.dataset.mobileMoreIndex)];
+      closeMobileMore();
+      item?.icon.click();
+    });
+  });
+}
+function toggleMobileMore() {
+  if (document.body.classList.contains('mobile-more-open')) closeMobileMore();
+  else openMobileMore();
+}
+function openMobileMore() {
+  renderMobileMore();
+  document.body.classList.add('mobile-more-open');
+  document.getElementById('mobile-more-panel')?.classList.add('show');
+  document.getElementById('nav-mobile-more')?.classList.add('active');
+}
+function closeMobileMore() {
+  document.body.classList.remove('mobile-more-open');
+  document.getElementById('mobile-more-panel')?.classList.remove('show');
+  document.getElementById('nav-mobile-more')?.classList.remove('active');
+}
+enhanceNavA11y();
+setupMobileNav();
+
 // ─── Keyboard shortcuts ───
 document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (document.getElementById('overlay')?.classList.contains('show')) return hideDialog();
+    if (document.body.classList.contains('mobile-more-open')) return closeMobileMore();
+  }
   if (e.altKey && e.key >= '1' && e.key <= '9') {
     e.preventDefault();
     const visible = [...document.querySelectorAll('.nav-icon[data-view]')]
@@ -2693,14 +3090,25 @@ document.addEventListener('keydown', e => {
 });
 
 // ─── Dialog helper ───
+let _dialogLastFocus = null;
 function showDialog(title, bodyHtml, actions) {
   const d = document.getElementById('dialog');
   d.innerHTML = `<h3>${title}</h3>${bodyHtml}<div class="dialog-actions">${actions}</div>`;
-  document.getElementById('overlay').classList.add('show');
+  _dialogLastFocus = document.activeElement;
+  const overlay = document.getElementById('overlay');
+  overlay.setAttribute('aria-hidden', 'false');
+  overlay.classList.add('show');
+  requestAnimationFrame(() => {
+    (d.querySelector('button,input,select,textarea,[tabindex]:not([tabindex="-1"])') || d).focus();
+  });
 }
 function hideDialog() {
-  document.getElementById('overlay').classList.remove('show');
+  const overlay = document.getElementById('overlay');
+  overlay.classList.remove('show');
+  overlay.setAttribute('aria-hidden', 'true');
   if (window._cfmR) { window._cfmR(false); window._cfmR = null; }
+  if (_dialogLastFocus && typeof _dialogLastFocus.focus === 'function') _dialogLastFocus.focus();
+  _dialogLastFocus = null;
 }
 document.getElementById('overlay').addEventListener('click', e => { if (e.target === e.currentTarget) hideDialog(); });
 function confirmDialog(title, msg) {
@@ -2798,15 +3206,15 @@ function _changePageSize(n) {
 async function loadDashboard() {
   loadActivity();
   try {
-    const [provData, inboxData, rulesData, allInboxData] = await Promise.all([
-      api('/providers'), api('/inboxes?status=active'), api('/block-rules'), api('/inboxes'),
+    const [provData, inboxData, rulesData, allInboxData, serviceData] = await Promise.all([
+      api('/providers'), api('/inboxes?status=active'), api('/block-rules'), api('/inboxes'), api('/services'),
     ]);
     const providers = provData.providers || [];
     const inboxes = inboxData.inboxes || [];
     const rules = rulesData.rules || [];
     const allInboxes = allInboxData.inboxes || [];
     const enabled = providers.filter(p => p.enabled).length;
-    const services = new Set(allInboxes.map(i => i.target_service).filter(Boolean)).size;
+    const services = serviceData.summary?.totalServices ?? 0;
 
     const sys = document.getElementById('sys-status');
     if (sys) {
@@ -3326,10 +3734,13 @@ async function loadProviders() {
     const data = await api('/providers');
     const grid = document.getElementById('provider-grid');
     const providers = (data.providers || []).filter(p => p.name && p.displayName);
-    const colCount = Math.max(1, Math.floor(grid.clientWidth / 312));
-    const cols = Array.from({length: colCount}, () => []);
-    providers.forEach((p, i) => cols[i % colCount].push(p));
-    grid.innerHTML = cols.map(col => `<div class="provider-col">${col.map(p => {
+    const poolNames = new Set(['outlook', 'yyds', 'imap']);
+    const groups = [
+      { title: _lang === 'zh' ? '池化渠道' : 'Pool providers', items: providers.filter(p => poolNames.has(p.name)) },
+      { title: _lang === 'zh' ? '付费/别名渠道' : 'Paid and alias providers', items: providers.filter(p => !poolNames.has(p.name) && (p.tier === 'paid' || p.type === 'alias')) },
+      { title: _lang === 'zh' ? '免费 API 渠道' : 'Free API providers', items: providers.filter(p => !poolNames.has(p.name) && p.tier !== 'paid' && p.type !== 'alias') },
+    ].filter(g => g.items.length);
+    const renderCard = (p) => {
       const ac = avatarColor(p.name);
       const initial = p.displayName[0].toUpperCase();
       const trustPips = Array.from({length:5}, (_, i) =>
@@ -3357,27 +3768,35 @@ async function loadProviders() {
               </label>
             </div>
           </div>
-          <div class="provider-stat"><span>${t('provider.trust')}</span><span class="trust-bar">${trustPips}</span></div>
-          <div class="provider-stat"><span>${t('provider.create_limit')}</span><strong>${p.rateLimit.createPerMinute ? p.rateLimit.createPerMinute + '/min' : `<span style="color:var(--text3)">${t('provider.no_limit')}</span>`}</strong></div>
-          <div class="provider-stat"><span>${t('provider.poll_limit')}</span><strong>${p.rateLimit.pollPerMinute ? p.rateLimit.pollPerMinute + '/min' : `<span style="color:var(--text3)">${t('provider.no_limit')}</span>`}</strong></div>
-          <div class="provider-stat"><span>${t('provider.retention')}</span><strong>${esc(p.retention)}</strong></div>
-          <div class="provider-stat"><span>${t('provider.rate_usage')}</span><strong>${p.rateLimit.createPerMinute ? (p.rateStatus?.currentCount || 0) + ' / ' + p.rateStatus?.maxPerWindow : '<span style="color:var(--text3)">—</span>'}</strong></div>
-          <div class="provider-stat"><span>${t('provider.success_rate')}</span><strong style="color:${typeof successRate==='number'?(successRate>=80?'var(--emerald)':'var(--rose)'):'var(--text3)'}">${typeof successRate==='number'?successRate+'%':successRate}</strong></div>
-          ${features ? `<div style="font-size:var(--text-sm);color:var(--text3);margin-top:6px">${t('provider.features')}: ${features}</div>` : ''}
+          <div class="provider-metrics">
+            <div class="provider-stat"><span>${t('provider.trust')}</span><span class="trust-bar">${trustPips}</span></div>
+            <div class="provider-stat"><span>${t('provider.success_rate')}</span><strong style="color:${typeof successRate==='number'?(successRate>=80?'var(--emerald)':'var(--rose)'):'var(--text3)'}">${typeof successRate==='number'?successRate+'%':successRate}</strong></div>
+            <div class="provider-stat"><span>${t('provider.create_limit')}</span><strong>${p.rateLimit.createPerMinute ? p.rateLimit.createPerMinute + '/min' : `<span style="color:var(--text3)">${t('provider.no_limit')}</span>`}</strong></div>
+            <div class="provider-stat"><span>${t('provider.poll_limit')}</span><strong>${p.rateLimit.pollPerMinute ? p.rateLimit.pollPerMinute + '/min' : `<span style="color:var(--text3)">${t('provider.no_limit')}</span>`}</strong></div>
+            <div class="provider-stat"><span>${t('provider.retention')}</span><strong>${esc(p.retention)}</strong></div>
+            <div class="provider-stat"><span>${t('provider.rate_usage')}</span><strong>${p.rateLimit.createPerMinute ? (p.rateStatus?.currentCount || 0) + ' / ' + p.rateStatus?.maxPerWindow : '<span style="color:var(--text3)">—</span>'}</strong></div>
+          </div>
+          ${features ? `<div class="provider-feature-line">${t('provider.features')}: ${features}</div>` : ''}
           <div class="provider-actions-row">
             ${iconBtn('globe', t('provider.domains'), `return showDomains('${esc(p.name)}')`, 'blue')}
             ${iconBtn('chart', t('provider.stats'), `return showProviderDetail('${esc(p.name)}')`, 'blue')}
-            <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
-              <label style="font-size:var(--text-sm);color:var(--text3);display:flex;align-items:center;gap:4px;cursor:pointer">
+            <div class="provider-config-row">
+              <label class="provider-inline-check">
                 <input type="checkbox" ${p.autoDispatch ? 'checked' : ''} onchange="setAutoDispatch('${esc(p.name)}',this.checked)"> ${t('provider.auto_dispatch')}
               </label>
-              <label style="font-size:var(--text-sm);color:var(--text3)">${t('provider.priority')}</label>
-              <input type="number" style="width:56px" value="${p.priority}" onchange="setPriority('${esc(p.name)}',this.value)">
+              <label>${t('provider.priority')}</label>
+              <input class="provider-priority-input" type="number" value="${p.priority}" onchange="setPriority('${esc(p.name)}',this.value)">
             </div>
           </div>
           <div id="pex-${p.name}"></div>
         </div>`;
-    }).join('')}</div>`).join('');
+    };
+    grid.innerHTML = groups.map(group => `
+      <section class="provider-section">
+        <div class="provider-section-title">${group.title}</div>
+        <div class="provider-section-grid">${group.items.map(renderCard).join('')}</div>
+      </section>
+    `).join('');
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -3813,23 +4232,41 @@ async function loadOlSettings() {
   try {
     const s = await api('/outlook/settings');
     document.getElementById('ol-record-fail').checked = s.recordFailService;
+    document.getElementById('ol-oauth-client-id').value = s.oauthClientId || '';
+    document.getElementById('ol-oauth-redirect-uri').value = s.oauthRedirectUri || '';
+    document.getElementById('ol-oauth-scopes').value = s.oauthScopes || '';
+    document.getElementById('ol-oauth-tenant').value = s.oauthTenant || '';
   } catch (e) { console.error('loadOlSettings', e); }
 }
 
-async function setOlRecordFail(val) {
+function normalizeOlSettingValue(v) {
+  return v == null ? '' : String(v);
+}
+
+async function saveOlSettings() {
+  const payload = {
+    recordFailService: document.getElementById('ol-record-fail').checked,
+    oauthClientId: normalizeOlSettingValue(document.getElementById('ol-oauth-client-id').value),
+    oauthRedirectUri: normalizeOlSettingValue(document.getElementById('ol-oauth-redirect-uri').value),
+    oauthScopes: normalizeOlSettingValue(document.getElementById('ol-oauth-scopes').value),
+    oauthTenant: normalizeOlSettingValue(document.getElementById('ol-oauth-tenant').value),
+  };
   try {
-    await api('/outlook/settings', { method: 'PATCH', body: JSON.stringify({ recordFailService: val }) });
-    toast(val ? t('op.record_fail_on') : t('op.record_fail_off'));
+    await api('/outlook/settings', { method: 'PATCH', body: JSON.stringify(payload) });
+    toast(t('toast.saved'));
   } catch (e) { toast(e.message, 'error'); loadOlSettings(); }
 }
 
 async function loadOutlookStats() {
   try {
     const s = await api('/outlook/stats');
-    document.getElementById('ol-total').textContent = s.total;
-    document.getElementById('ol-available').textContent = s.available;
-    document.getElementById('ol-assigned').textContent = s.assigned;
-    document.getElementById('ol-valid').textContent = s.validToken;
+    const toNumber = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+    document.getElementById('ol-total').textContent = toNumber(s.total);
+    document.getElementById('ol-available').textContent = toNumber(s.available);
+    document.getElementById('ol-assigned').textContent = toNumber(s.assigned);
+    document.getElementById('ol-valid').textContent = toNumber(s.validToken ?? s.valid ?? s.valid_tokens);
+    document.getElementById('ol-pending-oauth').textContent = toNumber(s.pendingOAuth ?? s.pending_oauth);
+    document.getElementById('ol-no-token').textContent = toNumber(s.noToken ?? s.no_token);
     const tag = document.getElementById('outlook-status');
     tag.textContent = s.available > 0 ? t('op.n_available', {n: s.available}) : t('op.no_available_account');
     tag.style.color = s.available > 0 ? '' : 'var(--rose)';
@@ -3841,12 +4278,25 @@ let _allOlAccounts = [];
 
 function renderOlTable(rows) {
   document.getElementById('ol-account-list').innerHTML = rows.length ? rows.map(a => {
-    const tsClass = a.token_status === 'valid' ? 'badge-active' : a.token_status === 'invalid' ? 'badge-closed' : 'badge-provider';
-    const tsText = a.token_status === 'valid' ? t('outlook.status_valid') : a.token_status === 'invalid' ? t('outlook.status_invalid') : (a.token_status || t('outlook.status_unchecked'));
-    const assigned = a.assigned_inbox_id ? t('outlook.assigned') : a.token_status === 'invalid' ? t('outlook.unavailable') : t('outlook.free');
-    const assignedClass = a.assigned_inbox_id ? 'badge-paid' : a.token_status === 'invalid' ? 'badge-closed' : 'badge-active';
+    const status = (a.token_status || '').toString().toLowerCase();
+    const isNoToken = status === 'no_token' || status === 'notoken';
+    const isPendingOauth = status === 'pending_oauth' || status === 'pending';
+    const statusText = getOutlookOauthStatusText(status);
+    const tsClass = status === 'valid' ? 'badge-active'
+      : status === 'invalid' || isNoToken ? 'badge-closed'
+      : isPendingOauth ? 'badge-provider'
+      : 'badge-provider';
+    const tsText = statusText;
+    const assigned = a.assigned_inbox_id ? t('outlook.assigned') : (isNoToken || isPendingOauth || status === 'invalid') ? t('outlook.unavailable') : t('outlook.free');
+    const assignedClass = a.assigned_inbox_id ? 'badge-paid' : (isNoToken || isPendingOauth || status === 'invalid') ? 'badge-closed' : 'badge-active';
     const typeLabel = a.account_type === 'long' ? t('outlook.long') : t('outlook.short');
     const typeClass = a.account_type === 'long' ? 'badge-active' : 'badge-provider';
+    const completeButton = isNoToken || isPendingOauth
+      ? iconBtn('check', t('outlook.complete_oauth'), `return startOutlookOauth('${esc(a.email)}')`, 'blue')
+      : '';
+    const passwordButton = isNoToken || isPendingOauth
+      ? iconBtn('copy', t('outlook.copy_password'), `return copyOutlookOauthPassword('${esc(a.email)}')`, 'amber')
+      : '';
     return `<tr>
       <td><input type="checkbox" class="ol-check" value="${esc(a.email)}"></td>
       <td class="mono" style="font-size:var(--text-sm)">${esc(a.email)}</td>
@@ -3857,12 +4307,111 @@ function renderOlTable(rows) {
       <td class="time">${fmtTime(a.token_renewed_at, 'date')}</td>
       <td>
         ${a.last_inbox_id ? iconBtn('inbox', t('inbox.receive'), `return switchAndView('${esc(a.last_inbox_id)}')`, 'blue') : ''}
-        ${iconBtn('search', t('outlook.check'), `return checkSingleOl('${esc(a.email)}')`, 'blue')}
-        ${iconBtn('refresh', t('outlook.renew'), `return renewSingleOl('${esc(a.email)}')`, 'amber')}
+        ${passwordButton}
+        ${completeButton}
+        ${!completeButton ? iconBtn('search', t('outlook.check'), `return checkSingleOl('${esc(a.email)}')`, 'blue') : ''}
+        ${!completeButton ? iconBtn('refresh', t('outlook.renew'), `return renewSingleOl('${esc(a.email)}')`, 'amber') : ''}
         ${!a.assigned_inbox_id ? iconBtn('trash', t('common.delete'), `return deleteOlAccount('${esc(a.email)}')`, 'danger') : ''}
       </td>
     </tr>`;
   }).join('') : `<tr><td class="empty-row" colspan="8">${t('outlook.no_data')}</td></tr>`;
+}
+
+function getOutlookOauthStatusText(status) {
+  const s = (status || '').toLowerCase();
+  if (s === 'pending_oauth' || s === 'pending') return t('outlook.status_pending_oauth');
+  if (s === 'no_token' || s === 'notoken') return t('outlook.status_no_token');
+  if (s === 'invalid') return t('outlook.status_invalid');
+  if (s === 'valid') return t('outlook.status_valid');
+  return t('outlook.status_unchecked');
+}
+
+function isOutlookOauthCompleted(status) {
+  const s = (status || '').toLowerCase();
+  return !['pending', 'pending_oauth', 'in_progress', 'starting', 'started', 'processing', 'exchanging', 'validating'].includes(s);
+}
+
+function isOutlookOauthSuccess(status) {
+  const s = (status || '').toLowerCase();
+  return ['completed', 'success', 'valid', 'ok', 'finished'].includes(s);
+}
+
+async function startOutlookOauth(email) {
+  toast(t('op.oauth_starting'));
+  let session;
+  let popup;
+  try {
+    if (!email) throw new Error(t('validate.paste_account'));
+    const data = await api('/outlook/oauth/start', { method: 'POST', body: JSON.stringify({ email, preset: 'thunderbird' }) });
+    session = data?.sessionId;
+    if (!session || !data.authorizeUrl) throw new Error('Invalid OAuth start response');
+    await copyOutlookOauthPassword(email, session, { silent: true }).catch(() => toast(t('op.oauth_password_copy_hint'), 'error'));
+    if (data.serverProxyConfigured) {
+      await navigator.clipboard.writeText(data.authorizeUrl);
+      toast(t('op.oauth_proxy_link_copied'), 'success');
+      return;
+    }
+    popup = window.open(data.authorizeUrl, 'mailhub_outlook_oauth', 'width=560,height=760');
+    if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+      throw new Error(t('op.oauth_popup_blocked'));
+    }
+    toast(t('op.oauth_waiting'));
+    const pollTimeout = 120000;
+    const pollStart = Date.now();
+    const pollStep = 2000;
+    while (true) {
+      if (Date.now() - pollStart > pollTimeout) {
+        throw new Error(t('op.oauth_timeout'));
+      }
+      const statusData = await api(`/outlook/oauth/status/${encodeURIComponent(session)}`);
+      const status = (statusData.status || '').toLowerCase();
+      if (isOutlookOauthCompleted(status)) {
+        if (isOutlookOauthSuccess(status)) {
+          toast(t('op.oauth_completed'), 'success');
+        } else {
+          toast(t('op.oauth_failed', { reason: statusData.error || status || t('outlook.status_invalid') }), 'error');
+        }
+        break;
+      }
+      if (popup.closed) {
+        throw new Error(t('op.oauth_cancelled'));
+      }
+      await sleep(pollStep);
+    }
+  } catch (e) {
+    toast(e.message || 'OAuth flow failed', 'error');
+  } finally {
+    if (popup && !popup.closed) popup.close();
+    loadOutlook();
+  }
+}
+
+async function copyOutlookOauthPassword(email, sessionId = '', opts = {}) {
+  try {
+    const payload = sessionId ? { sessionId } : { email };
+    const data = await api('/outlook/oauth/password', { method: 'POST', body: JSON.stringify(payload) });
+    if (!data?.password) throw new Error(t('outlook.password_missing'));
+    await navigator.clipboard.writeText(data.password);
+    if (!opts.silent) toast(t('outlook.password_copied'), 'success');
+  } catch (e) {
+    if (!opts.silent) toast(e.message || t('validate.copy_failed'), 'error');
+    if (opts.silent) throw e;
+  }
+}
+
+async function submitOutlookOauthFinalUrl() {
+  const input = document.getElementById('ol-oauth-final-url');
+  const finalUrl = input?.value.trim();
+  if (!finalUrl) return toast(t('validate.no_content'), 'error');
+  try {
+    toast(t('op.oauth_code_submitting'));
+    await api('/outlook/oauth/code', { method: 'POST', body: JSON.stringify({ finalUrl }) });
+    if (input) input.value = '';
+    toast(t('op.oauth_completed'), 'success');
+    await Promise.all([loadOutlookStats(), loadOutlookAccounts()]);
+  } catch (e) {
+    toast(e.message || 'OAuth code submission failed', 'error');
+  }
 }
 
 async function loadOutlookAccounts() {
@@ -4086,11 +4635,12 @@ async function doBatchDeleteOl() {
 }
 
 // ─── Login / Logout ───
-async function doLogin() {
+async function doLogin(event) {
+  if (event?.preventDefault) event.preventDefault();
   const token = document.getElementById('login-token').value.trim();
   const errEl = document.getElementById('login-error');
   const btn = document.getElementById('login-btn');
-  if (!token) { errEl.textContent = t('login.enter_key'); return; }
+  if (!token) { errEl.textContent = t('login.enter_key'); return false; }
   btn.disabled = true;
   errEl.textContent = '';
   try {
@@ -4103,11 +4653,13 @@ async function doLogin() {
   } catch (e) {
     errEl.textContent = e.message || t('login.failed');
   } finally { btn.disabled = false; }
+  return false;
 }
 
 function doLogout() {
   localStorage.removeItem('token');
   _isAdmin = false;
+  closeMobileMore();
   document.getElementById('login-screen').classList.remove('hidden');
   document.getElementById('app-main').style.display = 'none';
   document.getElementById('login-token').value = '';
@@ -4127,11 +4679,9 @@ async function enterApp() {
   document.getElementById('nav-templates').style.display = _isAdmin ? '' : 'none';
   loadDashboard();
   applyLang();
+  refreshNavLabels();
+  refreshMobileMoreChrome();
 }
-
-document.getElementById('login-token').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') doLogin();
-});
 
 // ─── Keys ───
 let _allKeys = [];
@@ -4641,7 +5191,26 @@ if (getToken()) {
   document.getElementById('login-screen').classList.remove('hidden');
 }
 
-(function(){var s=document.createElement('script');s.src='/extensions.js';s.onerror=function(){s.remove()};document.body.appendChild(s)})();
+  (function loadOptionalExtensions() {
+    const script = document.createElement('script');
+    script.src = '/extensions.js';
+    script.onload = placeOutlookOauthPanel;
+    script.onerror = placeOutlookOauthPanel;
+    document.body.appendChild(script);
+  })();
+
+function placeOutlookOauthPanel() {
+  const grid = document.getElementById('ol-panels-grid');
+  const panel = document.getElementById('ol-oauth-panel');
+  if (!grid || !panel) return;
+  const pluginPanels = Array.from(grid.children).filter(el => el.id !== 'ol-oauth-panel' && el.id !== '');
+  if (pluginPanels.length > 0) {
+    grid.insertAdjacentElement('afterend', panel);
+  } else {
+    grid.appendChild(panel);
+    panel.style.marginBottom = '0';
+  }
+}
 </script>
 </body>
 </html>

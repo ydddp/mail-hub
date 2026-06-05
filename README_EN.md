@@ -103,7 +103,7 @@ These are built into the code (not templates). Configurable via the **Provider M
 
 | Provider | Type | Description |
 |----------|------|-------------|
-| Outlook | Account Pool | Import Outlook accounts, 1:1 inbox assignment, returned to pool on close |
+| Outlook | Account Pool | Import Outlook accounts, complete missing authorization, 1:1 assignment, returned to pool on close |
 | YYDS Mail | API Key Pool | Import keys, round-robin rotation, 20,000 calls/day per key |
 | IMAP Domain Email | Account Pool | Connect your own domain via IMAP with catch-all; highest trust level |
 
@@ -135,27 +135,31 @@ Authorization: Bearer <your-api-secret-or-api-key>
 
 ```bash
 # Create inbox
-curl -X POST http://localhost:3100/api/inboxes \
+curl -X POST http://localhost:3100/api/inbox \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"for": "twitter.com"}'
 
 # Get messages
-curl http://localhost:3100/api/inboxes/{id}/messages \
+curl http://localhost:3100/api/inbox/{id}/messages \
   -H "Authorization: Bearer YOUR_KEY"
 
 # Extract verification code (with long-polling)
-curl "http://localhost:3100/api/inboxes/{id}/code?wait=true" \
+curl "http://localhost:3100/api/inbox/{id}/code?wait=true" \
+  -H "Authorization: Bearer YOUR_KEY"
+
+# Repeated retrieval: pass the previous receivedAt as since to avoid reusing one email
+curl "http://localhost:3100/api/inbox/{id}/code?wait=true&since=2026-06-05T00%3A01%3A00.000Z" \
   -H "Authorization: Bearer YOUR_KEY"
 
 # Report result
-curl -X POST http://localhost:3100/api/inboxes/{id}/report \
+curl -X POST http://localhost:3100/api/inbox/{id}/report \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"success": true, "service": "twitter.com"}'
 
 # Close inbox
-curl -X DELETE http://localhost:3100/api/inboxes/{id} \
+curl -X DELETE http://localhost:3100/api/inbox/{id} \
   -H "Authorization: Bearer YOUR_KEY"
 ```
 

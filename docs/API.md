@@ -34,7 +34,7 @@ Response 200:
 ```json
 {
   "status": "ok",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "startedAt": "2025-01-01T00:00:00Z",
   "uptime": 3600,
   "db": "connected"
@@ -195,6 +195,7 @@ Extract verification codes from the latest email. Supports long-polling — the 
 | `wait` | `true` | Long-poll until a message arrives (recommended) |
 | `timeout` | integer (default 60, max 120) | Max wait time in seconds |
 | `type` | `numeric` / `alphanumeric` / `link` | Filter code type |
+| `since` | ISO datetime / epoch milliseconds | Only consider messages received after this timestamp |
 
 **Response 200**:
 ```json
@@ -210,16 +211,18 @@ Extract verification codes from the latest email. Supports long-polling — the 
   "email": {
     "from": "noreply@service.com",
     "subject": "Your verification code"
-  }
+  },
+  "messageId": "message-123",
+  "receivedAt": "2025-01-01T00:01:00Z"
 }
 ```
 
 No messages yet:
 ```json
-{ "codes": [], "email": null }
+{ "codes": [], "email": null, "messageId": null, "receivedAt": null }
 ```
 
-**Behavior**: When `wait=true`, polls every 3s for the first 20s, then every 5s until timeout. Returns immediately if messages already exist.
+**Behavior**: When `wait=true`, polls every 3s for the first 20s, then every 5s until timeout. Returns immediately if matching messages already exist. For repeated retrieval, store the previous response `receivedAt` and call `GET /api/inbox/:id/code?wait=true&since=<receivedAt>` to wait for a later message without reusing the same email.
 
 ---
 
@@ -690,6 +693,8 @@ All mounted under `/api/outlook`.
   "assigned": 15,
   "validToken": 42,
   "invalidToken": 3,
+  "pendingOAuth": 2,
+  "noToken": 0,
   "longCount": 10,
   "shortCount": 40
 }
@@ -700,12 +705,14 @@ All mounted under `/api/outlook`.
 **Request** (JSON):
 ```json
 {
-  "accounts": "email1----password1----clientId1----refreshToken1\nemail2----...",
+  "accounts": "email1----password1\nemail2----password2----clientId2----refreshToken2",
   "type": "long",
   "group": "batch-1"
 }
 ```
-Format per line: `email----password----clientId----refreshToken`
+Supported formats per line:
+- `email----password`: imports as `pending_oauth`; it cannot be assigned until authorization is completed.
+- `email----password----clientId----refreshToken`: imports as a token-backed account and can be checked/assigned normally.
 
 **Response 200**:
 ```json
@@ -714,7 +721,7 @@ Format per line: `email----password----clientId----refreshToken`
 
 ### GET /api/outlook/accounts — List Accounts
 
-**Query parameters**: `status=valid|invalid|no_token`, `available=true|false`, `group=...`, `type=long|short`
+**Query parameters**: `status=valid|invalid|pending_oauth|no_token`, `available=true|false`, `group=...`, `type=long|short`
 
 **Response 200**:
 ```json
@@ -729,11 +736,14 @@ Format per line: `email----password----clientId----refreshToken`
       "created_at": "...",
       "token_renewed_at": "...",
       "last_checked_at": "...",
+      "oauth_last_error": null,
       "last_inbox_id": null
     }
   ]
 }
 ```
+
+Only accounts with `client_id`, `refresh_token`, no assignment, and a non-pending/non-invalid token status are considered available for inbox allocation.
 
 ### DELETE /api/outlook/accounts — Delete Unassigned Accounts
 
@@ -785,18 +795,151 @@ Omit to check all accounts.
 }
 ```
 
+### POST /api/outlook/oauth/start — Start Authorization Completion
+
+Creates an authorization session for a pending account and returns an authorize URL. The default preset is the built-in public-client flow; `custom` keeps compatibility with user-provided OAuth app settings.
+
+**Request** (JSON):
+```json
+{ "email": "user@outlook.com", "preset": "thunderbird" }
+```
+
+**Response 200**:
+```json
+{
+  "sessionId": "...",
+  "authorizeUrl": "https://...",
+  "email": "user@outlook.com",
+  "preset": "thunderbird",
+  "clientId": "...",
+  "redirectUri": "https://localhost",
+  "serverProxyConfigured": true,
+  "status": "pending"
+}
+```
+
+### POST /api/outlook/oauth/code — Submit Authorization Code
+
+Used when the authorization redirect is captured outside Mail Hub. Submit either `finalUrl` or `code` plus `state`. Tokens are stored server-side and are not returned.
+
+**Request** (JSON):
+```json
+{ "sessionId": "...", "finalUrl": "https://localhost/?code=...&state=..." }
+```
+
+**Response 200**:
+```json
+{ "ok": true, "sessionId": "...", "email": "user@outlook.com", "preset": "thunderbird", "status": "completed" }
+```
+
+### GET /api/outlook/oauth/status/:sessionId — Authorization Status
+
+**Response 200**:
+```json
+{ "sessionId": "...", "email": "user@outlook.com", "preset": "thunderbird", "status": "completed", "error": "" }
+```
+
+### POST /api/outlook/oauth/password — Get Pending Account Password
+
+Admin-only helper for the UI/manual authorization flow. It returns the password for an unassigned pending/no-token Outlook account by `sessionId` or `email`, and does not return any token.
+
+**Request** (JSON):
+```json
+{ "sessionId": "..." }
+```
+
+or:
+```json
+{ "email": "user@outlook.com" }
+```
+
+**Response 200**:
+```json
+{ "email": "user@outlook.com", "password": "..." }
+```
+
+### GET /api/outlook/oauth/callback — Custom OAuth Callback
+
+Compatibility callback for custom OAuth app settings. The default UI flow uses `/api/outlook/oauth/code` instead.
+
+### POST /api/outlook/oauth/automation/claim — Claim Completion Task
+
+External browser automation can claim one pending account. It receives the authorize URL and session metadata, but not the account password.
+
+**Request** (JSON, optional):
+```json
+{ "preset": "thunderbird", "includeProxy": true, "includeFailed": false }
+```
+`includeProxy` returns the configured proxy URL for the external automation helper. It is admin-only and should not be logged. By default, accounts with `oauth_last_error` are skipped; set `includeFailed: true` only for an explicit retry workflow.
+
+**Response 200**:
+```json
+{
+  "sessionId": "...",
+  "authorizeUrl": "https://...",
+  "email": "user@outlook.com",
+  "preset": "thunderbird",
+  "redirectUri": "https://localhost",
+  "serverProxyConfigured": true,
+  "proxyUrl": "http://user:pass@host:port",
+  "status": "pending"
+}
+```
+
+### POST /api/outlook/oauth/automation/password — Get Claimed Password
+
+Admin-only helper for external automation after a session has been claimed.
+
+**Request** (JSON):
+```json
+{ "sessionId": "..." }
+```
+
+**Response 200**:
+```json
+{ "email": "user@outlook.com", "password": "..." }
+```
+
+### POST /api/outlook/oauth/automation/report — Report Automation State
+
+**Request** (JSON):
+```json
+{ "sessionId": "...", "status": "waiting_user", "error": "" }
+```
+
+Allowed statuses: `started`, `waiting_user`, `failed`, `completed`.
+
+**Response 200**:
+```json
+{ "ok": true }
+```
+
 ### GET /api/outlook/settings — Get Settings
 
 **Response 200**:
 ```json
-{ "recordFailService": true }
+{
+  "recordFailService": true,
+  "batchConcurrency": 5,
+  "oauthClientId": "",
+  "oauthRedirectUri": "http://localhost:3100/api/outlook/oauth/callback",
+  "oauthScopes": "",
+  "oauthTenant": "consumers"
+}
 ```
 
 ### PATCH /api/outlook/settings — Update Settings
 
 **Request** (JSON):
 ```json
-{ "recordFailService": false }
+{
+  "recordFailService": false,
+  "batchConcurrency": 5,
+  "oauthClientId": "",
+  "oauthRedirectUri": "",
+  "oauthScopes": "",
+  "oauthTenant": "consumers"
+}
 ```
 
 **Response 200**:
@@ -1126,7 +1269,7 @@ Mounted under `/api/admin`.
 **Response 200**:
 ```json
 {
-  "version": "0.9.3",
+  "version": "0.9.4",
   "uptime": 3600,
   "dbPath": "/app/data/mail.db",
   "dbSize": "1.2 MB",

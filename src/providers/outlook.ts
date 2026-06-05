@@ -32,6 +32,11 @@ interface OAuthResponse {
 
 interface CountRow { c: number }
 
+const ALLOCABLE_ACCOUNT_WHERE = `assigned_inbox_id IS NULL
+  AND client_id != ''
+  AND refresh_token != ''
+  AND COALESCE(token_status, '') NOT IN ('invalid', 'no_token', 'pending_oauth')`;
+
 function cacheKey(clientId: string, refreshToken: string): string {
   return `${clientId}:${refreshToken.slice(-8)}`;
 }
@@ -212,7 +217,7 @@ export class OutlookProvider extends BaseProvider {
 
   async getDomains(opts?: { for?: string }): Promise<string[]> {
     const db = getDb();
-    let whereClauses = `assigned_inbox_id IS NULL AND token_status != 'invalid'`;
+    let whereClauses = ALLOCABLE_ACCOUNT_WHERE;
     const params: unknown[] = [];
     if (opts?.for) {
       whereClauses += ` AND (used_services IS NULL OR used_services NOT LIKE ?)`;
@@ -230,7 +235,7 @@ export class OutlookProvider extends BaseProvider {
     const db = getDb();
     const inboxId = opts?.inboxId ?? `pending-${randomUUID()}`;
 
-    let whereClauses = `assigned_inbox_id IS NULL AND token_status != 'invalid'`;
+    let whereClauses = ALLOCABLE_ACCOUNT_WHERE;
     const selectParams: unknown[] = [];
     if (opts?.domain) {
       whereClauses += ` AND email LIKE ?`;
@@ -257,11 +262,13 @@ export class OutlookProvider extends BaseProvider {
       if (!row) {
         const total = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts`)?.c ?? 0;
         const invalid = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE token_status = 'invalid'`)?.c ?? 0;
-        const assigned = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE assigned_inbox_id IS NOT NULL AND token_status != 'invalid'`)?.c ?? 0;
+        const pending = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE token_status IN ('pending_oauth', 'no_token') OR client_id = '' OR refresh_token = ''`)?.c ?? 0;
+        const assigned = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE assigned_inbox_id IS NOT NULL AND COALESCE(token_status, '') NOT IN ('invalid', 'no_token', 'pending_oauth')`)?.c ?? 0;
         const available = getRow<CountRow>(db, `SELECT COUNT(*) AS c FROM outlook_accounts WHERE ${whereClauses}`, ...selectParams)?.c ?? 0;
         const valid = available;
         const parts: string[] = [`共${total}个账号`];
         if (invalid > 0) parts.push(`${invalid}个无效`);
+        if (pending > 0) parts.push(`${pending}个待补全`);
         if (assigned > 0) parts.push(`${assigned}个已分配`);
         if (valid > 0 && opts?.for) parts.push(`剩余${valid}个均已用于 ${opts.for}`);
         if (valid === 0 && !opts?.for) parts.push(`无空闲账号`);

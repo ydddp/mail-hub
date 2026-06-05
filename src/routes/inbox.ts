@@ -251,6 +251,14 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
   const wait = c.req.query('wait') === 'true';
   const timeout = Math.min(parseInt(c.req.query('timeout') || '60', 10), 120);
   const typeFilter = c.req.query('type');
+  const sinceParam = c.req.query('since');
+  let sinceTimestamp: number | undefined;
+  if (sinceParam) {
+    sinceTimestamp = /^\d+$/.test(sinceParam) ? Number(sinceParam) : Date.parse(sinceParam);
+    if (!Number.isFinite(sinceTimestamp)) {
+      return c.json({ error: 'Invalid since parameter' }, 400);
+    }
+  }
 
   const row = getInboxRow<InboxDataRow>(c, id, 'provider, address, auth_data, api_base, created_at');
   if (!row) {
@@ -268,10 +276,13 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
   const inbox = rowToInboxData(row);
 
   function filterNew(msgs: Message[]): Message[] {
-    if (!inboxCreatedAt) return msgs;
     return msgs.filter(m => {
-      if (!m.receivedAt) return true;
-      return new Date(m.receivedAt).getTime() >= inboxCreatedAt - 60000;
+      if (!m.receivedAt) return sinceTimestamp === undefined;
+      const receivedAt = new Date(m.receivedAt).getTime();
+      if (!Number.isFinite(receivedAt)) return false;
+      if (inboxCreatedAt && receivedAt < inboxCreatedAt - 60000) return false;
+      if (sinceTimestamp !== undefined && receivedAt <= sinceTimestamp) return false;
+      return true;
     });
   }
 
@@ -306,7 +317,7 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
   }
 
   if (messages.length === 0) {
-    return c.json({ codes: [], email: null });
+    return c.json({ codes: [], email: null, messageId: null, receivedAt: null });
   }
 
   const latest = messages[0];
@@ -331,6 +342,8 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
   return c.json({
     codes,
     email: { from: detail.from, subject: detail.subject },
+    messageId: detail.id || latest.id,
+    receivedAt: detail.receivedAt || latest.receivedAt || null,
   });
 });
 

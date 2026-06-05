@@ -29,6 +29,7 @@ beforeEach(() => {
     'provider_stats',
     'provider_config',
     'outlook_accounts',
+    'outlook_oauth_sessions',
     'yyds_accounts',
     'yyds_domain_cache',
     'imap_accounts',

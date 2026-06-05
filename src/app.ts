@@ -149,17 +149,21 @@ Query parameters:
   ?wait=true       — long-poll until a message arrives (recommended)
   ?timeout=60      — max wait time in seconds (default 60, max 120)
   ?type=numeric    — filter code type (numeric, alphanumeric, link)
+  ?since=ISO_TIME  — only consider messages received after this timestamp
 
 Response 200:
   {
     "codes": [
       { "code": "123456", "type": "numeric", "source": "body", "context": "verification code" }
     ],
-    "email": { "from": "noreply@service.com", "subject": "Your code" }
+    "email": { "from": "noreply@service.com", "subject": "Your code" },
+    "messageId": "message-123",
+    "receivedAt": "2025-01-01T00:01:00Z"
   }
 
 This is the recommended endpoint for most use cases — it handles polling,
-message retrieval, and code extraction in a single call.
+message retrieval, and code extraction in a single call. For repeated retrieval,
+pass the previous response "receivedAt" as "since" to avoid returning the same message again.
 
 ### POST /api/inbox/:id/report
 ⚠️ MANDATORY — Report the outcome of using this inbox.
@@ -368,6 +372,11 @@ export function createApp(): Hono<AdminEnv> {
   });
 
   app.use('/api/*', async (c, next) => {
+    if (c.req.path === '/api/outlook/oauth/callback') {
+      c.set('isAdmin', false);
+      c.set('apiKey', '');
+      return next();
+    }
     if (!config.apiSecret) {
       c.set('isAdmin', true);
       c.set('apiKey', '');
@@ -502,18 +511,15 @@ export async function cleanupExpired(): Promise<void> {
     const toCheck = allRows<{ email: string; client_id: string; refresh_token: string }>(db, `
       SELECT email, client_id, refresh_token FROM outlook_accounts
       WHERE account_type = 'short'
+        AND client_id != ''
+        AND refresh_token != ''
         AND (last_checked_at IS NULL OR datetime(last_checked_at) < datetime('now', '-1 day'))
     `);
 
     if (toCheck.length > 0) {
       let invalidCount = 0;
       for (const { email, client_id: clientId, refresh_token: refreshToken } of toCheck) {
-        if (!clientId || !refreshToken) {
-          db.prepare(`UPDATE outlook_accounts SET token_status = 'invalid', last_checked_at = datetime('now') WHERE email = ?`).run(email);
-          invalidCount++;
-          continue;
-        }
-        const valid = await checkToken(email, clientId, refreshToken);
+        const { valid } = await checkToken(email, clientId, refreshToken);
         db.prepare(
           `UPDATE outlook_accounts SET token_status = ?, last_checked_at = datetime('now') WHERE email = ?`,
         ).run(valid ? 'valid' : 'invalid', email);

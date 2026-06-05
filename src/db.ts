@@ -79,8 +79,29 @@ CREATE TABLE IF NOT EXISTS outlook_accounts (
   group_name TEXT DEFAULT '未分组',
   account_type TEXT NOT NULL DEFAULT 'short',
   last_checked_at TEXT,
+  oauth_last_session_id TEXT,
+  oauth_last_error TEXT,
   used_services TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS outlook_oauth_sessions (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  scopes TEXT NOT NULL,
+  tenant TEXT NOT NULL,
+  preset TEXT NOT NULL DEFAULT 'custom',
+  state_hash TEXT NOT NULL UNIQUE,
+  code_verifier TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  automation_status TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  claimed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS yyds_accounts (
@@ -187,6 +208,9 @@ export function initDb(): Database.Database {
     `ALTER TABLE api_keys ADD COLUMN daily_calls INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE api_keys ADD COLUMN daily_reset_at TEXT`,
     `ALTER TABLE outlook_accounts ADD COLUMN api_type TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE outlook_accounts ADD COLUMN oauth_last_session_id TEXT`,
+    `ALTER TABLE outlook_accounts ADD COLUMN oauth_last_error TEXT`,
+    `ALTER TABLE outlook_oauth_sessions ADD COLUMN preset TEXT NOT NULL DEFAULT 'custom'`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (e) {
@@ -205,6 +229,9 @@ export function initDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at);
     CREATE INDEX IF NOT EXISTS idx_outlook_assigned ON outlook_accounts(assigned_inbox_id);
     CREATE INDEX IF NOT EXISTS idx_outlook_status ON outlook_accounts(token_status);
+    CREATE INDEX IF NOT EXISTS idx_outlook_oauth_email ON outlook_oauth_sessions(email);
+    CREATE INDEX IF NOT EXISTS idx_outlook_oauth_state ON outlook_oauth_sessions(state_hash);
+    CREATE INDEX IF NOT EXISTS idx_outlook_oauth_status ON outlook_oauth_sessions(status);
   `);
 
   if (config.apiSecret) {

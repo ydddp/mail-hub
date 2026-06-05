@@ -6,6 +6,10 @@ export interface AppConfig {
   apiSecret: string;
   dbPath: string;
   proxyUrl: string;
+  outlookOAuthClientId: string;
+  outlookOAuthRedirectUri: string;
+  outlookOAuthScopes: string;
+  outlookOAuthTenant: string;
   requestLogSuccess: boolean;
   requestLogSampleRate: number;
   requestLogSlowMs: number;
@@ -35,6 +39,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     apiSecret: env.API_SECRET || '',
     dbPath: env.DB_PATH || './data/mail.db',
     proxyUrl: env.PROXY_URL || '',
+    outlookOAuthClientId: env.OUTLOOK_OAUTH_CLIENT_ID || '',
+    outlookOAuthRedirectUri: env.OUTLOOK_OAUTH_REDIRECT_URI || `http://localhost:${env.PORT || '3100'}/api/outlook/oauth/callback`,
+    outlookOAuthScopes: env.OUTLOOK_OAUTH_SCOPES || 'offline_access https://graph.microsoft.com/Mail.Read',
+    outlookOAuthTenant: env.OUTLOOK_OAUTH_TENANT || 'consumers',
     requestLogSuccess: parseBoolean(env.REQUEST_LOG_SUCCESS, false),
     requestLogSampleRate: parseNumber(env.REQUEST_LOG_SAMPLE_RATE, 0),
     requestLogSlowMs: parseNumber(env.REQUEST_LOG_SLOW_MS, 1000),

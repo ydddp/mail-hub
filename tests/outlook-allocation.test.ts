@@ -33,6 +33,26 @@ describe('Outlook account allocation', () => {
 
     await expect(dispatch({ provider: 'outlook', domain: 'outlook.test' })).rejects.toThrow(/无可用账号/);
   });
+
+  it('does not hand out a pending OAuth account without token credentials', async () => {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO outlook_accounts (email, password, token_status)
+       VALUES (?, ?, ?)`,
+    ).run('pending@outlook.test', 'pw', 'pending_oauth');
+
+    const provider = new OutlookProvider();
+
+    await expect(provider.getDomains()).resolves.toEqual([]);
+    await expect(dispatch({ provider: 'outlook', domain: 'outlook.test' })).rejects.toThrow(/无可用账号/);
+    const assigned = getRow<{ assigned_inbox_id: string | null }>(
+      db,
+      `SELECT assigned_inbox_id FROM outlook_accounts WHERE email = ?`,
+      'pending@outlook.test',
+    );
+    expect(assigned?.assigned_inbox_id).toBeNull();
+  });
+
   it('filters available Outlook domains by target service reuse', async () => {
     const db = getDb();
     db.prepare(
