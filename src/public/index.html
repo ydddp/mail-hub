@@ -5008,15 +5008,19 @@ async function testTplProvider() {
   syncFormToJson();
   let cfg;
   try { cfg = JSON.parse(document.getElementById('tpl-json').value); } catch { return toast(t('validate.json_error'), 'error'); }
-  if (!cfg.name) cfg.name = '_test_' + Date.now();
+  cfg.name = '_test_' + Date.now();
   toast(t('toast.testing'));
+  let created = false;
   try {
     await api('/template-providers', { method: 'POST', body: JSON.stringify({ config: cfg }) });
+    created = true;
     const data = await api(`/template-providers/${cfg.name}/test`, { method: 'POST' });
     await api(`/template-providers/${cfg.name}`, { method: 'DELETE' });
     showTestResults(data);
   } catch (e) {
-    try { await api(`/template-providers/${cfg.name}`, { method: 'DELETE' }); } catch (e) { console.error('templateDelete', e); }
+    if (created) {
+      try { await api(`/template-providers/${cfg.name}`, { method: 'DELETE' }); } catch (e) { console.error('templateDelete', e); }
+    }
     toast(e.message, 'error');
   }
 }

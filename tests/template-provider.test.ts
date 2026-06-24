@@ -193,6 +193,18 @@ describe('template-provider CRUD', () => {
       expect(row).toBeUndefined();
       expect(registry.get('tp-del')).toBeUndefined();
     });
+
+    it('rejects deleting built-in providers', async () => {
+      const res = await app.request('/api/template-providers/tempmail-lol', {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
+      expect(res.status).toBe(400);
+
+      const row = getDb().prepare(`SELECT * FROM template_providers WHERE name = ?`).get('tempmail-lol');
+      expect(row).toBeDefined();
+      expect(registry.get('tempmail-lol')).toBeDefined();
+    });
   });
 
   describe('PATCH /api/template-providers/:name/toggle', () => {

@@ -5,6 +5,7 @@ import { TemplateProvider, type TemplateProviderConfig } from '../providers/temp
 import { registry } from '../providers/registry.js';
 import { errorMessage } from '../errors.js';
 import type { InboxData } from '../providers/base.js';
+import { BUILTIN_TEMPLATE_NAMES } from '../providers/builtin-templates.js';
 
 export const templateProviderRoutes = new Hono<AdminEnv>();
 
@@ -94,6 +95,7 @@ templateProviderRoutes.put('/template-providers/:name', async (c) => {
 
 templateProviderRoutes.delete('/template-providers/:name', (c) => {
   const name = c.req.param('name');
+  if (BUILTIN_TEMPLATE_NAMES.has(name)) return c.json({ error: 'Built-in template providers cannot be deleted; disable them instead' }, 400);
   const db = getDb();
   db.prepare(`DELETE FROM template_providers WHERE name = ?`).run(name);
   registry.unregister(name);

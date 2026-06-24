@@ -334,3 +334,5 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
     },
   },
 ];
+
+export const BUILTIN_TEMPLATE_NAMES = new Set(BUILTIN_TEMPLATES.map((entry) => entry.config.name));
