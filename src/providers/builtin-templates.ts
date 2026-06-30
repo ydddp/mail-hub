@@ -52,7 +52,7 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
       displayName: 'TempMail.lol',
       tier: 'free',
       trustLevel: 1,
-      rateLimit: { createPerMinute: 2, pollPerMinute: 10 },
+      rateLimit: { createPerMinute: 6, pollPerMinute: 10 },
       retention: '1h',
       features: { customUsername: true, pollInbox: true, attachments: false },
       apiBase: 'https://api.tempmail.lol/v2',

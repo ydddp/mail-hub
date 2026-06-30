@@ -261,6 +261,12 @@ export class TemplateProvider extends BaseProvider {
       const res = await fetchWithTimeout(url, fetchOpts);
       if (!res.ok) {
         const body = await res.text().catch(() => '');
+        log.warn('template provider create failed', {
+          provider: this.cfg.name,
+          status: res.status,
+          retryAfter: res.headers.get('Retry-After'),
+          body: body.slice(0, 500),
+        });
         throw new UpstreamHttpError(
           `[${this.cfg.name}] Create failed: ${res.status}`,
           res.status,

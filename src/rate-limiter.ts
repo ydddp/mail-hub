@@ -40,6 +40,17 @@ class RateLimiter {
     w.timestamps.push(Date.now());
   }
 
+  /**
+   * Return the most recently recorded create slot to the window. Used when a
+   * create attempt fails deterministically (e.g. upstream 4xx that is not a
+   * rate limit), so a failed request that never produced an inbox does not
+   * count against the per-minute budget and cascade into spurious 429s.
+   */
+  refundCreate(provider: string): void {
+    const w = this.createWindows.get(provider);
+    if (w && w.timestamps.length > 0) w.timestamps.pop();
+  }
+
   tryRecordCreate(provider: string): boolean {
     if (!this.isCreateAvailable(provider)) return false;
     this.recordCreate(provider);

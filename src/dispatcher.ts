@@ -217,7 +217,19 @@ async function tryCreateInbox(
   if (!rateLimiter.tryRecordCreate(providerName)) {
     throw new Error(`Provider '${providerName}' is rate-limited`);
   }
-  const inbox = await provider.createInbox(createOpts);
+  let inbox: InboxData;
+  try {
+    inbox = await provider.createInbox(createOpts);
+  } catch (error) {
+    // A create that failed deterministically (upstream 4xx other than 429)
+    // produced no inbox, so refund the slot it reserved. 429 is left consumed:
+    // recordProviderFailure sets a cooldown for it separately.
+    const status = httpStatus(error, 0);
+    if (status >= 400 && status < 500 && status !== 429) {
+      rateLimiter.refundCreate(providerName);
+    }
+    throw error;
+  }
   try {
     saveInbox(id, inbox, opts.for, opts.ownerKey);
   } catch (error) {
