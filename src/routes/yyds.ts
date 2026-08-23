@@ -5,6 +5,7 @@ import { importDelimited } from '../import-utils.js';
 import { fetchWithTimeout, runConcurrent } from '../utils.js';
 import { createLogger } from '../logger.js';
 import { errorMessage } from '../errors.js';
+import { isDomainScopeError } from '../providers/yyds.js';
 
 export const yydsRoutes = new Hono<AdminEnv>();
 const log = createLogger('yyds-route');
@@ -71,7 +72,13 @@ yydsRoutes.post('/yyds/check', async (c) => {
         headers: { 'Content-Type': 'application/json', 'X-API-Key': row.api_key },
         body: JSON.stringify({ localPart: '_probe', domain: '_check.invalid' }),
       });
-      const valid = res.status !== 403 && res.status !== 401;
+      // The probe names a domain no key owns, so a scope-limited key answers
+      // 403 for the domain, not for the key — and that answer only comes after
+      // the key authenticated. Reading it as "invalid" retires every
+      // own-domain key the first time an operator runs a batch check.
+      const valid = res.status === 403
+        ? isDomainScopeError(await res.text().catch(() => ''))
+        : res.status !== 401;
       db.prepare(`UPDATE yyds_accounts SET status = ? WHERE api_key = ?`).run(valid ? 'active' : 'invalid', row.api_key);
       return { key: row.api_key, valid };
     } catch (error) {
