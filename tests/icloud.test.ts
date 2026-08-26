@@ -1,24 +1,46 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { getDb } from '../src/db.js';
 import { IcloudProvider, hmeSearchCriteria } from '../src/providers/icloud.js';
+import { decodeMailboxMessageId, encodeMailboxMessageId } from '../src/providers/imap-core.js';
 import type { InboxData } from '../src/providers/base.js';
 import { app, authHeaders } from './helpers/http.js';
+
+// Gmail is where this Apple ID's Hide My Email actually forwards, and its junk
+// folder is localised — the name is discovered by special-use, never typed.
+const JUNK_PATH = '[Gmail]/垃圾邮件';
 
 const imapMockState = vi.hoisted(() => ({
   lastSearch: undefined as unknown,
   searchResult: [] as number[],
+  junkSearchResult: [] as number[],
+  lockPaths: [] as string[],
   envelopeTo: undefined as { address: string }[] | undefined,
 }));
 
 vi.mock('imapflow', () => {
   class FakeImapFlow {
+    private selected = 'INBOX';
     async connect(): Promise<void> {}
     once(): void {}
     async logout(): Promise<void> {}
-    async getMailboxLock(): Promise<{ release(): void }> { return { release() {} }; }
+    async list(): Promise<Array<{ path: string; specialUse?: string }>> {
+      return [
+        { path: 'INBOX', specialUse: '\\Inbox' },
+        // A folder of the operator's own personal mail, with no special use.
+        { path: '账单', specialUse: undefined },
+        { path: '[Gmail]/垃圾邮件', specialUse: '\\Junk' },
+      ];
+    }
+    async getMailboxLock(path = 'INBOX'): Promise<{ release(): void }> {
+      this.selected = path;
+      imapMockState.lockPaths.push(path);
+      return { release() {} };
+    }
     async search(criteria: unknown): Promise<number[]> {
       imapMockState.lastSearch = criteria;
-      return [...imapMockState.searchResult];
+      return this.selected === '[Gmail]/垃圾邮件'
+        ? [...imapMockState.junkSearchResult]
+        : [...imapMockState.searchResult];
     }
     async *fetch(range: number[]): AsyncGenerator<unknown> {
       for (const uid of range) {
@@ -35,6 +57,12 @@ vi.mock('imapflow', () => {
     }
   }
   return { ImapFlow: FakeImapFlow };
+});
+
+beforeEach(() => {
+  imapMockState.searchResult = [];
+  imapMockState.junkSearchResult = [];
+  imapMockState.lockPaths = [];
 });
 
 afterEach(() => {
@@ -210,7 +238,51 @@ describe('IcloudProvider reading', () => {
 
     expect(imapMockState.lastSearch).toEqual(hmeSearchCriteria('read@icloud.com'));
     expect(messages).toHaveLength(1);
-    expect(messages[0].id).toBe('7');
+    expect(decodeMailboxMessageId(messages[0].id)).toEqual({ mailbox: 'INBOX', uid: '7' });
+  });
+
+  // The incident this whole path exists to prevent. On 2026-08-23 four aliases
+  // on the live account received codes — the code was in the subject line —
+  // and Gmail filed every one of them under 垃圾邮件. Polling read INBOX only,
+  // reported an empty mailbox each time, and the caller reported four
+  // failures against a provider that had in fact received all four mails.
+  it('finds a code the forwarding mailbox filed as spam', async () => {
+    seedAccount();
+    seedAddress('junked@icloud.com');
+    imapMockState.searchResult = [];
+    imapMockState.junkSearchResult = [2455];
+    imapMockState.envelopeTo = [{ address: 'junked@icloud.com' }];
+    const provider = new IcloudProvider();
+    const inbox = await provider.createInbox({ inboxId: 'ib-junk' });
+
+    const messages = await provider.getMessages(inbox);
+    const adminRes = await app.request(
+      '/api/icloud/addresses/junked@icloud.com/messages',
+      { headers: authHeaders() },
+    );
+    const adminBody = await adminRes.json() as { messages: { id: string }[] };
+
+    expect(messages).toHaveLength(1);
+    expect(decodeMailboxMessageId(messages[0].id)).toEqual({ mailbox: JUNK_PATH, uid: '2455' });
+    expect(imapMockState.lockPaths.slice(0, 2)).toEqual(['INBOX', JUNK_PATH]);
+    // The admin address viewer reads through the same function, so it can
+    // never disagree with what a tenant polling the address sees.
+    expect(adminBody.messages.map((m) => m.id)).toEqual([messages[0].id]);
+  });
+
+  it('refuses an id naming a folder of the operator´s own mail', async () => {
+    seedAccount();
+    seedAddress('boundary@icloud.com');
+    const provider = new IcloudProvider();
+    const inbox = await provider.createInbox({ inboxId: 'ib-boundary' });
+
+    // strictRecipient already hides anything not addressed to the alias, but
+    // the forwarding mailbox is the operator's personal account: the mailbox
+    // an id names is checked against the two the listing reads, not trusted.
+    await expect(provider.getMessage(inbox, encodeMailboxMessageId('账单', '1'))).rejects.toThrow(
+      /Invalid IMAP message id/,
+    );
+    expect(imapMockState.lockPaths).toEqual([]);
   });
 
   it('hides unverifiable personal-mailbox messages from tenant and admin lists', async () => {

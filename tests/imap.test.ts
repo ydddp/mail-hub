@@ -1,13 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getDb } from '../src/db.js';
 import { ImapProvider, generateUniqueUsername } from '../src/providers/imap.js';
-import { selectBodyParts, decodeBody, describeImapError } from '../src/providers/imap-core.js';
+import {
+  decodeBody,
+  decodeMailboxMessageId,
+  describeImapError,
+  encodeMailboxMessageId,
+  selectBodyParts,
+} from '../src/providers/imap-core.js';
 import { randomUsername } from '../src/username-generator.js';
 import type { InboxData } from '../src/providers/base.js';
+
+const JUNK_PATH = '垃圾邮件';
 
 const imapMockState = vi.hoisted(() => ({
   connectCount: 0,
   searchResult: [] as number[],
+  // The receiving server's spam folder. Empty by default so every case that
+  // predates junk support keeps describing an INBOX-only mailbox.
+  junkSearchResult: [] as number[],
+  lockPaths: [] as string[],
   fetchRanges: [] as number[][],
   // Recipients the fake reports on every fetched message. Defaults to
   // undefined, which the provider must treat as "cannot verify, keep".
@@ -22,16 +34,28 @@ const imapMockState = vi.hoisted(() => ({
 
 vi.mock('imapflow', () => {
   class FakeImapFlow {
+    private selected = 'INBOX';
     async connect(): Promise<void> {
       imapMockState.connectCount++;
     }
     once(): void {}
     async logout(): Promise<void> {}
-    async getMailboxLock(): Promise<{ release(): void }> {
+    async list(): Promise<Array<{ path: string; specialUse?: string }>> {
+      return [
+        { path: 'INBOX', specialUse: '\\Inbox' },
+        { path: '就職', specialUse: undefined },
+        { path: '垃圾邮件', specialUse: '\\Junk' },
+      ];
+    }
+    async getMailboxLock(path = 'INBOX'): Promise<{ release(): void }> {
+      this.selected = path;
+      imapMockState.lockPaths.push(path);
       return { release() {} };
     }
     async search(): Promise<number[]> {
-      return [...imapMockState.searchResult];
+      return this.selected === '垃圾邮件'
+        ? [...imapMockState.junkSearchResult]
+        : [...imapMockState.searchResult];
     }
     async *fetch(range: number[]): AsyncGenerator<{ uid: number; internalDate: Date; envelope: { from: { address: string }[]; to?: { address: string }[]; subject: string; date: Date } }> {
       imapMockState.fetchRanges.push(range);
@@ -90,6 +114,9 @@ beforeEach(() => {
   imapMockState.envelopeTo = undefined;
   imapMockState.envelopeDate = '2020-01-01T00:00:00.000Z';
   imapMockState.internalDate = '2026-07-26T21:03:47.000Z';
+  imapMockState.searchResult = [];
+  imapMockState.junkSearchResult = [];
+  imapMockState.lockPaths = [];
 });
 
 describe('ImapProvider polling', () => {
@@ -123,8 +150,9 @@ describe('ImapProvider polling', () => {
     const messages = await p.getMessages(imapInbox('pool-limit', 'x@example.com'));
 
     expect(messages).toHaveLength(20);
-    expect(messages[0].id).toBe('11');
-    expect(messages[19].id).toBe('30');
+    // Oldest first, the order the SPA reverses to show newest at the top.
+    expect(decodeMailboxMessageId(messages[0].id)).toEqual({ mailbox: 'INBOX', uid: '11' });
+    expect(decodeMailboxMessageId(messages[19].id)).toEqual({ mailbox: 'INBOX', uid: '30' });
     expect(imapMockState.fetchRanges).toHaveLength(1);
     expect(imapMockState.fetchRanges[0]).toHaveLength(20);
   });
@@ -207,6 +235,65 @@ describe('ImapProvider polling', () => {
     // is the operator's own inbox, where the trade runs the other way.
     const msg = await new ImapProvider().getMessage(imapInbox('bcc-ok', 'someone@example.com'), '1');
     expect(msg.text).toBe('bcc body');
+  });
+
+  // Production, 2026-08-23: four aliases received verification codes with the
+  // code in the subject line, and Gmail filed all four under 垃圾邮件. The
+  // provider read INBOX only, every poll reported an empty mailbox, and the
+  // caller gave up while the codes sat there unread. Forwarding into a mailbox
+  // the sender does not own breaks DMARC alignment by construction, so junked
+  // verification mail is the ordinary case rather than a freak one.
+  it('reads a verification mail the receiving server filed under Junk', async () => {
+    getDb().prepare(
+      `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('junk-listing', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
+    ).run();
+    imapMockState.searchResult = [];
+    imapMockState.junkSearchResult = [9];
+    imapMockState.envelopeTo = [{ address: 'spam.filed@example.com' }];
+
+    const messages = await new ImapProvider().getMessages(imapInbox('junk-listing', 'spam.filed@example.com'));
+
+    expect(messages).toHaveLength(1);
+    expect(decodeMailboxMessageId(messages[0].id)).toEqual({ mailbox: JUNK_PATH, uid: '9' });
+    expect(imapMockState.lockPaths).toEqual(['INBOX', JUNK_PATH]);
+  });
+
+  it('reads a junk message body from the folder its id names', async () => {
+    getDb().prepare(
+      `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('junk-detail', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
+    ).run();
+    imapMockState.junkSearchResult = [9];
+    imapMockState.envelopeTo = [{ address: 'spam.filed@example.com' }];
+    imapMockState.bodyStructure = { type: 'text/plain' };
+    imapMockState.partContents = { '1': { content: Buffer.from('code 448271') } };
+
+    const provider = new ImapProvider();
+    const inbox = imapInbox('junk-detail', 'spam.filed@example.com');
+    const [listed] = await provider.getMessages(inbox);
+    imapMockState.lockPaths = [];
+
+    const detail = await provider.getMessage(inbox, listed.id);
+
+    expect(detail.text).toBe('code 448271');
+    // A bare UID would have opened INBOX and served whatever uid 9 is there.
+    expect(imapMockState.lockPaths).toEqual([JUNK_PATH]);
+    expect(detail.id).toBe(listed.id);
+  });
+
+  it('refuses a message id naming a folder the listing never reads', async () => {
+    getDb().prepare(
+      `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('folder-escape', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
+    ).run();
+    imapMockState.bodyStructure = { type: 'text/plain' };
+    imapMockState.partContents = { '1': { content: Buffer.from('private mail') } };
+
+    // The shared mailbox behind iCloud is the operator's own account, whose
+    // other folders hold their personal mail. An id arrives straight off the
+    // request path, so the mailbox it names is checked, not trusted.
+    await expect(
+      new ImapProvider().getMessage(imapInbox('folder-escape', 'x@example.com'), encodeMailboxMessageId('就職', '7')),
+    ).rejects.toThrow(/Invalid IMAP message id/);
+    expect(imapMockState.lockPaths).toEqual([]);
   });
 
   it('reports a wrong-tenant UID exactly like an absent one', async () => {
@@ -410,6 +497,36 @@ describe('ImapProvider.getMessage body extraction', () => {
     const msg = await p.getMessage(imapInbox('charset-acct', 'x@example.com'), '42');
 
     expect(msg.text).toBe('code 123456 中文');
+  });
+});
+
+describe('decodeMailboxMessageId', () => {
+  it.each([
+    // Ids handed out before mailboxes were part of them, and UIDs an operator
+    // types into the admin viewer's URL, can only ever have meant INBOX.
+    ['a bare UID', '7', { mailbox: 'INBOX', uid: '7' }],
+    ['a mailbox-qualified id', encodeMailboxMessageId(JUNK_PATH, '9'), { mailbox: JUNK_PATH, uid: '9' }],
+    ['a mailbox whose name contains a quote', encodeMailboxMessageId('a"b', '1'), { mailbox: 'a"b', uid: '1' }],
+  ])('accepts %s', (_name, id, expected) => {
+    expect(decodeMailboxMessageId(id, { allowBareUid: true })).toEqual(expected);
+  });
+
+  it.each([
+    // `1:*` is a SELECT-wide range: imapflow would happily fetch the newest
+    // message in the mailbox for a caller who owns none of it.
+    ['a UID range', encodeMailboxMessageId('INBOX', '1:*')],
+    ['the UID wildcard', encodeMailboxMessageId('INBOX', '*')],
+    ['a zero UID', encodeMailboxMessageId('INBOX', '0')],
+    ['a UID past the 32-bit ceiling', encodeMailboxMessageId('INBOX', '4294967296')],
+    ['a payload that is not JSON', 'imap:bm90LWpzb24'],
+    ['a JSON payload of the wrong shape', `imap:${Buffer.from('{"mailbox":"INBOX"}').toString('base64url')}`],
+    ['a bare non-numeric id', 'INBOX'],
+  ])('rejects %s', (_name, id) => {
+    expect(() => decodeMailboxMessageId(id, { allowBareUid: true })).toThrow(/Invalid IMAP message id/);
+  });
+
+  it('never accepts a bare UID for a provider that has always qualified its ids', () => {
+    expect(() => decodeMailboxMessageId('7')).toThrow(/Invalid IMAP message id/);
   });
 });
 

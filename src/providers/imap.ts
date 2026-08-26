@@ -1,7 +1,7 @@
 import { BaseProvider, PROVIDER, type InboxData, type Message, type MessageDetail } from './base.js';
 import {
-  fetchMessageDetail,
-  fetchMessagesBySearch,
+  fetchMessageDetailAcrossMailboxes,
+  fetchMessagesAcrossMailboxes,
   testConnection,
   type ImapCreds,
 } from './imap-core.js';
@@ -131,14 +131,20 @@ export class ImapProvider extends BaseProvider {
   async getMessages(inbox: InboxData): Promise<Message[]> {
     const account = getAccountById(inbox.authData.imapAccountId);
     if (!account) throw new Error(`IMAP account ${inbox.authData.imapAccountId} not found`);
-    return fetchMessagesBySearch(credsFor(account), { to: inbox.address }, { recipient: inbox.address });
+    // Junk too: a catch-all domain forwarded into someone else's mailbox is
+    // the classic DMARC-misaligned sender, so the receiving server junking a
+    // verification mail is routine rather than exceptional.
+    return fetchMessagesAcrossMailboxes(credsFor(account), { to: inbox.address }, { recipient: inbox.address });
   }
 
   async getMessage(inbox: InboxData, messageId: string): Promise<MessageDetail> {
     const account = getAccountById(inbox.authData.imapAccountId);
     if (!account) throw new Error(`IMAP account ${inbox.authData.imapAccountId} not found`);
     // A UID names a message in the whole catch-all mailbox, not in this inbox.
-    return fetchMessageDetail(credsFor(account), messageId, { recipient: inbox.address });
+    return fetchMessageDetailAcrossMailboxes(credsFor(account), messageId, {
+      recipient: inbox.address,
+      allowBareUid: true,
+    });
   }
 }
 

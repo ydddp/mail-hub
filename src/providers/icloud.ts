@@ -1,7 +1,11 @@
 import { randomUUID } from 'crypto';
 import type { SearchObject } from 'imapflow';
 import { BaseProvider, PROVIDER, type InboxData, type Message, type MessageDetail } from './base.js';
-import { fetchMessageDetail, fetchMessagesBySearch, type ImapCreds } from './imap-core.js';
+import {
+  fetchMessageDetailAcrossMailboxes,
+  fetchMessagesAcrossMailboxes,
+  type ImapCreds,
+} from './imap-core.js';
 import { MAILHUB_HME_LABEL, type IcloudClient } from './icloud-client.js';
 import { allRows, getDb, getRow } from '../db.js';
 import { createLogger } from '../logger.js';
@@ -191,6 +195,33 @@ export function hmeSearchCriteria(hme: string): SearchObject {
   return { to: hme };
 }
 
+/**
+ * One reading path for the provider and the admin address viewer.
+ *
+ * They used to call imap-core separately with the same arguments, which is how
+ * the admin page ended up as blind to the junk folder as the poll was. Sharing
+ * the function means the operator's own view of an address can never disagree
+ * with what a tenant polling it sees.
+ */
+export async function fetchHmeMessages(account: IcloudAccountRow, hme: string): Promise<Message[]> {
+  return fetchMessagesAcrossMailboxes(credsFor(account), hmeSearchCriteria(hme), {
+    recipient: hme,
+    strictRecipient: true,
+  });
+}
+
+export async function fetchHmeMessage(
+  account: IcloudAccountRow,
+  hme: string,
+  messageId: string,
+): Promise<MessageDetail> {
+  return fetchMessageDetailAcrossMailboxes(credsFor(account), messageId, {
+    recipient: hme,
+    strictRecipient: true,
+    allowBareUid: true,
+  });
+}
+
 export class IcloudProvider extends BaseProvider {
   meta = {
     name: PROVIDER.ICLOUD,
@@ -326,11 +357,9 @@ export class IcloudProvider extends BaseProvider {
     const account = getAccountById(inbox.authData.icloudAccountId);
     if (!account) throw new Error(`iCloud account ${inbox.authData.icloudAccountId} not found`);
     // recipient is the exact check behind the substring SEARCH — see Task 2.
-    return fetchMessagesBySearch(
-      credsFor(account),
-      hmeSearchCriteria(inbox.address),
-      { recipient: inbox.address, strictRecipient: true },
-    );
+    // Hide My Email forwarding is DMARC-misaligned by construction, so the
+    // forwarding mailbox junking a code is ordinary: read that folder too.
+    return fetchHmeMessages(account, inbox.address);
   }
 
   async getMessage(inbox: InboxData, messageId: string): Promise<MessageDetail> {
@@ -339,11 +368,9 @@ export class IcloudProvider extends BaseProvider {
     // A UID names a message anywhere in the shared forwarding mailbox — which
     // for iCloud is the operator's own personal inbox, not a mailbox that
     // exists only for these aliases. Anything whose recipient cannot be
-    // verified is refused rather than handed over.
-    return fetchMessageDetail(credsFor(account), messageId, {
-      recipient: inbox.address,
-      strictRecipient: true,
-    });
+    // verified is refused rather than handed over, and the id may only name
+    // one of the two mailboxes the listing reads.
+    return fetchHmeMessage(account, inbox.address, messageId);
   }
 
   /**

@@ -5,8 +5,7 @@ import type { AdminEnv } from './admin.js';
 import { IcloudClient, IcloudDefinitiveRejection, MAILHUB_HME_LABEL, MAILHUB_HME_NOTE } from '../providers/icloud-client.js';
 import { testConnection } from '../providers/imap-core.js';
 import { parseCookieBlob } from '../providers/icloud-cookie.js';
-import { credsFor, getAccountById, hmeSearchCriteria } from '../providers/icloud.js';
-import { fetchMessageDetail, fetchMessagesBySearch } from '../providers/imap-core.js';
+import { fetchHmeMessage, fetchHmeMessages, getAccountById } from '../providers/icloud.js';
 import { beginSrpLogin, completeSrpLogin, deleteTrustToken, listTrustedPhones, markAccountDeleted, sendSmsCode } from '../providers/icloud-auth.js';
 import { errorMessage } from '../errors.js';
 import { createLogger } from '../logger.js';
@@ -446,9 +445,7 @@ icloudRoutes.get('/icloud/addresses/:hme/messages', async (c) => {
   if (!account) return c.json({ error: 'The Apple ID behind this address is not usable' }, 409);
 
   try {
-    const messages = await fetchMessagesBySearch(
-      credsFor(account), hmeSearchCriteria(hme), { recipient: hme, strictRecipient: true },
-    );
+    const messages = await fetchHmeMessages(account, hme);
     return c.json({ messages });
   } catch (e) {
     return c.json({ error: errorMessage(e) }, 502);
@@ -466,11 +463,9 @@ icloudRoutes.get('/icloud/addresses/:hme/messages/:uid', async (c) => {
   if (!account) return c.json({ error: 'The Apple ID behind this address is not usable' }, 409);
 
   try {
-    // The recipient check still applies: a UID names a message anywhere in the
+    // The recipient check still applies: an id names a message anywhere in the
     // shared forwarding mailbox, including the operator's own private mail.
-    const message = await fetchMessageDetail(
-      credsFor(account), c.req.param('uid'), { recipient: hme, strictRecipient: true },
-    );
+    const message = await fetchHmeMessage(account, hme, c.req.param('uid'));
     return c.json({ message });
   } catch (e) {
     return c.json({ error: errorMessage(e) }, 404);

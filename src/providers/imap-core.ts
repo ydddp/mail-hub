@@ -390,6 +390,164 @@ export async function findMailboxBySpecialUse(creds: ImapCreds, specialUse: stri
   }
 }
 
+export const JUNK_SPECIAL_USE = '\\Junk';
+
+/**
+ * Every mailbox a shared receiving account actually delivers into.
+ *
+ * Reading INBOX alone loses whatever the receiving server decided was spam,
+ * and that decision is not ours to trust: a forwarded address breaks DMARC
+ * alignment by construction — the Return-Path is rewritten while the header
+ * From is not — so the mail most likely to be junked is exactly the
+ * verification mail these providers exist to read. Observed in production on
+ * 2026-08-23: four iCloud aliases received codes that Gmail filed under Junk,
+ * and every poll reported an empty mailbox while the codes sat there.
+ *
+ * Junk is located by special-use rather than by name because the folder is
+ * localised — the same Gmail account answers '[Gmail]/垃圾邮件' where an
+ * English one answers '[Gmail]/Spam'.
+ *
+ * A failed LIST is deliberately not softened into "no junk folder". It fails
+ * for the same reasons SELECT is about to — a dropped connection, a rejected
+ * credential — and swallowing it here would hide an expired token from the
+ * caller's own retry path, which then spends a second doomed connection
+ * before noticing.
+ */
+export async function inboxAndJunkMailboxes(creds: ImapCreds): Promise<string[]> {
+  const junk = await findMailboxBySpecialUse(creds, JUNK_SPECIAL_USE);
+  return ['INBOX', ...(junk && junk.toUpperCase() !== 'INBOX' ? [junk] : [])];
+}
+
+export const IMAP_ID_PREFIX = 'imap:';
+
+/** A single IMAP UID, never a range like `1:*` and never the `*` wildcard. */
+const UID_PATTERN = /^[1-9]\d{0,9}$/;
+
+/**
+ * Name a message by its mailbox as well as its UID.
+ *
+ * A UID is unique only within one mailbox, so the moment a provider reads two
+ * of them the bare UID it used to hand out stops identifying anything: INBOX
+ * uid 7 and Junk uid 7 are different messages, and a detail read would serve
+ * whichever mailbox it happened to open.
+ */
+export function encodeMailboxMessageId(mailbox: string, uid: string): string {
+  return `${IMAP_ID_PREFIX}${Buffer.from(JSON.stringify([mailbox, uid])).toString('base64url')}`;
+}
+
+/**
+ * `allowBareUid` is for the two providers that handed out bare UIDs before
+ * mailboxes were part of the id: a listing taken seconds before an upgrade is
+ * still in a caller's hand, and the admin address viewer accepts a UID typed
+ * straight into the URL. Such an id can only ever have meant INBOX, which is
+ * the only mailbox those providers ever read. Outlook never minted one and so
+ * never accepts one.
+ */
+export function decodeMailboxMessageId(
+  messageId: string,
+  opts: { allowBareUid?: boolean; invalidMessage?: string } = {},
+): { mailbox: string; uid: string } {
+  const invalid = (): Error => new Error(opts.invalidMessage ?? 'Invalid IMAP message id');
+
+  if (!messageId.startsWith(IMAP_ID_PREFIX)) {
+    if (opts.allowBareUid && UID_PATTERN.test(messageId)) return { mailbox: 'INBOX', uid: messageId };
+    throw invalid();
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(Buffer.from(messageId.slice(IMAP_ID_PREFIX.length), 'base64url').toString('utf8'));
+  } catch {
+    throw invalid();
+  }
+
+  if (
+    !Array.isArray(value)
+    || value.length !== 2
+    || typeof value[0] !== 'string'
+    || typeof value[1] !== 'string'
+    || !UID_PATTERN.test(value[1])
+    || Number(value[1]) > 0xffffffff
+  ) {
+    throw invalid();
+  }
+  return { mailbox: value[0], uid: value[1] };
+}
+
+/**
+ * Poll every mailbox the account delivers into, oldest first.
+ *
+ * Ascending order is the contract callers already hold — the SPA reverses this
+ * list to show newest first — so the merge sorts up and takes the newest
+ * `limit` off the tail rather than re-ordering what every reader sees. The
+ * sort is stable, so messages a server timestamps identically keep the order
+ * their mailbox handed them over in instead of shuffling between polls.
+ *
+ * Only INBOX is allowed to fail the call. A junk mailbox that cannot be read
+ * is reported and skipped, because the alternative is that one unreadable
+ * folder hides mail that did arrive in the ordinary one.
+ */
+export async function fetchMessagesAcrossMailboxes(
+  creds: ImapCreds,
+  criteria: SearchObject,
+  opts: { limit?: number; recipient?: string; strictRecipient?: boolean } = {},
+): Promise<Message[]> {
+  const limit = opts.limit ?? POLL_FETCH_LIMIT;
+  const merged: Message[] = [];
+
+  for (const mailbox of await inboxAndJunkMailboxes(creds)) {
+    let messages: Message[];
+    try {
+      messages = await fetchMessagesBySearch(creds, criteria, { ...opts, limit, mailbox });
+    } catch (error) {
+      if (mailbox === 'INBOX') throw error;
+      log.warn('failed to read junk mailbox', { poolKey: creds.poolKey, mailbox, error: errorMessage(error) });
+      continue;
+    }
+    for (const message of messages) {
+      merged.push({ ...message, id: encodeMailboxMessageId(mailbox, message.id) });
+    }
+  }
+
+  return merged
+    .sort((a, b) => (a.receivedAt || '').localeCompare(b.receivedAt || ''))
+    .slice(-limit);
+}
+
+/**
+ * Read one message out of the mailbox its id names.
+ *
+ * The mailbox is checked against the same two this module ever lists, because
+ * the id arrives straight off the request path. For iCloud the shared mailbox
+ * is the operator's own personal account, so an unchecked mailbox name would
+ * let a caller reach into their private folders instead of the alias's mail.
+ */
+export async function fetchMessageDetailAcrossMailboxes(
+  creds: ImapCreds,
+  messageId: string,
+  opts: {
+    recipient?: string;
+    strictRecipient?: boolean;
+    allowBareUid?: boolean;
+    invalidMessage?: string;
+  } = {},
+): Promise<MessageDetail> {
+  const { mailbox, uid } = decodeMailboxMessageId(messageId, opts);
+
+  // INBOX needs no lookup, which keeps the ordinary read at one round trip.
+  if (mailbox !== 'INBOX') {
+    const junk = await findMailboxBySpecialUse(creds, JUNK_SPECIAL_USE);
+    if (!junk || mailbox !== junk) throw new Error(opts.invalidMessage ?? 'Invalid IMAP message id');
+  }
+
+  const message = await fetchMessageDetail(creds, uid, {
+    mailbox,
+    recipient: opts.recipient,
+    strictRecipient: opts.strictRecipient,
+  });
+  return { ...message, id: messageId };
+}
+
 export async function assertMailboxReadable(creds: ImapCreds, mailbox = 'INBOX'): Promise<void> {
   const client = await connect(creds);
   try {
