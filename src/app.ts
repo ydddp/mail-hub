@@ -28,6 +28,40 @@ import { requestLogger } from './request-logger.js';
 
 const log = createLogger('cleanup');
 
+// Real non-import bodies top out at a few KB (an iCloud cookie blob is ~3 KB, a
+// template provider config ~1.4 KB); 1 MiB still fits bulk delete/check lists
+// of tens of thousands of selected accounts.
+export const REQUEST_BODY_LIMIT_BYTES = 1024 * 1024;
+// Account imports are pasted as a single request. A real Outlook line with its
+// refresh token is ~520 bytes, so this is roughly 30k accounts per paste.
+export const IMPORT_BODY_LIMIT_BYTES = 16 * 1024 * 1024;
+const IMPORT_PATHS = new Set(['/api/outlook/import', '/api/yyds/import']);
+
+// Counts the bytes actually received and stops pulling the moment the body
+// passes `limit`, resolving null; nothing past the limit is ever buffered.
+async function readBodyWithinLimit(body: ReadableStream<Uint8Array>, limit: number): Promise<Uint8Array<ArrayBuffer> | null> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      void reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let cleanupRunning = false;
 let extRoutes: Hono<AdminEnv> | undefined;
@@ -244,6 +278,7 @@ Common HTTP status codes:
   401 — Missing or invalid Bearer token
   404 — Inbox not found
   410 — Inbox already closed
+  413 — Request body too large (1 MiB; 16 MiB for admin account imports)
   429 — Rate limit exceeded (includes retryAfter)
   502 — Upstream provider error
   503 — All providers exhausted
@@ -420,29 +455,12 @@ export function createApp(): Hono<AdminEnv> {
     return c.text(LLMS_TXT.replace('https://mail.paramess.com', baseUrl).replace('Version: 0.9', `Version: ${APP_VERSION}`));
   });
 
+  // Authentication must stay the first /api/* middleware to touch the request
+  // body: anything reading it earlier lets anonymous callers make us buffer it.
   app.use('/api/*', async (c, next) => {
-    if (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH') {
-      const ct = c.req.header('content-type') || '';
-      if (ct.includes('json')) {
-        const raw = await c.req.text();
-        if (raw.length > 0) {
-          try {
-            const body = JSON.parse(raw);
-            if (typeof body !== 'object' || body === null) {
-              return c.json({ error: 'Request body must be a JSON object' }, 400);
-            }
-          } catch (error) {
-            createLogger('request').warn('invalid JSON request body', { path: c.req.path, error: errorMessage(error) });
-            return c.json({ error: 'Invalid JSON in request body' }, 400);
-          }
-        }
-      }
-    }
-    return next();
-  });
-
-  app.use('/api/*', async (c, next) => {
-    if (c.req.path === '/api/outlook/oauth/callback') {
+    // Microsoft redirects here with a GET (response_mode=query); no other
+    // method on this path needs to bypass auth.
+    if (c.req.method === 'GET' && c.req.path === '/api/outlook/oauth/callback') {
       c.set('isAdmin', false);
       c.set('apiKey', '');
       return next();
@@ -506,6 +524,42 @@ export function createApp(): Hono<AdminEnv> {
     }
 
     return c.json({ error: 'Unauthorized' }, 401);
+  });
+
+  // Buffers every /api/* body up front, so route handlers only ever parse bytes
+  // that fit the limit, whatever the method or Content-Type.
+  app.use('/api/*', async (c, next) => {
+    const body = c.req.raw.body;
+    if (!body) return next();
+    const limit = c.get('isAdmin') && IMPORT_PATHS.has(c.req.path) ? IMPORT_BODY_LIMIT_BYTES : REQUEST_BODY_LIMIT_BYTES;
+    // Content-Length only lets an oversized upload fail fast. It can be absent
+    // (chunked) or wrong, so the byte count is what enforces the limit.
+    const declared = Number(c.req.header('content-length'));
+    const bytes = declared > limit ? null : await readBodyWithinLimit(body, limit);
+    if (!bytes) return c.json({ error: `Request body exceeds the ${limit}-byte limit` }, 413);
+    c.req.raw = new Request(c.req.raw, { body: bytes });
+    return next();
+  });
+
+  app.use('/api/*', async (c, next) => {
+    if (c.req.method === 'POST' || c.req.method === 'PUT' || c.req.method === 'PATCH') {
+      const ct = c.req.header('content-type') || '';
+      if (ct.includes('json')) {
+        const raw = await c.req.text();
+        if (raw.length > 0) {
+          try {
+            const body = JSON.parse(raw);
+            if (typeof body !== 'object' || body === null) {
+              return c.json({ error: 'Request body must be a JSON object' }, 400);
+            }
+          } catch (error) {
+            createLogger('request').warn('invalid JSON request body', { path: c.req.path, error: errorMessage(error) });
+            return c.json({ error: 'Invalid JSON in request body' }, 400);
+          }
+        }
+      }
+    }
+    return next();
   });
 
   app.get('/', (c) => {
