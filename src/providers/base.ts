@@ -40,6 +40,7 @@ export interface InboxData {
   authData: Record<string, string>;
   provider: string;
   apiBase: string;
+  /** UTC ISO datetime with an explicit zone. */
   expiresAt?: string;
 }
 
@@ -48,6 +49,7 @@ export interface Message {
   from: string;
   subject: string;
   excerpt: string;
+  /** UTC ISO datetime, or '' when the upstream instant is unknown. */
   receivedAt: string;
 }
 

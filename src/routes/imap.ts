@@ -1,3 +1,4 @@
+import { utcFields } from '../time.js';
 import { Hono } from 'hono';
 import { buildSetClause, getDb, getRow, logActivity } from '../db.js';
 import type { AdminEnv } from './admin.js';
@@ -29,7 +30,7 @@ imapRoutes.get('/imap/accounts', (c) => {
   const rows = db.prepare(
     `SELECT id, host, port, domain, user, status, tls, last_checked_at, created_at FROM imap_accounts ORDER BY created_at DESC`
   ).all();
-  return c.json({ accounts: rows });
+  return c.json({ accounts: rows.map((row) => utcFields(row, 'created_at', 'last_checked_at')) });
 });
 
 imapRoutes.get('/imap/accounts/:id', (c) => {
@@ -38,7 +39,7 @@ imapRoutes.get('/imap/accounts/:id', (c) => {
     `SELECT id, host, port, domain, user, status, tls, last_checked_at, created_at FROM imap_accounts WHERE id = ?`
   ).get(c.req.param('id'));
   if (!row) return c.json({ error: 'Account not found' }, 404);
-  return c.json({ account: row });
+  return c.json({ account: utcFields(row, 'created_at', 'last_checked_at') });
 });
 
 imapRoutes.post('/imap/accounts', async (c) => {

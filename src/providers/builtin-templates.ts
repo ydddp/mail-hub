@@ -59,8 +59,8 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
       auth: { type: 'none' },
       domains: { mode: 'from_create' },
       create: { path: '/inbox/create', method: 'POST', body: { community: true, prefix: '{{username}}', domain: '{{domain}}' }, responseMapping: { address: 'address', authData: { token: 'token' } }, expiresIn: 3600 },
-      messages: { path: '/inbox?token={{token}}', method: 'GET', authFrom: 'inbox', authField: 'token', resultPath: 'emails', itemMapping: { id: 'date', from: 'from', subject: 'subject', excerpt: 'body', receivedAt: 'date', text: 'body', html: 'html' } },
-      messageDetail: { fromList: true, path: '', method: 'GET', authFrom: 'inbox', responseMapping: { id: 'date', from: 'from', subject: 'subject', text: 'body', html: 'html', receivedAt: 'date' } },
+      messages: { timestampFormat: 'unix_milliseconds', path: '/inbox?token={{token}}', method: 'GET', authFrom: 'inbox', authField: 'token', resultPath: 'emails', itemMapping: { id: 'date', from: 'from', subject: 'subject', excerpt: 'body', receivedAt: 'date', text: 'body', html: 'html' } },
+      messageDetail: { timestampFormat: 'unix_milliseconds', fromList: true, path: '', method: 'GET', authFrom: 'inbox', responseMapping: { id: 'date', from: 'from', subject: 'subject', text: 'body', html: 'html', receivedAt: 'date' } },
     },
   },
   {
@@ -107,13 +107,15 @@ export const BUILTIN_TEMPLATES: BuiltinTemplate[] = [
         method: 'GET',
         authFrom: 'provider',
         resultPath: 'list',
-        itemMapping: { id: 'mail_id', from: 'mail_from', subject: 'mail_subject', excerpt: 'mail_excerpt', receivedAt: 'mail_date' },
+        timestampFormat: 'unix_seconds',
+        itemMapping: { id: 'mail_id', from: 'mail_from', subject: 'mail_subject', excerpt: 'mail_excerpt', receivedAt: 'mail_timestamp' },
       },
       messageDetail: {
         path: '?f=fetch_email&sid_token={{sid}}&email_id={{messageId}}',
         method: 'GET',
         authFrom: 'provider',
-        responseMapping: { id: 'mail_id', from: 'mail_from', subject: 'mail_subject', text: 'mail_text', html: 'mail_body', receivedAt: 'mail_date' },
+        timestampFormat: 'unix_seconds',
+        responseMapping: { id: 'mail_id', from: 'mail_from', subject: 'mail_subject', text: 'mail_text', html: 'mail_body', receivedAt: 'mail_timestamp' },
       },
       deleteInbox: {
         path: '?f=forget_me&sid_token={{sid}}&email_addr={{address}}',

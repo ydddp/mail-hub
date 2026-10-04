@@ -1,3 +1,4 @@
+import { parseTimestamp, utcFields } from '../time.js';
 import { Hono } from 'hono';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { allRows, getDb, getRow, getSetting, logActivity, setSetting } from '../db.js';
@@ -246,7 +247,8 @@ async function exchangeAuthorizationCode(session: OAuthSessionRow, code: string)
 }
 
 function isOAuthSessionExpired(session: OAuthSessionRow): boolean {
-  return new Date(`${session.expires_at}Z`).getTime() < Date.now();
+  const expiresAt = parseTimestamp(session.expires_at);
+  return !Number.isFinite(expiresAt) || expiresAt < Date.now();
 }
 
 function oauthErrorMessage(data: OAuthTokenResponse, fallback: string): string {
@@ -656,7 +658,7 @@ outlookRoutes.get('/outlook/accounts', (c) => {
 
   const accounts = db.prepare(sql).all(...params);
 
-  return c.json({ accounts });
+  return c.json({ accounts: accounts.map((row) => utcFields(row, 'created_at', 'token_renewed_at', 'last_checked_at')) });
 });
 
 const MAILBOX_DEFAULT_LIMIT = 50;
@@ -730,7 +732,7 @@ type LeaseState = 'lease' | 'gap' | 'before' | 'undated';
 
 function classifyMessage(receivedAt: string | undefined, leases: Lease[]): { leaseId: string | null; leaseState: LeaseState } {
   if (!receivedAt) return { leaseId: null, leaseState: 'undated' };
-  const t = Date.parse(receivedAt);
+  const t = parseTimestamp(receivedAt);
   if (!Number.isFinite(t)) return { leaseId: null, leaseState: 'undated' };
   for (const lease of leases) {
     if (t >= lease.startMs && t < lease.endMs) return { leaseId: lease.id, leaseState: 'lease' };
@@ -770,7 +772,7 @@ outlookRoutes.get('/outlook/accounts/:email/mailbox', async (c) => {
       limit,
       truncated: messages.length >= limit,
       messages: messages.map((m) => ({ ...m, ...classifyMessage(m.receivedAt, leases) })),
-      leases: leases.map(({ startMs: _s, endMs: _e, ...rest }) => rest),
+      leases: leases.map(({ startMs: _s, endMs: _e, ...rest }) => utcFields(rest, 'createdAt', 'endedAt')),
     });
   } catch (e) {
     return c.json({ error: errorMessage(e) }, 502);

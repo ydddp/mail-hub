@@ -1,3 +1,4 @@
+import { parseTimestamp, toUtcIso, utcFields } from '../time.js';
 import { Hono } from 'hono';
 import { allRows, getDb, getRow } from '../db.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
@@ -58,7 +59,7 @@ serviceRoutes.get('/services', (c) => {
       entry.activeInboxes = r.active_inboxes || 0;
       // Cumulative counter can lag live rows only for pre-stats DBs; never undercount.
       entry.totalInboxes = Math.max(entry.totalInboxes, r.total_inboxes);
-      if (!entry.lastUsed || r.last_used > entry.lastUsed) entry.lastUsed = r.last_used;
+      if (!entry.lastUsed || parseTimestamp(r.last_used) > parseTimestamp(entry.lastUsed)) entry.lastUsed = r.last_used;
     } else {
       merged.set(r.name, {
         name: r.name,
@@ -73,7 +74,7 @@ serviceRoutes.get('/services', (c) => {
     }
   }
 
-  const services = [...merged.values()].sort((a, b) => (b.lastUsed || '').localeCompare(a.lastUsed || ''));
+  const services = [...merged.values()].sort((a, b) => (parseTimestamp(b.lastUsed) || 0) - (parseTimestamp(a.lastUsed) || 0));
 
   const totalInboxes = services.reduce((s, r) => s + r.totalInboxes, 0);
   const totalFailures = services.reduce((s, r) => s + r.failCount, 0);
@@ -81,7 +82,7 @@ serviceRoutes.get('/services', (c) => {
 
   return c.json({
     summary: { totalServices: services.length, totalInboxes, totalFailures, totalBlocks },
-    services,
+    services: services.map((row) => utcFields(row, 'firstUsed', 'lastUsed')),
   });
 });
 
@@ -113,11 +114,11 @@ serviceRoutes.get('/services/:name', (c) => {
       totalInboxes: stats.inbox_count,
       successCount: stats.success_count,
       failCount: stats.fail_count,
-      firstUsed: stats.first_used_at,
-      lastUsed: stats.last_used_at,
+      firstUsed: toUtcIso(stats.first_used_at),
+      lastUsed: toUtcIso(stats.last_used_at),
     } : null,
-    inboxes,
-    failures,
-    blocks,
+    inboxes: inboxes.map((row) => utcFields(row, 'created_at')),
+    failures: failures.map((row) => utcFields(row, 'reported_at')),
+    blocks: blocks.map((row) => utcFields(row, 'blocked_at')),
   });
 });

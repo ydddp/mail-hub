@@ -1,3 +1,4 @@
+import { toUtcIso } from '../time.js';
 import { Hono } from 'hono';
 import { existsSync, statSync } from 'fs';
 import { allRows, DEFAULT_SETTINGS, backupDb, deleteBackup, getDb, getSetting, listBackups, setSetting } from '../db.js';
@@ -36,10 +37,10 @@ settingsRoutes.get('/admin/settings', (c) => {
     updated_at: string;
   }>(db, `SELECT key, value, updated_at FROM settings`);
   const settings: Record<string, string> = { ...DEFAULT_SETTINGS };
-  const updatedAt: Record<string, string> = {};
+  const updatedAt: Record<string, string | null> = {};
   for (const row of rows) {
     settings[row.key] = row.value;
-    updatedAt[row.key] = row.updated_at;
+    updatedAt[row.key] = toUtcIso(row.updated_at);
   }
   return c.json({ settings, defaults: DEFAULT_SETTINGS, updatedAt, env: { proxyUrl: config.proxyUrl } });
 });

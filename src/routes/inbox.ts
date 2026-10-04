@@ -1,3 +1,4 @@
+import { parseTimestamp, toUtcIso, utcFields, utcMessage } from '../time.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type Database from 'better-sqlite3';
@@ -206,14 +207,14 @@ inboxRoutes.get('/inboxes', (c) => {
 
   const rows = db.prepare(sql).all(...params);
 
-  return c.json({ inboxes: rows, page, pageSize, total });
+  return c.json({ inboxes: rows.map((row) => utcFields(row, 'created_at', 'expires_at')), page, pageSize, total });
 });
 
 inboxRoutes.get('/inbox/:id', (c) => {
   const id = c.req.param('id');
   const row = getInboxRow(c, id, 'id, provider, address, target_service, owner_key, created_at, expires_at, status');
   if (!row) return c.json({ error: 'Inbox not found' }, 404);
-  return c.json(row);
+  return c.json(utcFields(row, 'created_at', 'expires_at'));
 });
 
 inboxRoutes.get('/inbox/:id/messages', async (c) => {
@@ -248,7 +249,7 @@ inboxRoutes.get('/inbox/:id/messages', async (c) => {
 
   try {
     const messages = await pollProvider(providerName, provider, inbox);
-    const own = messages.filter((m) => isMessageWithinInboxLifetime(m.receivedAt, row));
+    const own = messages.map(utcMessage).filter((m) => isMessageWithinInboxLifetime(m.receivedAt, row));
     return c.json({ messages: own, status, address, provider: providerName, accountEmail });
   } catch (e) {
     if (e instanceof PollRateLimitError) return pollRateLimitResponse(c, e);
@@ -269,7 +270,7 @@ inboxRoutes.get('/inbox/:id/messages/:mid', async (c) => {
   if (!provider) return c.json({ error: `Provider '${providerName}' not available` }, 500);
 
   try {
-    const message = await provider.getMessage(rowToInboxData(row), mid);
+    const message = utcMessage(await provider.getMessage(rowToInboxData(row), mid));
     // The id came from a listing we already filtered, but ids are guessable on
     // some providers and a shared mailbox would happily serve the previous
     // tenant's message. Re-check the boundary on the detail path too.
@@ -290,7 +291,7 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
   const sinceParam = c.req.query('since');
   let sinceTimestamp: number | undefined;
   if (sinceParam) {
-    sinceTimestamp = /^\d+$/.test(sinceParam) ? Number(sinceParam) : Date.parse(sinceParam);
+    sinceTimestamp = /^\d+$/.test(sinceParam) ? Number(sinceParam) : parseTimestamp(sinceParam);
     if (!Number.isFinite(sinceTimestamp)) {
       return c.json({ error: 'Invalid since parameter' }, 400);
     }
@@ -317,7 +318,7 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
       // `since` is an explicit "strictly newer than" cursor from the caller, so
       // an undated message cannot satisfy it.
       if (!m.receivedAt) return false;
-      const receivedAt = Date.parse(m.receivedAt);
+      const receivedAt = parseTimestamp(m.receivedAt);
       if (!Number.isFinite(receivedAt)) return false;
       return receivedAt > sinceTimestamp;
     });
@@ -325,8 +326,8 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
 
   function sortNewest(msgs: Message[]): Message[] {
     return msgs.slice().sort((a, b) => {
-      const ta = a.receivedAt ? new Date(a.receivedAt).getTime() : 0;
-      const tb = b.receivedAt ? new Date(b.receivedAt).getTime() : 0;
+      const ta = a.receivedAt ? (parseTimestamp(a.receivedAt) || 0) : 0;
+      const tb = b.receivedAt ? (parseTimestamp(b.receivedAt) || 0) : 0;
       return tb - ta;
     });
   }
@@ -384,7 +385,7 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
     codes,
     email: { from: detail.from, subject: detail.subject },
     messageId: detail.id || latest.id,
-    receivedAt: detail.receivedAt || latest.receivedAt || null,
+    receivedAt: toUtcIso(detail.receivedAt) || toUtcIso(latest.receivedAt),
   });
 });
 

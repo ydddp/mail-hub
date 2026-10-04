@@ -1,3 +1,4 @@
+import { parseTimestamp, providerTime } from '../time.js';
 import { createHash, randomUUID } from 'crypto';
 import { BaseProvider, PROVIDER, type InboxData, type Message, type MessageDetail, type ProviderMeta } from './base.js';
 import { allRows, getDb, getRow, getSetting } from '../db.js';
@@ -252,7 +253,7 @@ function mergeMessages(inboxMsgs: GraphMessage[], junkMsgs: GraphMessage[], limi
     if (!merged.has(m.id)) merged.set(m.id, m);
   }
   return [...merged.values()]
-    .sort((a, b) => (b.receivedDateTime || '').localeCompare(a.receivedDateTime || ''))
+    .sort((a, b) => (parseTimestamp(b.receivedDateTime) || 0) - (parseTimestamp(a.receivedDateTime) || 0))
     .slice(0, limit);
 }
 
@@ -286,7 +287,7 @@ function normalizeMessage(msg: any): GraphMessage {
         address: (msg.from?.emailAddress || msg.From?.EmailAddress)?.address || (msg.from?.emailAddress || msg.From?.EmailAddress)?.Address || '',
       }
     } : undefined,
-    receivedDateTime: msg.receivedDateTime || msg.ReceivedDateTime || '',
+    receivedDateTime: providerTime(msg.receivedDateTime || msg.ReceivedDateTime),
     body: msg.body || msg.Body ? {
       content: (msg.body || msg.Body)?.content || (msg.body || msg.Body)?.Content || '',
       contentType: ((msg.body || msg.Body)?.contentType || (msg.body || msg.Body)?.ContentType || '').toLowerCase(),

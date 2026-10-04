@@ -21,6 +21,7 @@ export function formatSender(from: { name?: string; address?: string }): string 
   return from.name ? `${from.name} <${from.address}>` : (from.address || '');
 }
 
+// UTC calendar day for all daily counters; deliberately independent of display timezone.
 export function todayDateString(): string {
   return new Date().toISOString().slice(0, 10);
 }

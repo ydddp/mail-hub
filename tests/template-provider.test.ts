@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BUILTIN_TEMPLATES } from '../src/providers/builtin-templates.js';
 import { getDb, getRow } from '../src/db.js';
 import { registry } from '../src/providers/registry.js';
 import { BaseProvider, type InboxData, type Message, type MessageDetail, type ProviderMeta } from '../src/providers/base.js';
@@ -14,6 +15,61 @@ const validConfig = {
   messages: { method: 'GET' as const, endpoint: '/accounts/{{id}}/messages' },
   messageDetail: { method: 'GET' as const, endpoint: '/messages/{{messageId}}' },
 };
+
+describe('template message timestamp contract', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([true, false])('reads TempMail.lol milliseconds with legacy config=%s', async (legacy) => {
+    const cfg = structuredClone(BUILTIN_TEMPLATES.find(entry => entry.config.name === 'tempmail-lol')!.config);
+    if (legacy) { delete cfg.messages.timestampFormat; delete cfg.messageDetail.timestampFormat; }
+    const raw = { from: 'sender@example.test', subject: 'code', body: '123456', date: 1715200000000 };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ emails: [raw] }))));
+    const provider = new TemplateProvider(cfg);
+    const inbox = {address:'test@example.test',provider:cfg.name,apiBase:cfg.apiBase,authData:{token:'test'}};
+    const expected = '2024-05-08T20:26:40.000Z';
+    expect((await provider.getMessages(inbox))[0].receivedAt).toBe(expected);
+    expect((await provider.getMessage(inbox, String(raw.date))).receivedAt).toBe(expected);
+  });
+
+  it.each(['mail_date', 'mail_timestamp'])('uses Guerrilla Mail Unix time with %s mappings (including legacy DB configs)', async (field) => {
+    const cfg = structuredClone(BUILTIN_TEMPLATES.find(entry => entry.config.name === 'guerrillamail')!.config);
+    cfg.messages.itemMapping.receivedAt = field;
+    cfg.messageDetail.responseMapping.receivedAt = field;
+    // Real upstream field sample retained in docs/providers/guerrillamail-api.md.
+    const raw = { mail_id: 'm1', mail_date: '02:38:20', mail_timestamp: 1778294300 };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(String(url).includes('fetch_email') ? raw : { list: [raw] }))));
+    const provider = new TemplateProvider(cfg);
+    const inbox = { address: 'test@example.test', provider: cfg.name, apiBase: cfg.apiBase, authData: { sid: 'test' } };
+    const expected = new Date(raw.mail_timestamp * 1000).toISOString();
+    expect((await provider.getMessages(inbox))[0].receivedAt).toBe(expected);
+    expect((await provider.getMessage(inbox, 'm1')).receivedAt).toBe(expected);
+  });
+
+  it.each([
+    { value: '2026-10-04T21:00:00+09:00', format: 'iso', expected: '2026-10-04T12:00:00.000Z' },
+    { value: '2026-10-04 12:00:00', format: 'utc', expected: '2026-10-04T12:00:00.000Z' },
+    { value: '2026-10-04 12:00:00', format: 'iso', expected: '' },
+    { value: 1791115200, format: 'unix_seconds', expected: '2026-10-04T12:00:00.000Z' },
+    { value: '1791115200000', format: 'unix_milliseconds', expected: '2026-10-04T12:00:00.000Z' },
+    { value: '12:00:00', format: 'iso', expected: '' },
+  ] as const)('normalizes $format times on list and both detail paths', async ({ value, format, expected }) => {
+    const cfg = structuredClone(BUILTIN_TEMPLATES[0].config);
+    cfg.messages.resultPath = '$root';
+    cfg.messages.timestampFormat = format;
+    cfg.messages.itemMapping = { id: 'id', from: 'from', subject: 'subject', excerpt: 'text', receivedAt: 'date' };
+    cfg.messageDetail.timestampFormat = format;
+    cfg.messageDetail.responseMapping = { id: 'id', from: 'from', subject: 'subject', receivedAt: 'date' };
+    const raw = { id: 'm1', from: 'sender@example.test', subject: 'Code', text: '123456', date: value };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(String(url).endsWith('/m1') ? raw : [raw]))));
+    const inbox = { address: 'test@example.test', provider: cfg.name, apiBase: cfg.apiBase, authData: { token: 'test' } };
+    const provider = new TemplateProvider(cfg);
+    expect((await provider.getMessages(inbox))[0].receivedAt).toBe(expected);
+    expect((await provider.getMessage(inbox, 'm1')).receivedAt).toBe(expected);
+    cfg.messageDetail.fromList = true;
+    const fromList = new TemplateProvider(cfg);
+    expect((await fromList.getMessage(inbox, 'm1')).receivedAt).toBe(expected);
+  });
+});
 
 function makeConfig(overrides: Partial<TemplateProviderConfig> = {}) {
   return { ...validConfig, ...overrides };

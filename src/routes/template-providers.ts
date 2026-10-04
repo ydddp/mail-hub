@@ -1,3 +1,4 @@
+import { toUtcIso } from '../time.js';
 import { Hono } from 'hono';
 import { allRows, getDb, getRow, logActivity } from '../db.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
@@ -28,7 +29,7 @@ templateProviderRoutes.get('/template-providers', (c) => {
   const providers = rows.map(r => {
     const raw = JSON.parse(r.config_json);
     const cfg = raw.config ?? raw;
-    return { ...cfg, enabled: r.enabled === 1, created_at: r.created_at, updated_at: r.updated_at };
+    return { ...cfg, enabled: r.enabled === 1, created_at: toUtcIso(r.created_at), updated_at: toUtcIso(r.updated_at) };
   });
   return c.json({ providers });
 });

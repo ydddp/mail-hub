@@ -1,3 +1,4 @@
+import { utcFields } from '../time.js';
 import { Hono } from 'hono';
 import { buildSetClause, getDb, getRow, logActivity } from '../db.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
@@ -25,7 +26,7 @@ blockRoutes.get('/blocks', (c) => {
 
   const rows = db.prepare(sql).all(...params);
 
-  return c.json({ blocks: rows });
+  return c.json({ blocks: rows.map((row) => utcFields(row, 'blocked_at')) });
 });
 
 blockRoutes.post('/blocks', requireAdmin, async (c) => {
@@ -69,7 +70,7 @@ blockRoutes.get('/block-rules', (c) => {
   const db = getDb();
   const rules = db.prepare(`SELECT id, service, provider, threshold, window_hours, scope, domain_level, enabled, created_at FROM block_rules ORDER BY created_at DESC`)
     .all();
-  return c.json({ rules });
+  return c.json({ rules: rules.map((row) => utcFields(row, 'created_at')) });
 });
 
 blockRoutes.post('/block-rules', requireAdmin, async (c) => {

@@ -1,3 +1,4 @@
+import { utcFields } from '../time.js';
 import { Hono } from 'hono';
 import { randomUUID } from 'crypto';
 import { getDb, getRow, logActivity } from '../db.js';
@@ -30,7 +31,7 @@ icloudRoutes.get('/icloud/accounts', (c) => {
   const rows = getDb().prepare(
     `SELECT ${PUBLIC_COLUMNS} FROM icloud_accounts ORDER BY created_at DESC`,
   ).all();
-  return c.json({ accounts: rows });
+  return c.json({ accounts: rows.map((row) => utcFields(row, 'created_at', 'last_checked_at')) });
 });
 
 icloudRoutes.post('/icloud/accounts', async (c) => {
@@ -78,7 +79,7 @@ icloudRoutes.post('/icloud/accounts', async (c) => {
 
   logActivity('green', `Added iCloud account ${body.appleId}`);
   const account = getRow(getDb(), `SELECT ${PUBLIC_COLUMNS} FROM icloud_accounts WHERE id = ?`, id);
-  return c.json({ account });
+  return c.json({ account: utcFields(account, 'created_at', 'last_checked_at') });
 });
 
 icloudRoutes.delete('/icloud/accounts/:id', (c) => {
@@ -400,7 +401,7 @@ icloudRoutes.get('/icloud/addresses', (c) => {
     `SELECT hme, account_id, anonymous_id, state, assigned_inbox_id, assigned_at, use_count, created_at
        FROM icloud_addresses ORDER BY created_at DESC`,
   ).all();
-  return c.json({ addresses: rows });
+  return c.json({ addresses: rows.map((row) => utcFields(row, 'created_at', 'assigned_at')) });
 });
 
 interface RetireRow {

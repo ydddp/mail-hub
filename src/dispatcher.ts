@@ -1,3 +1,4 @@
+import { parseTimestamp } from './time.js';
 import { nanoid } from 'nanoid';
 import { registry } from './providers/registry.js';
 import { rateLimiter } from './rate-limiter.js';
@@ -51,12 +52,12 @@ function sanitizeDuration(duration: unknown): number | undefined {
 function resolveExpiresAt(providerExpiresAt: string | undefined, durationSeconds: number | undefined): string {
   const requestedMs = durationSeconds ? Date.now() + durationSeconds * 1000 : undefined;
   if (providerExpiresAt) {
-    const upstreamMs = Date.parse(providerExpiresAt);
+    const upstreamMs = parseTimestamp(providerExpiresAt);
     // Upstream lifetime is authoritative; a shorter requested duration may tighten it.
     if (requestedMs && Number.isFinite(upstreamMs)) {
       return new Date(Math.min(upstreamMs, requestedMs)).toISOString();
     }
-    return providerExpiresAt;
+    if (Number.isFinite(upstreamMs)) return new Date(upstreamMs).toISOString();
   }
   return new Date(requestedMs ?? Date.now() + DEFAULT_INBOX_TTL_MS).toISOString();
 }

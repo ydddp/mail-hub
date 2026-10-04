@@ -1,3 +1,4 @@
+import { toUtcIso } from './time.js';
 import { Hono } from 'hono';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
@@ -90,6 +91,9 @@ const LLMS_TXT = `# Mail Hub — Temporary Email Aggregation API
 Mail Hub is a multi-provider temporary/disposable email aggregation service.
 It creates inboxes from multiple email providers, polls for incoming messages,
 and extracts verification codes — all through a unified REST API.
+
+All API time-point fields use UTC ISO datetimes with milliseconds and Z.
+Daily quotas use UTC days (reset at 00:00 UTC); the SPA displays browser-local time.
 
 ## Authentication
 
@@ -591,7 +595,7 @@ export function createApp(): Hono<AdminEnv> {
       db,
       `SELECT type, text, created_at FROM activity_log ORDER BY created_at DESC LIMIT 20`,
     );
-    const activities = rows.map((r) => ({ type: r.type, text: r.text, time: r.created_at }));
+    const activities = rows.map((r) => ({ type: r.type, text: r.text, time: toUtcIso(r.created_at) }));
     return c.json({ activities });
   });
 

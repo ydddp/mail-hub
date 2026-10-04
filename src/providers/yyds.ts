@@ -1,3 +1,4 @@
+import { providerTime, toUtcIso } from '../time.js';
 import { BaseProvider, PROVIDER, type InboxData, type Message, type MessageDetail, type ProviderDomainMode, type ProviderMeta } from './base.js';
 import { allRows, getDb, getRow } from '../db.js';
 import { fetchWithTimeout, formatSender, todayDateString } from '../utils.js';
@@ -276,7 +277,7 @@ export class YydsProvider extends BaseProvider {
             },
             provider: this.meta.name,
             apiBase: API_BASE,
-            expiresAt: json.data.expiresAt,
+            expiresAt: toUtcIso(json.data.expiresAt) ?? undefined,
           },
         };
       }
@@ -468,7 +469,7 @@ export class YydsProvider extends BaseProvider {
       from: formatSender(m.from || {}),
       subject: m.subject || '',
       excerpt: '',
-      receivedAt: m.createdAt || '',
+      receivedAt: providerTime(m.createdAt),
     }));
   }
 
@@ -491,7 +492,7 @@ export class YydsProvider extends BaseProvider {
       from: formatSender(m.from || {}),
       subject: m.subject || '',
       excerpt: '',
-      receivedAt: m.createdAt || '',
+      receivedAt: providerTime(m.createdAt),
       text: m.text || '',
       html: Array.isArray(m.html) ? m.html.join('') : (m.html || ''),
     };

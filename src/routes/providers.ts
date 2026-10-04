@@ -1,3 +1,4 @@
+import { utcFields } from '../time.js';
 import { Hono } from 'hono';
 import { registry } from '../providers/registry.js';
 import { rateLimiter } from '../rate-limiter.js';
@@ -61,7 +62,7 @@ providerRoutes.get('/providers/:name', async (c) => {
     ...cfg,
     domains,
     rateStatus,
-    stats,
+    stats: utcFields(stats, 'last_success_at', 'last_error_at'),
   });
 });
 

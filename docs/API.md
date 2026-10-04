@@ -4,6 +4,42 @@ Multi-provider temporary email aggregation service. All endpoints return JSON.
 
 Base URL: `http://localhost:3100`
 
+## Time contract
+
+- Time-point fields (including snake_case DB metadata) are UTC ISO datetimes
+  with milliseconds and `Z`, e.g. `2026-10-04T12:00:00.000Z`. Field names stay
+  unchanged. Missing/invalid metadata times are `null`; unknown message
+  `receivedAt` remains `""` (the code endpoint uses `null`).
+- The SPA converts instants to the browser's local timezone, shown above the
+  page. API responses and application logs remain UTC.
+- Daily API-key and YYDS counters use UTC calendar days and reset at 00:00 UTC,
+  irrespective of the viewer's timezone. Counter date markers are dates, not
+  timestamps. YYDS list/stat views display zero for a previous day's counters
+  without writing a reset on read.
+- `since` accepts epoch **milliseconds** or a full datetime. Explicit offsets
+  are honored; legacy full datetimes without a zone are interpreted as UTC.
+  Date-only values, impossible dates and unparseable values return 400.
+- Existing SQLite UTC values are not rewritten. Inbox lease isolation and
+  expiry remain comparisons of absolute instants. Backup/cleanup intervals
+  remain elapsed durations.
+
+Template providers may set `messages.timestampFormat` and
+`messageDetail.timestampFormat` in their JSON config:
+
+| Value | Upstream timestamp contract |
+|-------|-----------------------------|
+| `iso` (default) | Full datetime with `Z`/offset, or an RFC email date with an explicit zone |
+| `utc` | Same, additionally accepting full zone-less datetimes **known to be UTC** |
+| `unix_seconds` | Numeric epoch seconds |
+| `unix_milliseconds` | Numeric epoch milliseconds |
+
+The `fromList` detail path uses `messages.timestampFormat`. Units/timezones
+are never inferred from numeric length or the server/browser timezone. A
+zone-less upstream time requires a verified source contract before choosing
+`utc`; otherwise it stays unknown. Guerrilla Mail uses `mail_timestamp`
+(epoch seconds), including legacy builtin configs mapping `mail_date`.
+TempMail.lol uses epoch milliseconds in `date`, including legacy builtin rows.
+
 ---
 
 ## Authentication
@@ -825,7 +861,7 @@ this mailbox. Admin only.
       "id": "i-abc123",
       "address": "user+ab12cd34@outlook.com",
       "targetService": "steam",
-      "createdAt": "2026-07-27 14:02:00",
+      "createdAt": "2026-07-27T14:02:00.000Z",
       "endedAt": null,
       "status": "active"
     }

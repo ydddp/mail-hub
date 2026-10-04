@@ -101,7 +101,8 @@ describe('inbox code extraction', () => {
     });
   });
 
-  it('does not return the same latest message again when since equals its receivedAt', async () => {
+  it.each(['2026-06-05T00:03:00.000Z', '2026-06-05T00:03:00', '2026-06-05 09:03:00+09:00'])
+    ('does not return the same latest message again when since %s equals its receivedAt', async (since) => {
     const receivedAt = '2026-06-05T00:03:00.000Z';
     registry.register(new CodeTestProvider([
       {
@@ -123,7 +124,7 @@ describe('inbox code extraction', () => {
     }));
     insertCodeInbox('code-since-repeat');
 
-    const res = await app.request(`/api/inbox/code-since-repeat/code?since=${encodeURIComponent(receivedAt)}`, { headers: authHeaders() });
+    const res = await app.request(`/api/inbox/code-since-repeat/code?since=${encodeURIComponent(since)}`, { headers: authHeaders() });
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toEqual({
@@ -134,13 +135,25 @@ describe('inbox code extraction', () => {
     });
   });
 
-  it('rejects an invalid since parameter', async () => {
+  it.each(['not-a-date', '2026-06-05', '2026-02-30T00:00:00Z'])('rejects invalid since %s', async (since) => {
     registry.register(new CodeTestProvider([], {}));
     insertCodeInbox('code-invalid-since');
 
-    const res = await app.request('/api/inbox/code-invalid-since/code?since=not-a-date', { headers: authHeaders() });
+    const res = await app.request(`/api/inbox/code-invalid-since/code?since=${encodeURIComponent(since)}`, { headers: authHeaders() });
 
     expect(res.status).toBe(400);
     await expect(res.json()).resolves.toEqual({ error: 'Invalid since parameter' });
+  });
+
+  it('selects the newest absolute instant across mixed offsets and returns UTC', async () => {
+    const messages = [
+      {id:'older', receivedAt:'2026-06-05T10:00:00+09:00'},
+      {id:'newer', receivedAt:'2026-06-05T02:00:00Z'},
+    ].map(m => ({...m, from:'sender@example.test',subject:'Code 654321',excerpt:'654321'}));
+    registry.register(new CodeTestProvider(messages, Object.fromEntries(messages.map(m => [m.id,{...m,text:'Code 654321'}]))));
+    insertCodeInbox('code-offsets');
+    const res = await app.request('/api/inbox/code-offsets/code', {headers:authHeaders()});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({messageId:'newer',receivedAt:'2026-06-05T02:00:00.000Z'});
   });
 });

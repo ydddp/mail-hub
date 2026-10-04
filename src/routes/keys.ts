@@ -1,3 +1,4 @@
+import { toUtcIso } from '../time.js';
 import { Hono } from 'hono';
 import { nanoid } from 'nanoid';
 import { allRows, buildSetClause, getDb, logActivity } from '../db.js';
@@ -53,8 +54,8 @@ keyRoutes.get('/keys', (c) => {
     callCount: row.call_count || 0,
     dailyLimit: row.daily_limit,
     dailyCalls: row.daily_reset_at?.startsWith(today) ? row.daily_calls : 0,
-    lastUsedAt: row.last_used_at,
-    createdAt: row.created_at,
+    lastUsedAt: toUtcIso(row.last_used_at),
+    createdAt: toUtcIso(row.created_at),
     active: !!row.active,
   }));
 

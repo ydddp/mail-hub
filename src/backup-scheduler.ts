@@ -1,3 +1,4 @@
+import { parseTimestamp } from './time.js';
 import { BackupInfo, DEFAULT_SETTINGS, backupDb, getSetting, listBackups } from './db.js';
 import { errorMessage } from './errors.js';
 import { createLogger } from './logger.js';
@@ -20,14 +21,14 @@ function backupIntervalMs(): number {
 
 function newestBackup(backups: BackupInfo[]): BackupInfo | undefined {
   return backups
-    .filter((backup) => Number.isFinite(Date.parse(backup.createdAt)))
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+    .filter((backup) => Number.isFinite(parseTimestamp(backup.createdAt)))
+    .sort((a, b) => parseTimestamp(b.createdAt) - parseTimestamp(a.createdAt))[0];
 }
 
 function nextDelayMs(): number {
   const latest = newestBackup(listBackups());
   if (!latest) return 0;
-  const elapsedMs = Date.now() - Date.parse(latest.createdAt);
+  const elapsedMs = Date.now() - parseTimestamp(latest.createdAt);
   return Math.max(0, backupIntervalMs() - elapsedMs);
 }
 

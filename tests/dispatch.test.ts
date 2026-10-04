@@ -369,6 +369,14 @@ describe('dispatcher provider selection', () => {
 });
 
 describe('inbox expiry', () => {
+  it.each(['2026-02-30T00:00:00Z', 'not-a-date'])('falls back to the requested TTL for invalid upstream expiry %s', async (expiresAt) => {
+    registry.register(new FakeProvider({name:'bad-expiry',expiresAt}));
+    const before = Date.now();
+    const result = await dispatch({provider:'bad-expiry',duration:600});
+    expect(Date.parse(result.expiresAt)).toBeGreaterThanOrEqual(before + 600_000);
+    expect(Date.parse(result.expiresAt)).toBeLessThanOrEqual(Date.now() + 600_000);
+  });
+
   it('stores provider expiry, tightens it with a requested duration, and defaults to 24h', async () => {
     const withExpiry = new FakeProvider({
       name: 'exp-provider',

@@ -1,3 +1,4 @@
+import { parseTimestamp, providerTime } from '../time.js';
 import { ImapFlow, type SearchObject } from 'imapflow';
 import { createHash } from 'crypto';
 import type { Message, MessageDetail } from './base.js';
@@ -238,7 +239,7 @@ export async function fetchMessagesBySearch(
           subject: fetched.envelope?.subject ?? '',
           excerpt: '',
           receivedAt: fetched.internalDate
-            ? (fetched.internalDate instanceof Date ? fetched.internalDate.toISOString() : fetched.internalDate)
+            ? (fetched.internalDate instanceof Date ? fetched.internalDate.toISOString() : providerTime(fetched.internalDate))
             : fetched.envelope?.date?.toISOString() ?? '',
         });
       }
@@ -326,7 +327,7 @@ export async function fetchMessageDetail(
         subject: fetched.envelope?.subject ?? '',
         excerpt: text.slice(0, 200),
         receivedAt: fetched.internalDate
-          ? (fetched.internalDate instanceof Date ? fetched.internalDate.toISOString() : fetched.internalDate)
+          ? (fetched.internalDate instanceof Date ? fetched.internalDate.toISOString() : providerTime(fetched.internalDate))
           : fetched.envelope?.date?.toISOString() ?? '',
         text: text || undefined,
         html: html || undefined,
@@ -510,7 +511,7 @@ export async function fetchMessagesAcrossMailboxes(
   }
 
   return merged
-    .sort((a, b) => (a.receivedAt || '').localeCompare(b.receivedAt || ''))
+    .sort((a, b) => (parseTimestamp(a.receivedAt) || 0) - (parseTimestamp(b.receivedAt) || 0))
     .slice(-limit);
 }
 

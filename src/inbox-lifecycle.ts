@@ -1,3 +1,4 @@
+import { parseTimestamp } from './time.js';
 import { registry } from './providers/registry.js';
 import { PROVIDER, type InboxData } from './providers/base.js';
 import { createLogger } from './logger.js';
@@ -20,10 +21,7 @@ export interface StoredInbox extends InboxData {
  */
 export function parseInboxTimestamp(value: string | null | undefined): number {
   if (!value) return 0;
-  const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(value)
-    ? `${value.replace(' ', 'T')}Z`
-    : value;
-  const ms = Date.parse(normalized);
+  const ms = parseTimestamp(value);
   return Number.isFinite(ms) ? ms : 0;
 }
 
@@ -63,7 +61,7 @@ export function isMessageWithinInboxLifetime(
   if (typeof inbox === 'number') {
     if (!inbox) return true;
     if (!receivedAt) return true;
-    const received = Date.parse(receivedAt);
+    const received = parseTimestamp(receivedAt);
     if (!Number.isFinite(received)) return true;
     return received >= inbox;
   }
@@ -74,7 +72,7 @@ export function isMessageWithinInboxLifetime(
   const ended = inbox.status === 'closed' || (end !== undefined && end <= Date.now());
   if (inbox.status === 'closed' && end === undefined) return false;
   if (!receivedAt) return !ended;
-  const received = Date.parse(receivedAt);
+  const received = parseTimestamp(receivedAt);
   if (!Number.isFinite(received)) return !ended;
   const lower = start || undefined;
   if (lower !== undefined && received < lower) return false;

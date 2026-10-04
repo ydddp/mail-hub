@@ -1,8 +1,9 @@
+import { utcFields } from '../time.js';
 import { Hono } from 'hono';
 import { allRows, getDb, getRow, getSetting, logActivity } from '../db.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
 import { importDelimited } from '../import-utils.js';
-import { fetchWithTimeout, runConcurrent } from '../utils.js';
+import { fetchWithTimeout, runConcurrent, todayDateString } from '../utils.js';
 import { createLogger } from '../logger.js';
 import { errorMessage } from '../errors.js';
 import { isDomainScopeError } from '../providers/yyds.js';
@@ -30,11 +31,11 @@ yydsRoutes.post('/yyds/import', async (c) => {
 yydsRoutes.get('/yyds/accounts', (c) => {
   const db = getDb();
   const accounts = db.prepare(
-    `SELECT api_key, name, status, supports_wildcard, inbox_count, daily_calls, last_used_at, created_at
+    `SELECT api_key, name, status, supports_wildcard, inbox_count, CASE WHEN daily_reset_at LIKE ? THEN daily_calls ELSE 0 END AS daily_calls, last_used_at, created_at
      FROM yyds_accounts ORDER BY created_at DESC`
-  ).all();
+  ).all(`${todayDateString()}%`);
 
-  return c.json({ accounts });
+  return c.json({ accounts: accounts.map((row) => utcFields(row, 'created_at', 'last_used_at')) });
 });
 
 yydsRoutes.delete('/yyds/accounts', async (c) => {
@@ -117,7 +118,8 @@ yydsRoutes.get('/yyds/stats', (c) => {
   `) ?? { total: 0, active: 0, invalid: 0, disabled: 0, total_inboxes: 0 };
   const daily = getRow<{ daily_used: number | null }>(
     db,
-    `SELECT SUM(daily_calls) AS daily_used FROM yyds_accounts WHERE status = 'active'`,
+    `SELECT SUM(CASE WHEN daily_reset_at LIKE ? THEN daily_calls ELSE 0 END) AS daily_used FROM yyds_accounts WHERE status = 'active'`,
+    `${todayDateString()}%`,
   ) ?? { daily_used: 0 };
   const total = row.total || 0;
   const active = row.active || 0;

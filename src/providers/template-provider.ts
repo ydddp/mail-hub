@@ -3,6 +3,7 @@ import { fetchWithTimeout, randomString } from '../utils.js';
 import { randomSecret } from '../crypto.js';
 import { createLogger } from '../logger.js';
 import { errorMessage, UpstreamHttpError } from '../errors.js';
+import { providerTime, type TimestampFormat } from '../time.js';
 
 type JsonMap = Record<string, unknown>;
 const log = createLogger('template-provider');
@@ -62,6 +63,7 @@ export interface TemplateProviderConfig {
   };
 
   messages: {
+    timestampFormat?: TimestampFormat;
     path: string;
     method?: string;
     body?: JsonMap;
@@ -81,6 +83,7 @@ export interface TemplateProviderConfig {
   };
 
   messageDetail: {
+    timestampFormat?: TimestampFormat;
     fromList?: boolean;
     path: string;
     method?: string;
@@ -145,6 +148,21 @@ function interpolateBody(body: JsonMap, vars: Record<string, string>): JsonMap {
 export class TemplateProvider extends BaseProvider {
   meta: ProviderMeta;
   private cfg: TemplateProviderConfig;
+
+  private messageTime(item: unknown, path: string, format?: TimestampFormat): string {
+    // Older builtin rows map mail_date (only HH:mm:ss). The API also returns
+    // the complete Unix timestamp. Respect custom mappings on edited rows.
+    if (this.cfg.name === 'guerrillamail' && (path === 'mail_date' || path === 'mail_timestamp')) {
+      return providerTime(resolvePath(item, 'mail_timestamp'), 'unix_seconds');
+    }
+    // TempMail.lol's date is epoch milliseconds; persisted builtin rows from
+    // older releases do not yet have timestampFormat. Never guess for other
+    // providers or override an operator's explicit format.
+    if (!format && this.cfg.name === 'tempmail-lol' && path === 'date') {
+      return providerTime(resolvePath(item, path), 'unix_milliseconds');
+    }
+    return providerTime(resolvePath(item, path), format);
+  }
   private domainCache: { domains: string[]; expiresAt: number } | null = null;
   private static readonly DOMAIN_CACHE_MS = 5 * 60_000;
   // Failed fetches are cached briefly so a dead upstream costs one timeout
@@ -349,7 +367,7 @@ export class TemplateProvider extends BaseProvider {
       from: String(resolvePath(item, messages.itemMapping.from) || ''),
       subject: String(resolvePath(item, messages.itemMapping.subject) || ''),
       excerpt: String(resolvePath(item, messages.itemMapping.excerpt) || '').slice(0, 200),
-      receivedAt: String(resolvePath(item, messages.itemMapping.receivedAt) || ''),
+      receivedAt: this.messageTime(item, messages.itemMapping.receivedAt, messages.timestampFormat),
     }));
   }
 
@@ -385,7 +403,7 @@ export class TemplateProvider extends BaseProvider {
         from: String(resolvePath(item, im.from) || ''),
         subject: String(resolvePath(item, im.subject) || ''),
         excerpt: String(resolvePath(item, im.excerpt) || '').slice(0, 200),
-        receivedAt: String(resolvePath(item, im.receivedAt) || ''),
+        receivedAt: this.messageTime(item, im.receivedAt, messages.timestampFormat),
         text: im.text ? String(resolvePath(item, im.text) ?? '') : undefined,
         html: im.html ? String(resolvePath(item, im.html) ?? '') : undefined,
       };
@@ -406,7 +424,7 @@ export class TemplateProvider extends BaseProvider {
       from: String(resolvePath(data, m.from) || ''),
       subject: String(resolvePath(data, m.subject) || ''),
       excerpt: String((m.text && resolvePath(data, m.text)) || '').slice(0, 200),
-      receivedAt: String(resolvePath(data, m.receivedAt) || ''),
+      receivedAt: this.messageTime(data, m.receivedAt, messageDetail.timestampFormat),
       text: m.text ? String(resolvePath(data, m.text) ?? '') : undefined,
       html: m.html ? String(resolvePath(data, m.html) ?? '') : undefined,
     };
