@@ -1,6 +1,6 @@
 {
   "name": "mail-hub",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "private": true,
   "description": "Multi-provider temporary email aggregation service with unified API and verification code extraction.",
   "license": "AGPL-3.0-or-later",
