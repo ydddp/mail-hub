@@ -6,9 +6,10 @@ import { checkToken, fetchAccountMailbox, fetchAccountMessage, OAuthRejectedErro
 import { parseInboxStartTimestamp, parseInboxTimestamp } from '../inbox-lifecycle.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
 import { importDelimited } from '../import-utils.js';
-import { fetchWithTimeout, runConcurrent } from '../utils.js';
+import { fetchWithTimeout } from '../utils.js';
 import { config } from '../config.js';
 import { errorMessage } from '../errors.js';
+import { startBatchJob, runSynchronousBatch } from '../batch-jobs.js';
 
 const MICROSOFT_AUTHORITY = 'https://login.microsoftonline.com';
 const OAUTH_SESSION_TTL_MINUTES = 30;
@@ -831,11 +832,11 @@ outlookRoutes.post('/outlook/check', async (c) => {
     (row.client_id && row.refresh_token ? withToken : noToken).push(row);
   }
 
-  for (const row of noToken) {
-    db.prepare(`UPDATE outlook_accounts SET token_status = 'no_token', last_checked_at = datetime('now') WHERE email = ?`).run(row.email);
-  }
-
-  const checked = await runConcurrent(withToken, concurrency, async (row) => {
+  const processAccount = async (row: (typeof rows)[number]) => {
+    if (!row.client_id || !row.refresh_token) {
+      db.prepare(`UPDATE outlook_accounts SET token_status = 'no_token', last_checked_at = datetime('now') WHERE email = ?`).run(row.email);
+      return { email: row.email, valid: false, status: 'no_token' };
+    }
     const { status, apiType } = await checkToken(row.email, row.client_id, row.refresh_token);
     if (status === 'unknown') {
       db.prepare(`UPDATE outlook_accounts SET last_checked_at = datetime('now') WHERE email = ?`).run(row.email);
@@ -848,12 +849,14 @@ outlookRoutes.post('/outlook/check', async (c) => {
     params.push(row.email);
     db.prepare(`UPDATE outlook_accounts SET ${updates.join(', ')} WHERE email = ?`).run(...params);
     return { email: row.email, valid: status === 'valid', status, apiType };
-  });
-
-  const results = [
-    ...noToken.map(row => ({ email: row.email, valid: false, status: 'no_token' as const })),
-    ...checked,
-  ];
+  };
+  const orderedRows = [...noToken, ...withToken];
+  const scope = body.emails?.length ? body.emails : ['*'];
+  if (body.background === true) {
+    c.header('Cache-Control', 'no-store');
+    return c.json({ job: startBatchJob('outlook-check', scope, orderedRows, concurrency, processAccount) }, 202);
+  }
+  const results = await runSynchronousBatch('outlook-check', scope, orderedRows, concurrency, processAccount);
 
   return c.json({
     checked: results.length,
@@ -883,9 +886,8 @@ outlookRoutes.post('/outlook/renew', async (c) => {
     (row.client_id && row.refresh_token ? withToken : noToken).push(row);
   }
 
-  const noTokenResults = noToken.map(row => ({ email: row.email, renewed: false, status: 'no_token' }));
-
-  const checked = await runConcurrent(withToken, concurrency, async (row) => {
+  const processAccount = async (row: (typeof rows)[number]) => {
+    if (!row.client_id || !row.refresh_token) return { email: row.email, renewed: false, status: 'no_token' };
     try {
       const result = await renewToken(row.client_id, row.refresh_token);
       const effectiveRefreshToken = result.newRefreshToken || row.refresh_token;
@@ -924,9 +926,14 @@ outlookRoutes.post('/outlook/renew', async (c) => {
       // Network / throttling / 5xx — leave the stored status untouched.
       return { email: row.email, renewed: false, status: 'unknown' };
     }
-  });
-
-  const results = [...noTokenResults, ...checked];
+  };
+  const orderedRows = [...noToken, ...withToken];
+  const scope = body.emails?.length ? body.emails : ['*'];
+  if (body.background === true) {
+    c.header('Cache-Control', 'no-store');
+    return c.json({ job: startBatchJob('outlook-renew', scope, orderedRows, concurrency, processAccount) }, 202);
+  }
+  const results = await runSynchronousBatch('outlook-renew', scope, orderedRows, concurrency, processAccount);
 
   return c.json({
     total: results.length,

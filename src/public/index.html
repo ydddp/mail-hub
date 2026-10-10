@@ -2457,10 +2457,14 @@ Authorization: Bearer &lt;your-api-key&gt;
               <option value="long" data-i18n="outlook.long">长效</option>
               <option value="short" data-i18n="outlook.short">短效</option>
             </select>
-            <button class="btn btn-sm" onclick="return batchCheckOutlook()" data-i18n="outlook.batch_check">批量检测</button>
-            <button class="btn btn-sm" onclick="return batchRenewOutlook()" data-i18n="outlook.batch_renew">批量续期</button>
+            <button class="btn btn-sm" data-batch-pool="outlook" onclick="return batchCheckOutlook()" data-i18n="outlook.batch_check">批量检测</button>
+            <button class="btn btn-sm" data-batch-pool="outlook" onclick="return batchRenewOutlook()" data-i18n="outlook.batch_renew">批量续期</button>
             <button class="btn btn-sm btn-danger" onclick="return batchDeleteOutlook()" data-i18n="outlook.batch_delete">批量删除</button>
           </div>
+        </div>
+        <div id="outlook-batch-progress" hidden role="status" aria-live="polite" style="padding:12px 20px;border-bottom:1px solid var(--border)">
+          <div id="outlook-batch-text" style="font-size:var(--text-base);overflow-wrap:anywhere"></div>
+          <progress id="outlook-batch-bar" max="1" value="0" style="width:100%;height:8px;margin-top:8px;accent-color:var(--blue)"></progress>
         </div>
         <div class="table-wrap"><table>
           <thead><tr><th><input type="checkbox" id="ol-check-all" onchange="toggleAllOl(this.checked)"></th><th data-i18n="common.email">邮箱</th><th data-i18n="common.type">类型</th><th data-i18n="outlook.col_token">令牌状态</th><th data-i18n="outlook.col_assign">分配状态</th><th data-i18n="outlook.col_group">分组</th><th data-i18n="outlook.col_renewed">续期时间</th><th data-i18n="common.actions">操作</th></tr></thead>
@@ -2501,9 +2505,13 @@ Authorization: Bearer &lt;your-api-key&gt;
         <div class="panel-header">
           <span class="panel-title" data-i18n="yyds.accounts">API Key 列表</span>
           <div class="panel-actions">
-            <button class="btn btn-sm" onclick="return batchCheckYyds()"data-i18n="yyds.batch_check">批量验证</button>
+            <button class="btn btn-sm" data-batch-pool="yyds" onclick="return batchCheckYyds()"data-i18n="yyds.batch_check">批量验证</button>
             <button class="btn btn-sm btn-danger" onclick="return batchDeleteYyds()"data-i18n="outlook.batch_delete">批量删除</button>
           </div>
+        </div>
+        <div id="yyds-batch-progress" hidden role="status" aria-live="polite" style="padding:12px 20px;border-bottom:1px solid var(--border)">
+          <div id="yyds-batch-text" style="font-size:var(--text-base);overflow-wrap:anywhere"></div>
+          <progress id="yyds-batch-bar" max="1" value="0" style="width:100%;height:8px;margin-top:8px;accent-color:var(--blue)"></progress>
         </div>
         <table>
           <thead><tr><th><input type="checkbox" id="yd-check-all" onchange="toggleAllYd(this.checked)"></th><th>API Key</th><th data-i18n="common.note">备注</th><th>Wildcard</th><th style="text-align:center" data-i18n="yyds.inbox_count">创建数</th><th style="text-align:center" data-i18n="yyds.daily_calls">今日调用</th><th data-i18n="common.last_used">最后使用</th><th data-i18n="common.status">状态</th><th data-i18n="common.actions">操作</th></tr></thead>
@@ -2873,6 +2881,7 @@ Authorization: Bearer &lt;your-api-key&gt;
 // ─── i18n ───
 const LANG = {
 zh: {
+'batch.running':'后台处理中','batch.completed':'已完成','batch.failed':'部分处理失败','batch.interrupted':'服务重启，任务已中断','batch.progress':'{action} · {state} · 已处理 {done}/{total}','batch.counts':'有效 {valid} / 无效 {invalid} / 未知 {unknown}','batch.renew_counts':'已续期 {renewed} / 未续期 {failed} / 未知 {unknown}','batch.retrying':'进度连接暂时中断，正在重试；后台任务继续执行','batch.started':'已启动后台任务，可刷新或离开页面','batch.start_uncertain':'正在确认后台任务状态','batch.busy':'该账号池已有任务正在执行',
 'nav.dashboard':'仪表盘','nav.inboxes':'收件箱','nav.blocks':'封禁表','nav.services':'目标服务','nav.providers':'渠道管理','nav.outlook':'Outlook','nav.yyds':'YYDS Mail','nav.imap':'IMAP 域名邮箱','nav.icloud':'iCloud 别名','icloud.title':'iCloud 别名','icloud.accounts':'Apple ID 列表','icloud.add_account':'添加 Apple ID','icloud.apple_id':'Apple ID','icloud.region':'区域','icloud.cookies':'Cookie 请求头','icloud.imap_password':'邮箱的应用专用密码','icloud.imap_user':'收信邮箱','icloud.imap_user_ph':'隐藏邮件实际转发到的那个信箱（icloud.com → 设置 → 隐藏邮件 可查）','icloud.imap_host':'收信 IMAP 主机','icloud.imap_host_ph':'按收信邮箱自动填，可改','icloud.add_btn':'添加','icloud.free':'可用地址','icloud.assigned':'已占用','icloud.pool':'地址池','icloud.address':'地址','icloud.use_count':'使用次数','icloud.assigned_to':'占用者','icloud.last_error':'最后错误','icloud.created':'创建时间','icloud.imap_other':'其他…','icloud.autofill':'自动补货','icloud.autofill_hint':'开启后按设定间隔自动向 Apple 申请地址，把池补到目标值；撞到限流会自动退避 45 分钟。关闭则完全不碰 Apple。','icloud.target_hint':'池里要维持多少个可用地址。单次最多铸 5 个，上限 750——那是一个 Apple ID 一辈子的名额。','icloud.autofill_on':'每 {n} 分钟检查一次','icloud.autofill_off':'已关闭，只能手动生成','icloud.autofill_enabled':'已开启自动补货','icloud.autofill_disabled':'已关闭自动补货','common.back':'返回','icloud.imap_preset':'收信服务商','icloud.search_accounts':'搜索 Apple ID…','icloud.search_addresses':'搜索地址…','icloud.pool_col':'地址池','icloud.auth_srp':'SRP','icloud.auth_cookie':'Cookie','icloud.filter_all':'全部状态','icloud.filter_free':'可用','icloud.filter_assigned':'已占用','icloud.filter_retired':'已停用','icloud.state_free':'可用','icloud.state_assigned':'已占用','icloud.state_retired':'已停用','icloud.view_mail':'查看邮件','icloud.no_mail':'这个地址还没收到任何邮件。','icloud.status_active':'正常','icloud.status_degraded':'仅收信','icloud.status_error':'异常','icloud.status_active_hint':'两半都通：能生成新地址，也能收信','icloud.status_degraded_hint':'Cookie 已过期。池里现有地址照常收信，但要生成新地址得重新粘贴 Cookie','icloud.status_error_hint':'收信不可用：这个账号的地址读不到邮件','icloud.recookie':'换 Cookie','icloud.srp':'SRP 登录','icloud.srp_password_hint':'Apple ID 的账号登录密码——不是 App 专用密码。\n会以只写方式保存，并在自动续期时重用；信任令牌有效时不需要验证码。','icloud.srp_password_ph':'Apple ID 密码','icloud.srp_code_title':'输入 6 位验证码','icloud.srp_code_prompt':'Apple 已把验证码推送到你已登录的苹果设备上。','icloud.srp_no_device':'手边没有苹果设备？改用短信接收：','icloud.srp_send_sms':'发短信','icloud.srp_sms_sending':'发送中…','icloud.srp_sms_sent':'已发送，请查收短信','icloud.srp_signing_in':'正在与 Apple 握手…','icloud.srp_trusted':'信任令牌仍有效，无需验证码，已直接登录','icloud.srp_done':'SRP 登录成功，信任令牌已保存——之后续期不再需要验证码','icloud.srp_failed':'SRP 登录失败：','icloud.srp_abandoned':'已取消（验证码已发出，重新登录会再推一个）','icloud.recookie_title':'粘贴新的 Cookie','icloud.recookie_save':'保存新 Cookie','icloud.fill_cookie':'请先粘贴 Cookie','icloud.recookie_hint':'Cookie 过期后在这里换，不用删账号重建。整坨 cURL 粘进来就行。','icloud.cookie_updated':'Cookie 已更新','icloud.cookies_ph':'在 icloud.com 的网络面板里右键任意请求 → 复制为 cURL，整段粘到这里。PowerShell 格式、Cookie-Editor 的 JSON、或者纯 Cookie 请求头，都能识别。','icloud.generate':'生成地址','icloud.generating':'生成中…','icloud.generated':'已生成 {n} 个地址','icloud.gen_failed':'生成失败：','icloud.no_account':'尚未添加 Apple ID','icloud.add_first':'添加第一个','icloud.empty_pool':'地址池为空，先在上方账号行点“生成地址”','icloud.ready':'就绪','icloud.needs_setup':'待配置','icloud.adding':'添加中…','icloud.added':'已添加，点“测试”验证 Cookie 与专用密码','icloud.add_failed':'添加失败：','icloud.fill_all':'Apple ID、Cookie、App 专用密码都要填','icloud.test_ok':'两项检测均通过','icloud.forwards_to':'隐藏邮件转发到：','icloud.confirm_delete':'删除该 Apple ID 及其未占用地址？已被占用的地址会阻止删除。','icloud.retire':'停用','icloud.confirm_retire':'停用 {hme}？\n\n· Apple 会关闭这个地址的转发，之后发到它的邮件全部丢失\n· 它永远不会再被分配给任何收件箱\n· 它继续占用 Apple ID 那 750 个名额中的一个，而且再也要不回来——每个 Apple ID 一辈子只有 750 个\n\n只有在这个地址已经被目标网站拉黑、留着也没用时才该停用。此操作不可撤销。','icloud.retired':'已停用 {hme}','icloud.help':'<div style=\"margin-bottom:6px\">需要 <b>iCloud+ 订阅</b>。两样东西要准备：</div><div style=\"display:flex;gap:8px;margin-top:4px\"><span style=\"color:var(--emerald);flex:none\">1</span><span><b>Cookie</b> —— 登录 icloud.com → 按 F12 → 网络面板 → 筛选框输 <code>hme</code> → 右键任意一条请求 → 复制为 cURL → <b>整段</b>粘到下面（不用自己找 Cookie 那一行）</span></div><div style=\"display:flex;gap:8px;margin-top:4px\"><span style=\"color:var(--emerald);flex:none\">2</span><span><b>收信邮箱与应用专用密码</b> —— 隐藏邮件转发到哪个信箱，就填哪个；密码到那个邮箱服务商处生成（Gmail 在 myaccount.google.com → 安全性 → 应用专用密码，需先开两步验证）</span></div><div style=\"margin-top:8px;padding-top:6px;border-top:1px solid var(--border)\">Cookie 几小时就过期。想一劳永逸，改用账号行的 <b>SRP 登录</b>：输一次密码和验证码，之后靠信任令牌自动续期。</div>','nav.templates':'自定义渠道','nav.gmail':'Gmail 别名','nav.keys':'密钥管理','nav.settings':'系统设置','nav.docs':'API 文档','nav.refresh':'刷新当前页','nav.logout':'退出登录','nav.lang':'中/EN','nav.switch_lang':'切换语言','nav.theme':'主题',
 'theme.switched.auto':'主题: 跟随系统','theme.switched.light':'主题: 浅色','theme.switched.dark':'主题: 深色',
 'login.prompt':'请输入 API 密钥登录','login.btn':'登录',
@@ -2983,6 +2992,7 @@ zh: {
 'docs.example_error':'错误描述信息','docs.example_code_excerpt':'您的验证码是...','docs.example_plain_text':'纯文本正文','docs.example_code_context':'您的验证码是 483921','docs.example_format_error':'格式错误: ...','docs.example_default_group':'未分组','docs.example_primary_key':'主力Key','docs.example_key_name':'给小明','docs.example_llms_summary':'... (完整端点文档，含参数与响应格式)','docs.example_usage_prompt':'请先读取 https://your-server.com/v1/llms.txt 了解 Mail Hub API，然后帮我写一个集成脚本。',
 },
 en: {
+'batch.running':'Running in background','batch.completed':'Completed','batch.failed':'Some accounts failed','batch.interrupted':'Interrupted by server restart','batch.progress':'{action} · {state} · Processed {done}/{total}','batch.counts':'Valid {valid} / Invalid {invalid} / Unknown {unknown}','batch.renew_counts':'Renewed {renewed} / Not renewed {failed} / Unknown {unknown}','batch.retrying':'Progress connection interrupted; retrying while the task continues','batch.started':'Background task started; you can refresh or leave this page','batch.start_uncertain':'Checking background task status','batch.busy':'This account pool already has a running task',
 'nav.dashboard':'Dashboard','nav.inboxes':'Inboxes','nav.blocks':'Blocks','nav.services':'Services','nav.providers':'Providers','nav.outlook':'Outlook','nav.yyds':'YYDS Mail','nav.imap':'IMAP Domain Mail','nav.icloud':'iCloud Aliases','icloud.title':'iCloud Aliases','icloud.accounts':'Apple IDs','icloud.add_account':'Add Apple ID','icloud.apple_id':'Apple ID','icloud.region':'Region','icloud.cookies':'Cookie header','icloud.imap_password':'Mailbox app password','icloud.imap_user':'Receiving mailbox','icloud.imap_user_ph':'Where Hide My Email actually forwards (icloud.com, Settings, Hide My Email)','icloud.imap_host':'Receiving IMAP host','icloud.imap_host_ph':'Filled from the mailbox domain; editable','icloud.add_btn':'Add','icloud.free':'Free addresses','icloud.assigned':'In use','icloud.pool':'Address pool','icloud.address':'Address','icloud.use_count':'Uses','icloud.assigned_to':'Held by','icloud.last_error':'Last error','icloud.created':'Created','icloud.imap_other':'Other…','icloud.autofill':'Auto refill','icloud.autofill_hint':'Asks Apple for addresses on a schedule until the pool reaches the target, backing off 45 minutes when rate limited. Off means Apple is not contacted at all.','icloud.target_hint':'How many free addresses to keep. At most 5 are minted per pass, and 750 is the ceiling — the lifetime cap on one Apple ID.','icloud.autofill_on':'checks every {n} min','icloud.autofill_off':'off — manual only','icloud.autofill_enabled':'Auto refill on','icloud.autofill_disabled':'Auto refill off','common.back':'Back','icloud.imap_preset':'Mail provider','icloud.search_accounts':'Search Apple IDs…','icloud.search_addresses':'Search addresses…','icloud.pool_col':'Pool','icloud.auth_srp':'SRP','icloud.auth_cookie':'Cookie','icloud.filter_all':'All states','icloud.filter_free':'Free','icloud.filter_assigned':'In use','icloud.filter_retired':'Retired','icloud.state_free':'free','icloud.state_assigned':'in use','icloud.state_retired':'retired','icloud.view_mail':'View mail','icloud.no_mail':'Nothing has arrived at this address yet.','icloud.status_active':'Ready','icloud.status_degraded':'Receive only','icloud.status_error':'Failing','icloud.status_active_hint':'Both halves work: can mint new addresses and read mail','icloud.status_degraded_hint':'Cookie expired. Addresses already in the pool still receive; minting needs a fresh cookie','icloud.status_error_hint':'Reading is broken: mail for this account cannot be read','icloud.recookie':'New cookie','icloud.srp':'SRP sign-in','icloud.srp_password_hint':'Your Apple ID account password — not an app-specific one.\nStored write-only and reused for automatic renewal; no code is needed while the trust token remains valid.','icloud.srp_password_ph':'Apple ID password','icloud.srp_code_title':'Enter the six-digit code','icloud.srp_code_prompt':'Apple pushed a code to your signed-in Apple devices.','icloud.srp_no_device':'No Apple device to hand? Get it by SMS instead:','icloud.srp_send_sms':'Send SMS','icloud.srp_sms_sending':'Sending…','icloud.srp_sms_sent':'Sent — check your messages','icloud.srp_signing_in':'Handshaking with Apple…','icloud.srp_trusted':'The stored trust token is still good — signed in with no code','icloud.srp_done':'Signed in over SRP. The trust token is saved, so renewal needs no code.','icloud.srp_failed':'SRP sign-in failed: ','icloud.srp_abandoned':'Cancelled (the code was already sent; signing in again pushes a new one)','icloud.recookie_title':'Paste a new cookie','icloud.recookie_save':'Save new cookie','icloud.fill_cookie':'Paste the cookie first','icloud.recookie_hint':'Cookies expire — replace one here instead of recreating the account. Paste the whole cURL.','icloud.cookie_updated':'Cookie updated','icloud.cookies_ph':'In the Network panel on icloud.com, right-click any request and Copy as cURL, then paste the whole thing. PowerShell format, a Cookie-Editor JSON export, or a bare Cookie header all work too.','icloud.generate':'Generate','icloud.generating':'Generating…','icloud.generated':'Generated {n} address(es)','icloud.gen_failed':'Generation failed: ','icloud.no_account':'No Apple ID added yet','icloud.add_first':'Add the first one','icloud.empty_pool':'Pool is empty — press Generate on an account row above','icloud.ready':'Ready','icloud.needs_setup':'Needs setup','icloud.adding':'Adding…','icloud.added':'Added — press Test to verify the cookie and app password','icloud.add_failed':'Add failed: ','icloud.fill_all':'Apple ID, cookie and app-specific password are all required','icloud.test_ok':'Both checks passed','icloud.forwards_to':'Hide My Email delivers to: ','icloud.confirm_delete':'Delete this Apple ID and its unused addresses? Addresses held by live inboxes will block the delete.','icloud.retire':'Retire','icloud.confirm_retire':'Retire {hme}?\n\n· Apple stops forwarding it, so anything sent there is lost\n· It is never handed to another inbox again\n· It still occupies one of the Apple ID’s 750 slots, and that slot never comes back — 750 is the lifetime total for one ID\n\nWorth doing only when a target has already blocked the address, so keeping it buys nothing. This cannot be undone.','icloud.retired':'Retired {hme}','icloud.help':'<div style=\"margin-bottom:6px\">Requires an <b>iCloud+ subscription</b>. Two things to gather:</div><div style=\"display:flex;gap:8px;margin-top:4px\"><span style=\"color:var(--emerald);flex:none\">1</span><span><b>Cookie</b> — sign in at icloud.com, press F12, open Network, filter for <code>hme</code>, right-click any request, Copy as cURL, and paste <b>the whole thing</b> below. No need to find the Cookie line yourself.</span></div><div style=\"display:flex;gap:8px;margin-top:4px\"><span style=\"color:var(--emerald);flex:none\">2</span><span><b>Receiving mailbox and app password</b> — whichever mailbox Hide My Email forwards to. Generate the password at that provider (Gmail: myaccount.google.com, Security, App passwords, which needs 2-Step Verification on first).</span></div><div style=\"margin-top:8px;padding-top:6px;border-top:1px solid var(--border)\">Cookies expire within hours. To stop replacing them, use <b>SRP sign-in</b> on the account row instead: one password and one code, then the trust token renews itself.</div>','nav.templates':'Custom Providers','nav.gmail':'Gmail Aliases','nav.keys':'API Keys','nav.settings':'Settings','nav.docs':'API Docs','nav.refresh':'Refresh Page','nav.logout':'Logout','nav.lang':'EN/中','nav.switch_lang':'Switch Language','nav.theme':'Theme',
 'theme.switched.auto':'Theme: system','theme.switched.light':'Theme: light','theme.switched.dark':'Theme: dark',
 'login.prompt':'Enter API key to login','login.btn':'Login',
@@ -3338,6 +3348,125 @@ async function apiAllInboxes(path) {
   return { ...first, inboxes: rows };
 }
 
+// Short requests track durable batch jobs independently of the current view.
+const poolJobs = new Map();
+const poolJobPollers = new Map();
+
+function lockPoolButtons(pool, busy) {
+  document.querySelectorAll(`[data-batch-pool="${pool}"]`).forEach(btn => {
+    btn.dataset.batchBusy = busy ? '1' : '0';
+    btn.disabled = busy || btn.hasAttribute('data-loading');
+  });
+}
+
+function renderPoolJob(job, retrying = false) {
+  const previous = poolJobs.get(job.pool);
+  if (previous && (job.createdAt < previous.createdAt || (job.id === previous.id && job.updatedAt < previous.updatedAt))) return false;
+  poolJobs.set(job.pool, job);
+  const action = job.kind === 'outlook-renew' ? t('outlook.batch_renew')
+    : job.pool === 'outlook' ? t('outlook.batch_check') : t('yyds.batch_check');
+  const summary = job.summary;
+  const counts = t(job.kind === 'outlook-renew' ? 'batch.renew_counts' : 'batch.counts', summary);
+  document.getElementById(`${job.pool}-batch-progress`).hidden = false;
+  document.getElementById(`${job.pool}-batch-text`).textContent = t('batch.progress', {
+    action, state: t(`batch.${job.status}`), done: job.completed, total: job.total,
+  }) + ' · ' + counts + (retrying ? ' · ' + t('batch.retrying') : '');
+  const bar = document.getElementById(`${job.pool}-batch-bar`);
+  bar.max = Math.max(1, job.total);
+  bar.value = job.total ? job.completed : job.status === 'completed' ? 1 : 0;
+  bar.setAttribute('aria-label', action);
+  lockPoolButtons(job.pool, job.status === 'running');
+  return true;
+}
+
+function watchPoolJob(job) {
+  if (!renderPoolJob(job)) return;
+  const existing = poolJobPollers.get(job.pool);
+  if (existing?.id === job.id) return;
+  if (existing) clearTimeout(existing.timer);
+  poolJobPollers.delete(job.pool);
+  if (job.status !== 'running') return;
+  const poller = { id: job.id, timer: null };
+  poolJobPollers.set(job.pool, poller);
+  const poll = async () => {
+    if (poolJobPollers.get(job.pool) !== poller) return;
+    let delay = 2000;
+    try {
+      const data = await api(`/batch-jobs/${encodeURIComponent(job.id)}`, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+      if (poolJobPollers.get(job.pool) !== poller) return;
+      renderPoolJob(data.job);
+      if (data.job.status !== 'running') {
+        poolJobPollers.delete(job.pool);
+        toast(t(`batch.${data.job.status}`), data.job.status === 'completed' ? 'success' : 'error');
+        if (job.pool === 'outlook') await Promise.all([loadOutlookStats(), loadOutlookAccounts()]);
+        else await Promise.all([loadYydsStats(), loadYydsAccounts()]);
+        return;
+      }
+    } catch (e) {
+      if (poolJobPollers.get(job.pool) !== poller) return;
+      renderPoolJob(poolJobs.get(job.pool), true);
+      delay = 4000;
+    }
+    if (poolJobPollers.get(job.pool) === poller) poller.timer = setTimeout(poll, delay);
+  };
+  poller.timer = setTimeout(poll, 2000);
+}
+
+async function restorePoolJob(pool) {
+  if (!_isAdmin) return;
+  try {
+    const data = await api(`/batch-jobs?pool=${pool}`, { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    if (!_isAdmin) return;
+    if (!data.jobs.length && !poolJobs.has(pool)) {
+      document.getElementById(`${pool}-batch-progress`).hidden = true;
+      lockPoolButtons(pool, false);
+    }
+    data.jobs.forEach(watchPoolJob);
+  } catch (e) {
+    if (!_isAdmin || poolJobPollers.has(pool)) return;
+    console.warn('Batch progress lookup failed', e);
+    const previous = poolJobs.get(pool);
+    if (previous) renderPoolJob(previous, true);
+    else {
+      document.getElementById(`${pool}-batch-progress`).hidden = false;
+      document.getElementById(`${pool}-batch-text`).textContent = t('batch.retrying');
+    }
+    const poller = { id: null, timer: null };
+    poolJobPollers.set(pool, poller);
+    poller.timer = setTimeout(() => {
+      if (poolJobPollers.get(pool) !== poller) return;
+      poolJobPollers.delete(pool);
+      void restorePoolJob(pool);
+    }, 4000);
+  }
+}
+
+async function beginPoolJob(path, body) {
+  const pool = path.startsWith('/outlook/') ? 'outlook' : 'yyds';
+  if (poolJobs.get(pool)?.status === 'running') return toast(t('batch.busy'), 'error');
+  lockPoolButtons(pool, true);
+  try {
+    const data = await api(path, { method: 'POST', body: JSON.stringify({ ...body, background: true }), signal: AbortSignal.timeout(10000) });
+    watchPoolJob(data.job);
+    toast(t('batch.started'));
+  } catch (e) {
+    toast(t('batch.start_uncertain') + ': ' + e.message, 'error');
+    await restorePoolJob(pool);
+  } finally {
+    lockPoolButtons(pool, poolJobs.get(pool)?.status === 'running');
+  }
+}
+
+function stopPoolJobPolling() {
+  poolJobPollers.forEach(poller => clearTimeout(poller.timer));
+  poolJobPollers.clear();
+  poolJobs.clear();
+  for (const pool of ['outlook', 'yyds']) {
+    document.getElementById(`${pool}-batch-progress`).hidden = true;
+    lockPoolButtons(pool, false);
+  }
+}
+
 // ─── Button loading state ───
 document.addEventListener('click', e => {
   const btn = e.target.closest('.btn');
@@ -3349,7 +3478,7 @@ document.addEventListener('click', e => {
   btn.onclick = null;
   btn.setAttribute('data-loading', '');
   btn.disabled = true;
-  const done = () => { btn.removeAttribute('data-loading'); btn.disabled = false; btn.onclick = fn; };
+  const done = () => { btn.removeAttribute('data-loading'); btn.disabled = btn.dataset.batchBusy === '1'; btn.onclick = fn; };
   let result;
   try { result = fn.call(btn, e); } catch(err) { done(); return; }
   if (result && typeof result.then === 'function') {
@@ -4828,7 +4957,7 @@ function copyLlmsUrl() {
 // ─── Outlook ───
 // ─── YYDS Mail ───
 async function loadYyds() {
-  await Promise.all([loadYydsStats(), loadYydsAccounts()]);
+  await Promise.all([loadYydsStats(), loadYydsAccounts(), restorePoolJob('yyds')]);
 }
 
 async function loadYydsStats() {
@@ -4929,26 +5058,11 @@ async function importYyds() {
 }
 
 async function checkSingleYd(key) {
-  toast(t('toast.verifying'));
-  try {
-    const data = await api('/yyds/check', { method: 'POST', body: JSON.stringify({ keys: [key] }) });
-    const r = data.results?.[0];
-    toast(r?.valid ? t('op.key_valid') : t('op.key_invalid'), r?.valid ? 'success' : 'error');
-    loadYydsAccounts();
-  } catch (e) { toast(e.message, 'error'); }
+  await beginPoolJob('/yyds/check', { keys: [key] });
 }
 
 async function batchCheckYyds() {
-  const keys = getSelectedYdKeys();
-  const body = keys.length ? { keys } : {};
-  const label = keys.length ? t('op.n_items', {n: keys.length}) : t('op.all');
-  toast(t('op.verifying_n', {label}));
-  try {
-    const data = await api('/yyds/check', { method: 'POST', body: JSON.stringify(body) });
-    toast(t('op.verify_done', {valid: data.valid, invalid: data.invalid}));
-    addActivity('emerald', `YYDS ${esc(t('yyds.check'))}: <span class="activity-hl">${esc(String(data.valid))}</span> ${esc(t('yyds.status_active'))} / <span class="activity-hl">${esc(String(data.invalid))}</span> ${esc(t('yyds.status_invalid'))}`, true);
-    loadYyds();
-  } catch (e) { toast(e.message, 'error'); }
+  await beginPoolJob('/yyds/check', getSelectedYdKeys().length ? { keys: getSelectedYdKeys() } : {});
 }
 
 async function deleteYdAccount(key) {
@@ -5543,7 +5657,7 @@ function toggleAllImap(checked) {
 async function loadOutlook() {
   initOutlookPanelRow();
   initFoldPanel('ol-oauth-panel');
-  await Promise.all([loadOutlookStats(), loadOutlookAccounts(), loadOlSettings()]);
+  await Promise.all([loadOutlookStats(), loadOutlookAccounts(), loadOlSettings(), restorePoolJob('outlook')]);
 }
 
 async function loadOlSettings() {
@@ -5879,49 +5993,19 @@ async function importOutlook() {
 }
 
 async function checkSingleOl(email) {
-  toast(t('toast.checking'));
-  try {
-    const data = await api('/outlook/check', { method: 'POST', body: JSON.stringify({ emails: [email] }) });
-    const r = data.results?.[0];
-    toast(r?.valid ? t('op.token_valid', {name: email}) : t('op.token_invalid', {name: email}), r?.valid ? 'success' : 'error');
-    loadOutlookAccounts();
-  } catch (e) { toast(e.message, 'error'); }
+  await beginPoolJob('/outlook/check', { emails: [email] });
 }
 
 async function renewSingleOl(email) {
-  toast(t('toast.renewing'));
-  try {
-    const data = await api('/outlook/renew', { method: 'POST', body: JSON.stringify({ emails: [email] }) });
-    const r = data.results?.[0];
-    toast(r?.renewed ? t('op.renew_success', {name: email}) : t('op.renew_fail', {name: email}), r?.renewed ? 'success' : 'error');
-    loadOutlookAccounts();
-  } catch (e) { toast(e.message, 'error'); }
+  await beginPoolJob('/outlook/renew', { emails: [email] });
 }
 
 async function batchCheckOutlook() {
-  const emails = getSelectedOlEmails();
-  const body = emails.length ? { emails } : { all: true };
-  const label = emails.length ? t('op.n_items', {n: emails.length}) : t('op.all');
-  toast(t('op.checking_n', {label}));
-  try {
-    const data = await api('/outlook/check', { method: 'POST', body: JSON.stringify(body) });
-    toast(t('op.check_done', {valid: data.valid, invalid: data.invalid}));
-    addActivity('blue', `Outlook ${esc(t('outlook.check'))}: <span class="activity-hl">${esc(String(data.valid))}</span> ${esc(t('outlook.status_valid'))} / <span class="activity-hl">${esc(String(data.invalid))}</span> ${esc(t('outlook.status_invalid'))}`, true);
-    loadOutlook();
-  } catch (e) { toast(e.message, 'error'); }
+  await beginPoolJob('/outlook/check', getSelectedOlEmails().length ? { emails: getSelectedOlEmails() } : {});
 }
 
 async function batchRenewOutlook() {
-  const emails = getSelectedOlEmails();
-  const body = emails.length ? { emails } : { all: true };
-  const label = emails.length ? t('op.n_items', {n: emails.length}) : t('op.all');
-  toast(t('op.renewing_n', {label}));
-  try {
-    const data = await api('/outlook/renew', { method: 'POST', body: JSON.stringify(body) });
-    toast(t('op.renew_done', {renewed: data.renewed, failed: data.failed}));
-    addActivity('blue', `Outlook ${esc(t('outlook.renew'))}: <span class="activity-hl">${esc(String(data.renewed))}</span> OK`, true);
-    loadOutlook();
-  } catch (e) { toast(e.message, 'error'); }
+  await beginPoolJob('/outlook/renew', getSelectedOlEmails().length ? { emails: getSelectedOlEmails() } : {});
 }
 
 async function deleteOlAccount(email) {
@@ -5983,6 +6067,7 @@ async function doLogin(event) {
 }
 
 function doLogout() {
+  stopPoolJobPolling();
   localStorage.removeItem('token');
   _isAdmin = false;
   closeMobileMore();

@@ -3,9 +3,10 @@ import { Hono } from 'hono';
 import { allRows, getDb, getRow, getSetting, logActivity } from '../db.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
 import { importDelimited } from '../import-utils.js';
-import { fetchWithTimeout, runConcurrent, todayDateString } from '../utils.js';
+import { fetchWithTimeout, todayDateString } from '../utils.js';
 import { createLogger } from '../logger.js';
 import { errorMessage } from '../errors.js';
+import { startBatchJob, runSynchronousBatch } from '../batch-jobs.js';
 import { isDomainScopeError } from '../providers/yyds.js';
 
 export const yydsRoutes = new Hono<AdminEnv>();
@@ -66,13 +67,16 @@ yydsRoutes.post('/yyds/check', async (c) => {
 
   const rows = allRows<{ api_key: string }>(db, sql, ...(body.keys ?? []));
 
-  const results = await runConcurrent(rows, concurrency, async (row) => {
+  const processKey = async (row: (typeof rows)[number]) => {
     try {
       const res = await fetchWithTimeout('https://maliapi.215.im/v1/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-API-Key': row.api_key },
         body: JSON.stringify({ localPart: '_probe', domain: '_check.invalid' }),
       });
+      if (res.status === 429 || res.status >= 500) {
+        return { key: row.api_key, valid: null };
+      }
       // The probe names a domain no key owns, so a scope-limited key answers
       // 403 for the domain, not for the key — and that answer only comes after
       // the key authenticated. Reading it as "invalid" retires every
@@ -87,7 +91,13 @@ yydsRoutes.post('/yyds/check', async (c) => {
       log.warn('YYDS key check request failed', { key: row.api_key, error: errorMessage(error) });
       return { key: row.api_key, valid: null };
     }
-  });
+  };
+  const scope = body.keys?.length ? body.keys : ['*'];
+  if (body.background === true) {
+    c.header('Cache-Control', 'no-store');
+    return c.json({ job: startBatchJob('yyds-check', scope, rows, concurrency, processKey) }, 202);
+  }
+  const results = await runSynchronousBatch('yyds-check', scope, rows, concurrency, processKey);
 
   const validCount = results.filter((r) => r.valid === true).length;
   const invalidCount = results.filter((r) => r.valid === false).length;

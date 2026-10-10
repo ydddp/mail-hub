@@ -31,6 +31,21 @@ export type BackupInfo = {
 };
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS batch_jobs (
+  id TEXT PRIMARY KEY,
+  pool TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  scope_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  total INTEGER NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 0,
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS batch_jobs_running_pool ON batch_jobs(pool) WHERE status = 'running';
+
 CREATE TABLE IF NOT EXISTS inboxes (
   id TEXT PRIMARY KEY,
   provider TEXT NOT NULL,
@@ -255,6 +270,9 @@ export function initDb(): Database.Database {
   db.pragma('synchronous = NORMAL');
 
   db.exec(SCHEMA);
+  // A process restart cannot safely replay an in-flight refresh-token rotation.
+  db.prepare(`UPDATE batch_jobs SET status = 'interrupted', error = 'Server restarted; unfinished accounts were not retried', updated_at = ? WHERE status = 'running'`)
+    .run(new Date().toISOString());
 
   const migrations = [
     `ALTER TABLE outlook_accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'short'`,

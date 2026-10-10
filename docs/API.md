@@ -915,6 +915,9 @@ Admin only.
 
 ### POST /api/outlook/check — Check Token Validity
 
+For large batches, use the [background task mode](#background-pool-tasks-admin)
+to avoid reverse-proxy/Cloudflare request timeouts. The admin UI uses this mode.
+
 **Request** (JSON, optional):
 ```json
 { "emails": ["user@outlook.com"] }
@@ -945,6 +948,8 @@ proxy, throttling, 5xx, and temporary IMAP failures are `unknown` and do not
 invalidate the stored account.
 
 ### POST /api/outlook/renew — Renew Tokens
+
+Supports the same [background task mode](#background-pool-tasks-admin).
 
 **Request** (JSON, optional — same as check).
 
@@ -1128,6 +1133,65 @@ paid account unless the operator opts in by setting this to `true`.
 
 ---
 
+## Background Pool Tasks (Admin)
+
+The three endpoints `POST /api/outlook/check`, `POST /api/outlook/renew` and
+`POST /api/yyds/check` accept `"background": true`. Selection works as before:
+use `emails` for Outlook or `keys` for YYDS, or omit the selection for the whole
+pool. Example:
+
+```json
+{ "background": true, "emails": ["user@outlook.com"] }
+```
+
+They immediately return **202** with a job snapshot, without waiting for any
+upstream network request. Example:
+
+```json
+{
+  "job": {
+    "id": "task-uuid",
+    "pool": "outlook",
+    "kind": "outlook-check",
+    "status": "running",
+    "total": 1769,
+    "completed": 0,
+    "summary": { "valid": 0, "invalid": 0, "unknown": 0, "renewed": 0, "failed": 0 },
+    "error": "",
+    "createdAt": "2026-10-10T15:00:00.000Z",
+    "updatedAt": "2026-10-10T15:00:00.000Z"
+  }
+}
+```
+
+Poll **GET /api/batch-jobs/:id** every two seconds for `{ "job": ... }`.
+**GET /api/batch-jobs?pool=outlook** (or `yyds`) returns `{ "jobs": [...] }`
+containing the most recent task for that pool, allowing a refreshed page to
+reconnect. Both endpoints are admin-only and use `Cache-Control: no-store`.
+Missing IDs return 404; an invalid pool returns 400.
+
+`kind` is `outlook-check`, `outlook-renew` or `yyds-check`. Terminal states are
+`completed`, `failed`, and `interrupted`. Progress and aggregate counts persist
+in SQLite; credentials and per-account results are never saved in task records.
+For renewal, `renewed` means a refresh token rotated and `failed` means it did
+not rotate, matching the existing synchronous contract; capability counts
+(`valid`/`invalid`/`unknown`) describe the mailbox check separately.
+
+One task owns each pool at a time. An identical background start reuses the
+running task; a different selection or action returns 409. Outlook checks and
+renewals share that lock with the scheduled daily check. Infrastructure
+failures remain unknown, preserving stored Outlook token status. Unexpected
+processing errors yield `failed` after the workers settle, retaining completed
+counts; arbitrary upstream error text is not included in task state.
+
+Closing or refreshing the browser leaves the task running. Transient polling
+errors are retried. If the server restarts, unfinished tasks become
+`interrupted` with their last persisted counts; they are not automatically
+replayed because token renewals may already have taken effect upstream. Start
+a new task explicitly to retry. API calls that omit `background` retain their
+original 200 response and per-account results, and still wait for completion;
+they return 409 if another task already owns that pool.
+
 ## YYDS Mail Pool (Admin)
 
 All mounted under `/api/yyds`.
@@ -1195,6 +1259,10 @@ Format per line: `API_KEY----display_name`
 ```
 
 ### POST /api/yyds/check — Validate Keys
+
+Supports the same [background task mode](#background-pool-tasks-admin).
+Network failures, 429 and 5xx responses are unknown and leave stored key status
+unchanged.
 
 **Request** (JSON, optional):
 ```json

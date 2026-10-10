@@ -28,6 +28,7 @@ beforeAll(async () => {
 beforeEach(() => {
   const db = getDb();
   for (const table of [
+    'batch_jobs',
     'inboxes',
     'blocks',
     'provider_stats',

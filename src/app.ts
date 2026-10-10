@@ -22,7 +22,9 @@ import { checkToken } from './providers/outlook.js';
 import { reapOrphanedAddresses } from './providers/icloud.js';
 import { createLogger } from './logger.js';
 import { settingsRoutes } from './routes/settings.js';
-import { runConcurrent, todayDateString } from './utils.js';
+import { batchJobRoutes } from './routes/batch-jobs.js';
+import { runningBatchJob, runSynchronousBatch } from './batch-jobs.js';
+import { todayDateString } from './utils.js';
 import { APP_VERSION } from './version.js';
 import { errorMessage, httpStatus, jsonStatus } from './errors.js';
 import { requestLogger } from './request-logger.js';
@@ -588,6 +590,7 @@ export function createApp(): Hono<AdminEnv> {
   app.route('/api', serviceRoutes);
   app.route('/api', templateProviderRoutes);
   app.route('/api', settingsRoutes);
+  app.route('/api', batchJobRoutes);
 
   app.get('/api/activity', requireAdmin, (c) => {
     const db = getDb();
@@ -700,11 +703,11 @@ export async function cleanupExpired(): Promise<void> {
         AND (last_checked_at IS NULL OR datetime(last_checked_at) < datetime('now', '-1 day'))
     `);
 
-    if (toCheck.length > 0) {
+    if (toCheck.length > 0 && !runningBatchJob('outlook')) {
       const concurrency = Math.max(1, parseInt(getSetting('batch_concurrency', DEFAULT_SETTINGS.batch_concurrency), 10) || 5);
       let invalidCount = 0;
       let unknownCount = 0;
-      await runConcurrent(toCheck, concurrency, async ({ email, client_id: clientId, refresh_token: refreshToken }) => {
+      await runSynchronousBatch('outlook-check', ['scheduled-daily-check'], toCheck, concurrency, async ({ email, client_id: clientId, refresh_token: refreshToken }) => {
         try {
           const { status, apiType } = await checkToken(email, clientId, refreshToken);
           if (status === 'unknown') {
@@ -720,9 +723,11 @@ export async function cleanupExpired(): Promise<void> {
               db.prepare(`UPDATE outlook_accounts SET token_status = ?, last_checked_at = datetime('now') WHERE email = ?`).run(status, email);
             }
           }
+          return { status, apiType };
         } catch (e) {
           unknownCount++;
           log.warn('Outlook token check errored, leaving account status untouched', { email, error: errorMessage(e) });
+          return { status: 'unknown' };
         }
       });
 
