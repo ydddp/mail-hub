@@ -94,7 +94,7 @@ try {
 }
 
 const LLMS_TXT = `# Mail Hub — Temporary Email Aggregation API
-> Version: 0.9 | Base URL: https://mail.paramess.com
+> Version: ${APP_VERSION} | Base URL: https://mail.paramess.com
 
 Mail Hub is a multi-provider temporary/disposable email aggregation service.
 It creates inboxes from multiple email providers, polls for incoming messages,
@@ -107,6 +107,12 @@ Daily quotas use UTC days (reset at 00:00 UTC); the SPA displays browser-local t
 
 All /api/* endpoints require a Bearer token in the Authorization header:
   Authorization: Bearer <your-api-key>
+
+API_SECRET grants administrator access. Regular mk_ keys can use permitted
+public endpoints and only their own inboxes. Account pools, provider settings,
+key management and template recovery require an admin; regular keys receive 403.
+Without API_SECRET, requests are treated as admin (development mode).
+This /v1/llms.txt summary is public; reading it grants no API permissions.
 
 ## ⚠️ CRITICAL: Two Mandatory Requirements ⚠️
 
@@ -202,13 +208,17 @@ List your inboxes.
 Query parameters:
   ?status=active|closed   — filter by status
   ?provider=mailtm        — filter by provider
-  ?for=twitter            — filter by target service
+  ?for=twitter.com        — filter by target service
 
 Response 200:
   { "inboxes": [ { "id", "provider", "address", "target_service", "created_at", "expires_at", "status" }, ... ] }
 
 ### GET /api/inbox/:id/messages
-Poll the inbox for messages.
+Read messages within this inbox's own lifetime and recipient scope. Ownership
+and lifetime are checked again after reads. The lower bound is created_at + 1s;
+the upper bound is the earlier closed_at or expires_at, exclusive. Closed inbox
+history remains readable within these bounds; unknown-ended history is withheld.
+Message IDs are opaque: URL-encode and return them unchanged.
 
 Response 200:
   { "messages": [ { "id", "from", "subject", "excerpt", "receivedAt" }, ... ] }
@@ -227,9 +237,9 @@ Query parameters:
   ?selection=matching — Outlook only: scan Inbox/Junk, at most 5 upstream list pages,
                         100 metadata entries before local filtering, and 5 eligible
                         details total per request, including all waiting rounds
-  ?timeout=60      — max wait time in seconds (default 60, max 120)
+  ?timeout=60      — positive integer seconds (default 60; values above 120 clamp; invalid values return 400)
   ?type=numeric    — filter code type (numeric, alphanumeric, link)
-  ?since=ISO_TIME  — only consider messages received after this timestamp
+  ?since=ISO_TIME  — strictly later messages; full datetime or epoch milliseconds
   ?excludeMessageId=ID — repeat to subtract returned IDs (both selection modes)
                          max 20 supplied values, 2048 UTF-16 code units each, 8192 UTF-8
                          value bytes total; excess returns 400, never truncates
@@ -237,12 +247,19 @@ Query parameters:
 Response 200:
   {
     "codes": [
-      { "code": "123456", "type": "numeric", "source": "body", "context": "verification code" }
+      { "value": "123456", "type": "numeric", "confidence": 0.95, "context": "verification code" }
     ],
     "email": { "from": "noreply@service.com", "subject": "Your code" },
     "messageId": "message-123",
     "receivedAt": "2025-01-01T00:01:00Z"
   }
+
+Omitting selection keeps latest: extract only from the newest candidate.
+matching is Outlook-only and skips candidates without a matching code type.
+In matching mode, omit type for all supported types; invalid/empty type is 400.
+Read codes[].value, not codes[].code. No eligible result gives codes=[] and
+email=null; latest can return a message with codes=[] when no code matches.
+Upstream failure is not evidence of an empty mailbox.
 
 This is the recommended endpoint for most use cases — it handles polling,
 message retrieval, and code extraction in a single call. For repeated retrieval,
@@ -264,6 +281,60 @@ reason="scan_limit" and complete=false. Folder/read errors return controlled
 fallback can hide a failed detail. Each list page and detail charges the same
 shared poll budget. IMAP scan IDs carry UIDVALIDITY; changed generations require
 a reload. HTTP scan continuations reject other hosts/paths and redirects.
+scan.reason is matched, window_exhausted, scan_limit, timeout, or error (on a
+read error response). pages/metadata/checked count list pages, raw metadata and
+candidate details. truncated means an unfinished list window; partial means
+an interrupted read. Matching email.recipientAddress is the requested inbox
+address confirmed by To/Cc, or null when unconfirmed.
+
+### Outlook account mailbox (admin only)
+
+GET /api/outlook/accounts/:email/mailbox
+  ?limit=50 — first-page size, 1..100; continuation keeps the same size
+  ?pageToken=TOKEN — return the previous nextPageToken for earlier messages
+Response: { "email", "limit", "messages": [...], "leases": [...], "nextPageToken" }
+GET /api/outlook/accounts/:email/mailbox/:messageId — full message detail
+
+These admin reads cover account history beyond an inbox lease. Lists/details
+include recipientMatch (exact/multiple/unknown); recipientAddress is present
+only for one confirmed To/Cc or envelope address. leaseId/leaseState classify
+arrival time, not recipient ownership: mail to an old alias can arrive during
+a newer lease. Equal-time ID sorting does not establish delivery order.
+
+nextPageToken is opaque; null ends history. Repeat a token to replay the same
+page, or retry after a read failure. Tokens are bound to account/admin, expire
+after 10 minutes, and are lost on restart or eviction (100 states maximum).
+Expired tokens, external credential replacement or changed IMAP UIDVALIDITY
+require a fresh first page. Normal credential rotation by this read preserves
+continuation. Refresh without a token for new mail. IMAP follows UID boundaries
+and sorts each page by receive time; times may be nonmonotonic across pages.
+Upstream mail moves can cause omissions/duplicates; this is not a snapshot.
+
+### Template account recovery (admin only)
+
+GET  /api/template-providers/:name/recoveries
+  Returns { "recoveries": [...] }. Records include id, provider, phase, address,
+  createdAt, updatedAt, expiresAt, claimedInboxId, lastStatus, operationActive,
+  canRetry and canClaim; never passwords, tokens or configuration snapshots.
+  Phases: attempting, upstream_created, auth_pending, ready, claimed,
+  outcome_unknown. An unknown creation outcome requires manual inspection.
+POST /api/template-providers/:name/recoveries/:id/retry
+  No body. Retry only postCreate authentication using the original saved
+  config/account; never create another account. Active/unknown operations
+  return 409. ready/claimed return as-is. Success: { "recovery": {...} }.
+  Authentication can recover after template deletion/change or local expiry;
+  it never extends expiry. Upstream HTTP errors retain their status; invalid
+  responses or missing credentials return 500, with safe recovery metadata.
+POST /api/template-providers/:name/recoveries/:id/claim
+  No body. Requires ready, unexpired and a compatible enabled current template.
+  Conflicts return 409; expired assets return 410. Assets remain retained.
+  Returns { "id", "address", "provider", "expiresAt", "recovery": {...} }.
+  The inbox is admin-only and retains the original creation/expiry times.
+  Repeated claims return the same retained inbox, without allocating again.
+
+Template tests retain created upstream accounts and recovery records even when
+later authentication or mail reading fails. Check retained records before
+retrying a failed creation; do not blindly create a replacement account.
 
 ### POST /api/inbox/:id/report
 ⚠️ MANDATORY — Report the outcome of using this inbox.
@@ -281,7 +352,8 @@ Response 200:
     // on success=false, auto-block rule triggered (domain banned for that service)
 
 YOU MUST CALL THIS ENDPOINT. Every inbox usage MUST end with a report.
-  - success=true  → provider gets a success point, Outlook account records this service
+  - success=true  → updates service statistics; Outlook records this service
+  - reports do not reorder providers; dispatch order is configured by the admin
   - success=false → failure logged; if configurable auto-block rules are met, the domain
     is automatically banned for the service (e.g. 3 failures in 24 hours)
   - "service" should be the same domain you passed as "for" when creating the inbox
@@ -357,13 +429,15 @@ All errors follow this format:
   { "error": "Human-readable error message" }
 
 Common HTTP status codes:
+  400 — Invalid request parameters
   401 — Missing or invalid Bearer token
+  403 — Administrator access required
   404 — Inbox not found
-  410 — Inbox already closed
+  410 — Operation requires an active/unexpired resource; historical reads retain lease bounds
   413 — Request body too large (1 MiB; 16 MiB for admin account imports)
   429 — Rate limit exceeded (includes retryAfter)
   502 — Upstream provider error
-  503 — All providers exhausted
+  503 — No usable provider/resource for creation, or an upstream failure on other endpoints
 
 ## Provider Notes
 
@@ -371,10 +445,11 @@ Mail Hub aggregates multiple upstream email providers. When POST /api/inbox
 carries no "provider", the dispatcher walks the dispatch order (see
 /api/dispatch/preview) and uses the first provider that is enabled, allowed to
 auto-dispatch, not rate-limited or cooling down, and able to create an inbox.
-Two providers use pool-based resources:
+Pool-based providers include Outlook, iCloud, YYDS and IMAP:
 
 Paid providers (tier "paid") have auto-dispatch disabled by default — they are
-only used when explicitly requested via the "provider" field in POST /api/inbox.
+eligible when explicitly requested via "provider" or named by a service-specific
+dispatch rule (the global rule does not override auto-dispatch).
 The operator can enable auto-dispatch for any provider through the admin panel.
 
 ### Outlook
@@ -548,7 +623,7 @@ export function createApp(): Hono<AdminEnv> {
     const baseUrl = `${proto}://${host}`;
     c.header('Content-Type', 'text/plain; charset=utf-8');
     c.header('Cache-Control', 'public, max-age=3600');
-    return c.text(LLMS_TXT.replace('https://mail.paramess.com', baseUrl).replace('Version: 0.9', `Version: ${APP_VERSION}`));
+    return c.text(LLMS_TXT.replace('https://mail.paramess.com', baseUrl));
   });
 
   // Authentication must stay the first /api/* middleware to touch the request
