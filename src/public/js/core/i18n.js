@@ -4,6 +4,32 @@ import { refreshCurrentView, refreshMobileMoreChrome, refreshNavLabels } from '.
 // ─── i18n ───
 const LANG = {
 zh: {
+// Docs - matching results and template account recovery
+'docs.scan_title':"匹配取码的扫描结果",
+'docs.scan_intro':"仅 <code>selection=matching</code> 返回 <code>scan</code>；<code>scope</code> 为 <code>inbox_and_junk</code>。下列计数和上限由同一次请求的两个目录、重试及等待轮次共用。",
+'docs.scan_counts':"已检查的候选详情数 / 已读列表页数 / 已读原始元数据条数；上限分别为 5 / 5 / 100。元数据在本地收件人过滤前计数。",
+'docs.scan_complete':"当前候选窗口是否检查完，不代表整个邮箱；找到匹配但仍有未检查候选时也为 false。",
+'docs.scan_truncated':"列表窗口尚未读完。达到上限时不能据此断言整个邮箱没有匹配。",
+'docs.scan_partial':"读取被错误或截止时间等中断，结果不完整。",
+'docs.scan_folders':"各目录的 folder 与 complete；一个目录读完不代表另一个也读完。",
+'docs.scan_reason':"<code>matched</code> 找到匹配；<code>window_exhausted</code> 当前窗口无匹配；<code>scan_limit</code> 达到扫描上限；<code>timeout</code> 等待结束；读取错误的 429/502 响应带 <code>error</code>。",
+'docs.scan_note':"匹配成功时，<code>email.recipientAddress</code> 为 To/Cc 确认的本次邮箱地址，无法确认时为 null。详情读取失败不会降级用摘要取码；429 按 Retry-After 退避，其他读取失败返回 502，不能当作成功的空结果。",
+'docs.recipient_title':"收件归属与到达时段",
+'docs.recipient_match':"<code>exact</code> 确认一个收件地址；<code>multiple</code> 有多个不同收件地址；<code>unknown</code> 无可用证据。依据 To/Cc 或 IMAP envelope，不用主账号地址补猜。",
+'docs.recipient_address':"仅 exact 时提供已确认的收件地址；其他情况不返回此字段。",
+'docs.recipient_lease':"只描述邮件到达时落在哪段租期，不证明它寄给了该租期的地址。",
+'docs.recipient_note':"旧别名的迟到信可以落在新租期内。列表与详情都提供这些归属字段；普通邮箱接口仍受收件人及租期隔离限制。同时间邮件按 ID 稳定排序，不代表真实投递先后。",
+'docs.recovery_title':"模板账号恢复",
+'docs.recovery_intro':"模板渠道已创建上游账号、但后续认证失败时，可在这里恢复并领取。以下接口仅限管理员；列表只返回状态和地址等元数据，不返回密码、token 或配置快照。",
+'docs.recovery_list':"恢复记录列表",
+'docs.recovery_retry':"重试账号认证",
+'docs.recovery_claim':"领取已恢复账号",
+'docs.recovery_paths':"路径中的 <code>name</code> 是模板渠道名，<code>id</code> 是恢复记录 ID。记录中的 <code>operationActive</code> 表示操作进行中；<code>canRetry</code> / <code>canClaim</code> 表示当前资产是否具备重试 / 领取条件，领取时还会检查现用模板。",
+'docs.recovery_phases':"<code>phase</code>：<code>attempting</code> 创建已开始；<code>upstream_created</code> 已保存上游账号；<code>auth_pending</code> 认证待完成；<code>ready</code> 可领取；<code>claimed</code> 已领取；<code>outcome_unknown</code> 创建结果未知，需人工核查。模板删除后仍可查看保留记录。",
+'docs.recovery_retry_note':"无需请求体。沿用创建时保存的配置与账号，仅重试 postCreate 认证，不重新创建账号。操作进行中或结果未知返回 409；ready / claimed 重复调用直接返回当前记录。模板被修改、停用或删除后仍可恢复认证；认证成功不延长原到期时间。",
+'docs.recovery_retry_errors':"成功返回 <code>{ \"recovery\": { ... } }</code>，字段同列表记录。上游 HTTP 错误保留状态码；响应无效或缺少凭据返回 500。已知资产的错误响应同时带 error 与 recovery，修正原因后再重试。",
+'docs.recovery_claim_note':"无需请求体。要求账号 ready、未过期，且现用模板已启用、关键配置与创建时一致；状态或模板不符返回 409，过期返回 410，均保留资产。创建的邮箱仅管理员可见，沿用原创建及到期时间；重复领取返回同一邮箱，不重复分配。",
+
 'inbox.continue_code':'继续取件',
 'inbox.reset_code_session':'重置取件会话',
 'inbox.code_session_hint':'本页会话仅记住已返回的邮件 ID；复制不消耗验证码。刷新页面会清空记录。',
@@ -82,7 +108,7 @@ zh: {
 // Docs - Sidebar nav links
 'docs.nav_auth':'认证方式','docs.nav_close_inbox':'关闭邮箱','docs.nav_create_inbox':'创建邮箱','docs.nav_errors':'错误处理','docs.nav_list_inboxes':'邮箱列表','docs.nav_get_messages':'获取邮件','docs.nav_get_message':'邮件详情','docs.nav_report_inbox':'上报结果','docs.nav_list_blocks':'封禁列表','docs.nav_add_block':'添加封禁','docs.nav_del_block':'删除封禁','docs.nav_list_providers':'渠道列表','docs.nav_get_provider':'渠道详情','docs.nav_patch_provider':'更新渠道','docs.nav_get_domains':'可用域名','docs.nav_ol_stats':'池统计','docs.nav_ol_import':'导入账号','docs.nav_ol_list':'账号列表','docs.nav_ol_mailbox':'账号邮箱','docs.nav_ol_delete':'删除账号','docs.nav_ol_check':'检测令牌','docs.nav_ol_renew':'续期令牌','docs.nav_yd_stats':'池统计','docs.nav_yd_import':'导入 Key','docs.nav_yd_list':'Key 列表','docs.nav_yd_delete':'删除 Key','docs.nav_yd_check':'验证 Key','docs.nav_yd_wildcard':'Wildcard 设置','docs.nav_im_stats':'池统计','docs.nav_im_list':'账号列表','docs.nav_im_list_one':'账号详情','docs.nav_im_add':'添加账号','docs.nav_im_update':'更新账号','docs.nav_im_delete':'删除账号','docs.nav_im_test':'测试连接','docs.nav_key_create':'创建密钥','docs.nav_key_list':'密钥列表','docs.nav_key_update':'更新密钥','docs.nav_key_delete':'删除密钥','docs.nav_get_code':'提取验证码','docs.nav_llms':'llms.txt',
 // Docs - Auth section
-'docs.auth_title':'认证方式','docs.auth_desc1':'所有 <code>/api/*</code> 接口需在请求头中携带 Bearer Token。支持两种身份：','docs.auth_desc2':'<strong>管理员密钥</strong>（环境变量 <code>API_SECRET</code>）：拥有全部权限，包括密钥管理接口。','docs.auth_desc3':'<strong>普通 API Key</strong>（通过管理员创建，<code>mk_</code> 前缀）：可调用除密钥管理外的全部接口。每次调用自动记录用量。','docs.auth_desc4':'若未设置 <code>API_SECRET</code> 则无需认证（开发模式）。',
+'docs.auth_title':'认证方式','docs.auth_desc1':'所有 <code>/api/*</code> 接口需在请求头中携带 Bearer Token。支持两种身份：','docs.auth_desc2':'<strong>管理员密钥</strong>（环境变量 <code>API_SECRET</code>）：拥有全部权限，包括密钥管理接口。','docs.auth_desc3':"<strong>普通 API Key</strong>（通过管理员创建，<code>mk_</code> 前缀）：可使用获准的公共接口，只能操作自己的邮箱。账号池、渠道配置、密钥管理和资产恢复等管理接口仅限管理员，普通 Key 调用返回 403。每次调用自动记录用量。",'docs.auth_desc4':'若未设置 <code>API_SECRET</code> 则无需认证（开发模式）。',
 // Docs - Errors section
 'docs.errors_title':'错误处理','docs.errors_desc1':'所有错误响应格式统一：','docs.errors_desc2':'常见状态码：<code>400</code> 参数错误、<code>401</code> 未认证、<code>404</code> 资源不存在、<code>409</code> 资源冲突、<code>410</code> 资源已关闭、<code>502</code> 上游服务异常、<code>503</code> 全部渠道不可用。',
 // Docs - Inbox management section
@@ -154,6 +180,32 @@ zh: {
 'docs.example_error':'错误描述信息','docs.example_code_excerpt':'您的验证码是...','docs.example_plain_text':'纯文本正文','docs.example_code_context':'您的验证码是 483921','docs.example_format_error':'格式错误: ...','docs.example_default_group':'未分组','docs.example_primary_key':'主力Key','docs.example_key_name':'给小明','docs.example_llms_summary':'... (完整端点文档，含参数与响应格式)','docs.example_usage_prompt':'请先读取 https://your-server.com/v1/llms.txt 了解 Mail Hub API，然后帮我写一个集成脚本。',
 },
 en: {
+// Docs - matching results and template account recovery
+'docs.scan_title':"Matching scan result",
+'docs.scan_intro':"Only <code>selection=matching</code> returns <code>scan</code>, with <code>scope: inbox_and_junk</code>. Counts and limits are shared across both folders, retries and waiting rounds in one request.",
+'docs.scan_counts':"Candidate details checked / list pages read / raw metadata entries read; limits are 5 / 5 / 100. Metadata is counted before local recipient filtering.",
+'docs.scan_complete':"Whether the current candidate window is complete, not the whole mailbox. A match with unchecked candidates can still have complete=false.",
+'docs.scan_truncated':"The list window is unfinished. Reaching a limit does not mean the whole mailbox has no match.",
+'docs.scan_partial':"Reading was interrupted, for example by an error or deadline; the result is incomplete.",
+'docs.scan_folders':"Per-folder folder and complete values; finishing one folder does not finish the other.",
+'docs.scan_reason':"<code>matched</code>: found a match; <code>window_exhausted</code>: no match in the current window; <code>scan_limit</code>: reached a cap; <code>timeout</code>: wait ended; scan read failures include <code>error</code> in their 429/502 response.",
+'docs.scan_note':"On a match, <code>email.recipientAddress</code> is the requested inbox address confirmed by To/Cc, or null if unconfirmed. A detail failure does not fall back to summary extraction. Back off using Retry-After on 429; other read failures return 502 rather than a successful empty result.",
+'docs.recipient_title':"Recipient and arrival window",
+'docs.recipient_match':"<code>exact</code>: one confirmed address; <code>multiple</code>: several distinct addresses; <code>unknown</code>: no usable evidence. Based on To/Cc or the IMAP envelope, without substituting the account address.",
+'docs.recipient_address':"The confirmed recipient address, present only for exact matches.",
+'docs.recipient_lease':"Describe the lease window when the message arrived, not proof that it was sent to that lease address.",
+'docs.recipient_note':"Mail sent to an old alias can arrive during a newer lease. List and detail responses expose these fields; ordinary inbox endpoints retain recipient and lifetime isolation. ID ordering breaks equal-time ties consistently, without establishing actual delivery order.",
+'docs.recovery_title':"Template Account Recovery",
+'docs.recovery_intro':"Recover and claim an upstream account when a template provider created it but later authentication failed. All endpoints below require an admin. Lists return metadata such as status and address, never passwords, tokens or config snapshots.",
+'docs.recovery_list':"List recovery records",
+'docs.recovery_retry':"Retry account authentication",
+'docs.recovery_claim':"Claim a recovered account",
+'docs.recovery_paths':"Path <code>name</code> is the template provider name; <code>id</code> is the recovery record ID. <code>operationActive</code> indicates an operation in progress. <code>canRetry</code> / <code>canClaim</code> describe asset eligibility; claiming also checks the current template.",
+'docs.recovery_phases':"<code>phase</code>: <code>attempting</code> creation started; <code>upstream_created</code> account saved; <code>auth_pending</code> authentication unfinished; <code>ready</code> ready to claim; <code>claimed</code> already claimed; <code>outcome_unknown</code> creation outcome unknown, requiring manual inspection. Retained records remain readable after template deletion.",
+'docs.recovery_retry_note':"No request body. Reuses the saved creation config and account to retry only postCreate authentication, without creating another account. Active operations or unknown outcomes return 409; ready / claimed records return as-is. Authentication recovery remains available after template changes, disabling or deletion, and does not extend the original expiry.",
+'docs.recovery_retry_errors':"Success returns <code>{ \"recovery\": { ... } }</code>, with the same fields as a list record. Upstream HTTP errors keep their status; invalid responses or missing credentials return 500. Errors for known assets include error and recovery; resolve the cause before retrying.",
+'docs.recovery_claim_note':"No request body. Requires a ready, unexpired account and an enabled current template with matching creation configuration. State or template conflicts return 409; expiry returns 410, preserving the asset. The inbox is admin-only and retains the original creation and expiry times. Repeated claims return the same inbox without reallocating it.",
+
 'inbox.continue_code':'Continue retrieval',
 'inbox.reset_code_session':'Reset retrieval session',
 'inbox.code_session_hint':'This page remembers returned message IDs only. Copying does not consume a code. Refreshing clears this session.',
@@ -232,7 +284,7 @@ en: {
 // Docs - Sidebar nav links
 'docs.nav_auth':'Authentication','docs.nav_close_inbox':'Close inbox','docs.nav_create_inbox':'Create inbox','docs.nav_errors':'Error Handling','docs.nav_list_inboxes':'List Inboxes','docs.nav_get_messages':'Get Messages','docs.nav_get_message':'Message Detail','docs.nav_report_inbox':'Report Result','docs.nav_list_blocks':'Block List','docs.nav_add_block':'Add Block','docs.nav_del_block':'Delete Block','docs.nav_list_providers':'Provider List','docs.nav_get_provider':'Provider Detail','docs.nav_patch_provider':'Update Provider','docs.nav_get_domains':'Available Domains','docs.nav_ol_stats':'Pool Stats','docs.nav_ol_import':'Import Accounts','docs.nav_ol_list':'Account List','docs.nav_ol_mailbox':'Account Mailbox','docs.nav_ol_delete':'Delete Accounts','docs.nav_ol_check':'Check Token','docs.nav_ol_renew':'Renew Token','docs.nav_yd_stats':'Pool Stats','docs.nav_yd_import':'Import Key','docs.nav_yd_list':'Key List','docs.nav_yd_delete':'Delete Key','docs.nav_yd_check':'Verify Key','docs.nav_yd_wildcard':'Wildcard Setting','docs.nav_im_stats':'Pool Stats','docs.nav_im_list':'Account List','docs.nav_im_list_one':'Account Detail','docs.nav_im_add':'Add Account','docs.nav_im_update':'Update Account','docs.nav_im_delete':'Delete Account','docs.nav_im_test':'Test Connection','docs.nav_key_create':'Create Key','docs.nav_key_list':'Key List','docs.nav_key_update':'Update Key','docs.nav_key_delete':'Delete Key','docs.nav_get_code':'Extract Code','docs.nav_llms':'llms.txt',
 // Docs - Auth section
-'docs.auth_title':'Authentication','docs.auth_desc1':'All <code>/api/*</code> endpoints require a Bearer token in the request header. Two identity types are supported:','docs.auth_desc2':'<strong>Admin Key</strong> (env var <code>API_SECRET</code>): Full access to all endpoints, including key management.','docs.auth_desc3':'<strong>Regular API Key</strong> (created by admin, <code>mk_</code> prefix): Access to all endpoints except key management. Usage is recorded per call.','docs.auth_desc4':'If <code>API_SECRET</code> is not set, no authentication is required (development mode).',
+'docs.auth_title':'Authentication','docs.auth_desc1':'All <code>/api/*</code> endpoints require a Bearer token in the request header. Two identity types are supported:','docs.auth_desc2':'<strong>Admin Key</strong> (env var <code>API_SECRET</code>): Full access to all endpoints, including key management.','docs.auth_desc3':"<strong>Regular API Key</strong> (created by admin, <code>mk_</code> prefix): Can use permitted public endpoints and only its own inboxes. Account pools, provider configuration, key management and asset recovery require an admin; regular keys receive 403. Usage is recorded per call.",'docs.auth_desc4':'If <code>API_SECRET</code> is not set, no authentication is required (development mode).',
 // Docs - Errors section
 'docs.errors_title':'Error Handling','docs.errors_desc1':'All error responses follow a uniform format:','docs.errors_desc2':'Common status codes: <code>400</code> Bad request, <code>401</code> Unauthenticated, <code>404</code> Not found, <code>409</code> Conflict, <code>410</code> Resource closed, <code>502</code> Upstream error, <code>503</code> All providers unavailable.',
 // Docs - Inbox management section

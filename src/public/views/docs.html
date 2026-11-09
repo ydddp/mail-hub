@@ -39,6 +39,12 @@
             <a href="#doc-get-domains" data-on-click="scrollDoc" data-args='[{"$":"event"},{"$":"el"}]'><span class="method m-get">GET</span><span data-i18n="docs.nav_get_domains">可用域名</span></a>
           </div>
           <div class="docs-nav-group">
+            <div class="docs-nav-group-title" data-i18n-html="docs.recovery_title">模板账号恢复</div>
+            <a href="#doc-recovery-list" data-on-click="scrollDoc" data-args='[{"$":"event"},{"$":"el"}]'><span class="method m-get">GET</span><span data-i18n="docs.recovery_list">恢复记录列表</span></a>
+            <a href="#doc-recovery-retry" data-on-click="scrollDoc" data-args='[{"$":"event"},{"$":"el"}]'><span class="method m-post">POST</span><span data-i18n="docs.recovery_retry">重试账号认证</span></a>
+            <a href="#doc-recovery-claim" data-on-click="scrollDoc" data-args='[{"$":"event"},{"$":"el"}]'><span class="method m-post">POST</span><span data-i18n="docs.recovery_claim">领取已恢复账号</span></a>
+          </div>
+          <div class="docs-nav-group">
             <div class="docs-nav-group-title" data-i18n="docs.outlook_pool">Outlook 账号池</div>
             <a href="#doc-ol-stats" data-on-click="scrollDoc" data-args='[{"$":"event"},{"$":"el"}]'><span class="method m-get">GET</span><span data-i18n="docs.nav_ol_stats">池统计</span></a>
             <a href="#doc-ol-import" data-on-click="scrollDoc" data-args='[{"$":"event"},{"$":"el"}]'><span class="method m-post">POST</span><span data-i18n="docs.nav_ol_import">导入账号</span></a>
@@ -101,7 +107,7 @@
             <p data-i18n-html="docs.auth_desc1">所有 <code>/api/*</code> 接口需在请求头中携带 Bearer Token。支持两种身份：</p>
             <pre class="docs-code">Authorization: Bearer your-token</pre>
             <p data-i18n-html="docs.auth_desc2"><strong>管理员密钥</strong>（环境变量 <code>API_SECRET</code>）：拥有全部权限，包括密钥管理接口。</p>
-            <p data-i18n-html="docs.auth_desc3"><strong>普通 API Key</strong>（通过管理员创建，<code>mk_</code> 前缀）：可调用除密钥管理外的全部接口。每次调用自动记录用量。</p>
+            <p data-i18n-html="docs.auth_desc3"><strong>普通 API Key</strong>（通过管理员创建，<code>mk_</code> 前缀）：可使用获准的公共接口，只能操作自己的邮箱。账号池、渠道配置、密钥管理和资产恢复等管理接口仅限管理员，普通 Key 调用返回 403。每次调用自动记录用量。</p>
             <p data-i18n-html="docs.auth_desc4">若未设置 <code>API_SECRET</code> 则无需认证（开发模式）。</p>
           </div>
 
@@ -256,6 +262,17 @@
   <span class="ck">"receivedAt"</span>: <span class="cs">"2025-01-01T00:01:00Z"</span>
 }</pre>
                 <div class="docs-note" data-i18n-html="docs.get_code_note">典型集成方式：先 <code>POST /api/inbox</code> 创建邮箱 → 用邮箱注册目标服务 → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> 等待验证码。Outlook 多次取件用 selection=matching，并重复传入已返回的 excludeMessageId，保留同秒其他邮件。since 仍是严格时间下界。</div>
+                <div class="docs-label" data-i18n-html="docs.scan_title">匹配取码的扫描结果</div>
+                <div class="docs-note" data-i18n-html="docs.scan_intro">仅 <code>selection=matching</code> 返回 <code>scan</code>；<code>scope</code> 为 <code>inbox_and_junk</code>。下列计数和上限由同一次请求的两个目录、重试及等待轮次共用。</div>
+                <div class="table-wrap fit"><table class="docs-param-table"><thead><tr><th data-i18n="docs.param">参数</th><th data-i18n="docs.description">说明</th></tr></thead><tbody>
+                    <tr><td class="param-name">checked / pages / metadata</td><td data-i18n-html="docs.scan_counts">已检查的候选详情数 / 已读列表页数 / 已读原始元数据条数；上限分别为 5 / 5 / 100。元数据在本地收件人过滤前计数。</td></tr>
+                    <tr><td class="param-name">complete</td><td data-i18n-html="docs.scan_complete">当前候选窗口是否检查完，不代表整个邮箱；找到匹配但仍有未检查候选时也为 false。</td></tr>
+                    <tr><td class="param-name">truncated</td><td data-i18n-html="docs.scan_truncated">列表窗口尚未读完。达到上限时不能据此断言整个邮箱没有匹配。</td></tr>
+                    <tr><td class="param-name">partial</td><td data-i18n-html="docs.scan_partial">读取被错误或截止时间等中断，结果不完整。</td></tr>
+                    <tr><td class="param-name">folders</td><td data-i18n-html="docs.scan_folders">各目录的 folder 与 complete；一个目录读完不代表另一个也读完。</td></tr>
+                    <tr><td class="param-name">reason</td><td data-i18n-html="docs.scan_reason"><code>matched</code> 找到匹配；<code>window_exhausted</code> 当前窗口无匹配；<code>scan_limit</code> 达到扫描上限；<code>timeout</code> 等待结束；读取错误的 429/502 响应带 <code>error</code>。</td></tr>
+                </tbody></table></div>
+                <div class="docs-note" data-i18n-html="docs.scan_note">匹配成功时，<code>email.recipientAddress</code> 为 To/Cc 确认的本次邮箱地址，无法确认时为 null。详情读取失败不会降级用摘要取码；429 按 Retry-After 退避，其他读取失败返回 502，不能当作成功的空结果。</div>
               </div>
             </div>
 
@@ -538,6 +555,74 @@
             </div>
           </div>
 
+          <div class="docs-section">
+            <h2 data-i18n-html="docs.recovery_title">模板账号恢复</h2>
+            <p data-i18n-html="docs.recovery_intro">模板渠道已创建上游账号、但后续认证失败时，可在这里恢复并领取。以下接口仅限管理员；列表只返回状态和地址等元数据，不返回密码、token 或配置快照。</p>
+            <div class="docs-endpoint" id="doc-recovery-list">
+              <div class="docs-endpoint-header" data-on-click="toggleParentOpen" data-args='[{"$":"el"}]'>
+                <span class="method m-get">GET</span>
+                <span class="path">/api/template-providers/:name/recoveries</span>
+                <span class="desc" data-i18n="docs.recovery_list">恢复记录列表</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-note" data-i18n-html="docs.recovery_paths">路径中的 <code>name</code> 是模板渠道名，<code>id</code> 是恢复记录 ID。记录中的 <code>operationActive</code> 表示操作进行中；<code>canRetry</code> / <code>canClaim</code> 表示当前资产是否具备重试 / 领取条件，领取时还会检查现用模板。</div>
+                <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
+                <pre class="docs-code">{
+  <span class="ck">"recoveries"</span>: [
+    {
+      <span class="ck">"id"</span>: "recovery-uuid",
+      <span class="ck">"provider"</span>: "mailtm",
+      <span class="ck">"phase"</span>: "auth_pending",
+      <span class="ck">"address"</span>: "user@example.com",
+      <span class="ck">"createdAt"</span>: "2026-11-09T00:00:00.000Z",
+      <span class="ck">"updatedAt"</span>: "2026-11-09T00:00:01.000Z",
+      <span class="ck">"expiresAt"</span>: "2026-11-10T00:00:00.000Z",
+      <span class="ck">"claimedInboxId"</span>: null,
+      <span class="ck">"lastStatus"</span>: 503,
+      <span class="ck">"operationActive"</span>: false,
+      <span class="ck">"canRetry"</span>: true,
+      <span class="ck">"canClaim"</span>: false
+    }
+  ]
+}</pre>
+                <div class="docs-note" data-i18n-html="docs.recovery_phases"><code>phase</code>：<code>attempting</code> 创建已开始；<code>upstream_created</code> 已保存上游账号；<code>auth_pending</code> 认证待完成；<code>ready</code> 可领取；<code>claimed</code> 已领取；<code>outcome_unknown</code> 创建结果未知，需人工核查。模板删除后仍可查看保留记录。</div>
+              </div>
+            </div>
+            <div class="docs-endpoint" id="doc-recovery-retry">
+              <div class="docs-endpoint-header" data-on-click="toggleParentOpen" data-args='[{"$":"el"}]'>
+                <span class="method m-post">POST</span>
+                <span class="path">/api/template-providers/:name/recoveries/:id/retry</span>
+                <span class="desc" data-i18n="docs.recovery_retry">重试账号认证</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-note" data-i18n-html="docs.recovery_retry_note">无需请求体。沿用创建时保存的配置与账号，仅重试 postCreate 认证，不重新创建账号。操作进行中或结果未知返回 409；ready / claimed 重复调用直接返回当前记录。模板被修改、停用或删除后仍可恢复认证；认证成功不延长原到期时间。</div>
+                <div class="docs-note" data-i18n-html="docs.recovery_retry_errors">成功返回 <code>{ "recovery": { ... } }</code>，字段同列表记录。上游 HTTP 错误保留状态码；响应无效或缺少凭据返回 500。已知资产的错误响应同时带 error 与 recovery，修正原因后再重试。</div>
+              </div>
+            </div>
+            <div class="docs-endpoint" id="doc-recovery-claim">
+              <div class="docs-endpoint-header" data-on-click="toggleParentOpen" data-args='[{"$":"el"}]'>
+                <span class="method m-post">POST</span>
+                <span class="path">/api/template-providers/:name/recoveries/:id/claim</span>
+                <span class="desc" data-i18n="docs.recovery_claim">领取已恢复账号</span>
+              </div>
+              <div class="docs-endpoint-body">
+                <div class="docs-note" data-i18n-html="docs.recovery_claim_note">无需请求体。要求账号 ready、未过期，且现用模板已启用、关键配置与创建时一致；状态或模板不符返回 409，过期返回 410，均保留资产。创建的邮箱仅管理员可见，沿用原创建及到期时间；重复领取返回同一邮箱，不重复分配。</div>
+                <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
+                <pre class="docs-code">{
+  <span class="ck">"id"</span>: "inbox-id",
+  <span class="ck">"address"</span>: "user@example.com",
+  <span class="ck">"provider"</span>: "mailtm",
+  <span class="ck">"expiresAt"</span>: "2026-11-10T00:00:00.000Z",
+  <span class="ck">"recovery"</span>: {
+    <span class="ck">"id"</span>: "recovery-uuid",
+    <span class="ck">"phase"</span>: "claimed",
+    <span class="ck">"claimedInboxId"</span>: "inbox-id"
+  }
+}</pre>
+              </div>
+            </div>
+          </div>
+
           <!-- ── Outlook 账号池 ── -->
           <div class="docs-section">
             <h2 data-i18n="docs.outlook_title">Outlook 账号池</h2>
@@ -643,6 +728,13 @@
   ]
 }</pre>
                 <div class="docs-note" data-i18n-html="docs.ol_mailbox_note">管理员专用。<code>/api/inbox/:id/messages</code> 只返回该邮箱在这一次租期内收到的邮件，这条接口返回整个账号邮箱。每封邮件带 <code>leaseState</code>：<code>lease</code>（属于 <code>leaseId</code> 那次租期）、<code>gap</code>（两次租期之间，账号空闲）、<code>before</code>（第一次租期之前）、<code>undated</code>（没有可解析的时间）。<code>limit</code> 是每页条数，使用返回的 <code>nextPageToken</code> 作为 <code>pageToken</code> 加载更早邮件。状态 10 分钟失效；刷新获取新邮件。</div>
+                <div class="docs-label" data-i18n-html="docs.recipient_title">收件归属与到达时段</div>
+                <div class="table-wrap fit"><table class="docs-param-table"><thead><tr><th data-i18n="docs.param">参数</th><th data-i18n="docs.description">说明</th></tr></thead><tbody>
+                    <tr><td class="param-name">recipientMatch</td><td data-i18n-html="docs.recipient_match"><code>exact</code> 确认一个收件地址；<code>multiple</code> 有多个不同收件地址；<code>unknown</code> 无可用证据。依据 To/Cc 或 IMAP envelope，不用主账号地址补猜。</td></tr>
+                    <tr><td class="param-name">recipientAddress</td><td data-i18n-html="docs.recipient_address">仅 exact 时提供已确认的收件地址；其他情况不返回此字段。</td></tr>
+                    <tr><td class="param-name">leaseId / leaseState</td><td data-i18n-html="docs.recipient_lease">只描述邮件到达时落在哪段租期，不证明它寄给了该租期的地址。</td></tr>
+                </tbody></table></div>
+                <div class="docs-note" data-i18n-html="docs.recipient_note">旧别名的迟到信可以落在新租期内。列表与详情都提供这些归属字段；普通邮箱接口仍受收件人及租期隔离限制。同时间邮件按 ID 稳定排序，不代表真实投递先后。</div>
               </div>
             </div>
 
