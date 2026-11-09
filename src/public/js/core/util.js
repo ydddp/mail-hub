@@ -146,6 +146,39 @@ function fmtTime(dt, mode) {
   return d.toLocaleString(_lang==='zh'?'zh-CN':'en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 }
 function shortTime(dt) { return fmtTime(dt, 'short'); }
+/** Mail keeps its exact instant; unknown arrivals are never replaced by now. */
+function mailTime(dt) {
+  const date = parseDisplayTime(dt);
+  if (!Number.isFinite(date.getTime())) return { label: t('time.unknown'), iso: '', zone: '' };
+  return {
+    label: fmtTime(dt),
+    iso: date.toISOString(),
+    zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
+}
+/** A display tie-break only: equal instants do not imply a delivery order. */
+function compareMailReceived(a, b) {
+  const first = parseDisplayTime(a.receivedAt).getTime();
+  const second = parseDisplayTime(b.receivedAt).getTime();
+  const firstKnown = Number.isFinite(first);
+  const secondKnown = Number.isFinite(second);
+  if (firstKnown !== secondKnown) return firstKnown ? -1 : 1;
+  if (firstKnown && first !== second) return second - first;
+  const firstId = String(a.id ?? '');
+  const secondId = String(b.id ?? '');
+  return firstId < secondId ? -1 : firstId > secondId ? 1 : 0;
+}
+/** Top-layer mail help follows its anchor while staying inside the viewport. */
+function mailTooltipPosition(anchor, popup, width, height) {
+  const margin = 12;
+  const below = anchor.bottom + 6;
+  const above = anchor.top - popup.height - 6;
+  const top = below + popup.height > height - margin && above >= margin ? above : below;
+  return {
+    left: Math.max(margin, Math.min(anchor.right - popup.width, width - popup.width - margin)),
+    top: Math.max(margin, Math.min(top, height - popup.height - margin)),
+  };
+}
 function fmtBytes(n) {
   const size = Number(n) || 0;
   if (size < 1024) return size + ' B';
@@ -187,4 +220,4 @@ function iconBtn(icon, label, action, tone) {
   const toneClass = tone === 'danger' ? ' btn-danger' : '';
   return `<button class="btn btn-sm btn-icon${toneClass}" title="${escAttr(label)}" aria-label="${escAttr(label)}"${action}>${iconSvg(icon)}</button>`;
 }
-export { API, clickById, copyText, copyValue, debounce, emptyStateRow, esc, escAttr, fmtBytes, fmtTime, getToken, iconBtn, iconSvg, inboxStatusBadge, renderEmpty, renderLoadError, renderLoading, selectText, setTone, shortTime, sleep, targetEl, toast, toggleSwitch };
+export { API, clickById, compareMailReceived, copyText, copyValue, debounce, emptyStateRow, esc, escAttr, fmtBytes, fmtTime, getToken, iconBtn, iconSvg, inboxStatusBadge, mailTime, mailTooltipPosition, renderEmpty, renderLoadError, renderLoading, selectText, setTone, shortTime, sleep, targetEl, toast, toggleSwitch };

@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getDb } from '../src/db.js';
-import { OutlookProvider, buildAliasAddress, stripPlusTag } from '../src/providers/outlook.js';
+import { OutlookProvider, buildAliasAddress, fetchAccountMailbox, fetchAccountMessage, stripPlusTag } from '../src/providers/outlook.js';
 import { app, authHeaders, jsonHeaders } from './helpers/http.js';
+
+afterEach(() => vi.unstubAllGlobals());
 
 /**
  * Plus addressing is an opt-in per request: the account still serves exactly one
@@ -284,5 +286,185 @@ describe('admin account list links alias inboxes back to the account', () => {
     const account = body.accounts.find((a) => a.email === 'lastinbox@outlook.com');
 
     expect(account?.last_inbox_id).toBe('i-last');
+  });
+});
+
+interface AliasMail {
+  id: string;
+  receivedAt: string;
+  to?: string[];
+  cc?: string[];
+  originalTo?: string;
+  detailTo?: string[];
+  detailMissing?: boolean;
+}
+
+/** An upstream projection, not a recipient filter: Microsoft only returns selected fields. */
+function stubAliasMailbox(apiType: 'graph' | 'outlook', messages: AliasMail[]): void {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    const target = new URL(String(url));
+    const json = (payload: unknown) => new Response(JSON.stringify(payload), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (target.pathname.includes('/oauth2/v2.0/token')) return json({ access_token: 'alias-mail-token' });
+    if (target.hostname !== (apiType === 'graph' ? 'graph.microsoft.com' : 'outlook.office.com')) {
+      return new Response('{}', { status: 404 });
+    }
+    const selected = (target.searchParams.get('$select') || '').toLowerCase().split(',');
+    const detailId = target.pathname.match(/\/me\/messages\/([^/]+)$/)?.[1];
+    const encode = (mail: AliasMail) => {
+      const to = detailId && mail.detailTo ? mail.detailTo : mail.to;
+      const addresses = (values?: string[]) => values?.map((address) => apiType === 'outlook'
+        ? { EmailAddress: { Address: address } }
+        : { emailAddress: { address } });
+      const recipients = {
+        ...(selected.includes('torecipients') ? { [apiType === 'outlook' ? 'ToRecipients' : 'toRecipients']: addresses(to) } : {}),
+        ...(selected.includes('ccrecipients') ? { [apiType === 'outlook' ? 'CcRecipients' : 'ccRecipients']: addresses(mail.cc) } : {}),
+      };
+      return apiType === 'outlook'
+        ? { Id: mail.id, Subject: 'Verification code: 123456', ReceivedDateTime: mail.receivedAt, Body: { Content: 'Code: 654321', ContentType: 'Text' }, ...recipients,
+            InternetMessageHeaders: [{ Name: 'X-Original-To', Value: mail.originalTo }] }
+        : { id: mail.id, subject: 'Verification code: 123456', receivedDateTime: mail.receivedAt, body: { content: 'Code: 654321', contentType: 'text' }, ...recipients,
+            internetMessageHeaders: [{ name: 'X-Original-To', value: mail.originalTo }] };
+    };
+    if (detailId) {
+      const found = messages.find((mail) => mail.id === detailId);
+      return found && !found.detailMissing ? json(encode(found)) : new Response('{}', { status: 404 });
+    }
+    return json({ value: target.pathname.toLowerCase().includes('/inbox/') ? messages.map(encode) : [] });
+  }));
+}
+
+function aliasLease(apiType: 'graph' | 'outlook', messages: AliasMail[], email = 'recipient-scope@outlook.com', address = email.replace('@', '+new@')) {
+  insertAccount(email);
+  getDb().prepare('UPDATE outlook_accounts SET api_type = ? WHERE email = ?').run(apiType, email);
+  const inbox = {
+    address,
+    authData: { email, clientId: 'cid', refreshToken: `rt-${email}` },
+    provider: 'outlook', apiBase: '',
+  };
+  getDb().prepare(
+    `INSERT INTO inboxes (id, provider, address, auth_data, api_base, created_at, status)
+     VALUES ('recipient-lease', 'outlook', ?, ?, '', '2026-11-07 10:00:00', 'active')`,
+  ).run(address, JSON.stringify(inbox.authData));
+  stubAliasMailbox(apiType, messages);
+  return { email, address, inbox };
+}
+
+// The two new contracts below protect tenant-visible lists/codes and independently
+// guessed details. Admin account reads deliberately exercise the same transports.
+describe.each(['graph', 'outlook'] as const)('Outlook %s alias recipient isolation', (apiType) => {
+  const own = 'recipient-scope+new@outlook.com';
+  const old = 'recipient-scope+old@outlook.com';
+  const mail = (id: string, seconds: number, recipients: Partial<AliasMail> = {}): AliasMail => ({
+    id, receivedAt: `2026-11-07T10:00:${String(seconds).padStart(2, '0')}Z`, ...recipients,
+  });
+
+  it('lists only exact To/Cc alias matches before applying the lease window, while admin sees the whole mailbox', async () => {
+    const messages = [
+      mail('old-delayed', 12, { to: [old] }),
+      mail('own-to', 11, { to: [own] }),
+      mail('own-case', 10, { to: [own.toUpperCase()] }),
+      mail('own-cc', 9, { to: ['elsewhere@example.test'], cc: [own.toUpperCase()] }),
+      mail('old-same-minute', 8, { to: [old] }),
+      mail('base', 7, { to: ['recipient-scope@outlook.com'] }),
+      mail('substring', 6, { to: ['recipient-scope+newer@outlook.com'] }),
+      mail('missing', 5),
+      mail('original-header-only', 4, { originalTo: own }),
+      { id: 'own-before-lease', receivedAt: '2026-11-07T09:59:59Z', to: [own] },
+    ];
+    const { email, inbox } = aliasLease(apiType, messages);
+    const provider = new OutlookProvider();
+
+    expect((await provider.getMessages(inbox)).map((message) => message.id)).toEqual([
+      'own-to', 'own-case', 'own-cc', 'own-before-lease',
+    ]);
+    const list = await app.request('/api/inbox/recipient-lease/messages', { headers: authHeaders() });
+    expect(list.status).toBe(200);
+    expect((await list.json() as { messages: { id: string }[] }).messages.map((message) => message.id))
+      .toEqual(['own-to', 'own-case', 'own-cc']);
+    const code = await app.request('/api/inbox/recipient-lease/code', { headers: authHeaders() });
+    expect(code.status).toBe(200);
+    expect(await code.json()).toMatchObject({
+      messageId: 'own-to', codes: expect.arrayContaining([expect.objectContaining({ value: '654321' })]),
+    });
+
+    expect((await fetchAccountMailbox(email)).map((message) => message.id)).toEqual(messages.map((message) => message.id));
+    expect((await provider.getMessages({ ...inbox, address: email })).map((message) => message.id))
+      .toEqual(messages.map((message) => message.id));
+    expect((await fetchAccountMessage(email, 'missing')).text).toBe('Code: 654321');
+  });
+
+  it.each([
+    ['exact To', { to: [own] }, true],
+    ['case-insensitive To', { to: [own.toUpperCase()] }, true],
+    ['exact Cc', { to: [old], cc: [own.toUpperCase()] }, true],
+    ['previous tag delivered in the new lease', { to: [old] }, false],
+    ['untagged account', { to: ['recipient-scope@outlook.com'] }, false],
+    ['substring', { to: ['recipient-scope+newer@outlook.com'] }, false],
+    ['no recipients', {}, false],
+    ['X-Original-To without To/Cc', { originalTo: own }, false],
+    ['plus-containing account: own alias', { to: ['recipient-scope+existing+new@outlook.com'] }, true, 'recipient-scope+existing@outlook.com'],
+    ['plus-containing account: previous alias', { to: ['recipient-scope+existing+old@outlook.com'] }, false, 'recipient-scope+existing@outlook.com'],
+    ['Unicode local is distinct', { to: ['\u212A+new@outlook.com'] }, false, 'k@outlook.com'],
+    ['Unicode Cc is distinct', { cc: ['\u212A+new@outlook.com'] }, false, 'k@outlook.com'],
+    ['Unicode tag is distinct', { to: ['recipient-scope+\u212A@outlook.com'] }, false, undefined, 'recipient-scope+k@outlook.com'],
+    ['Unicode domain is distinct', { to: ['local+new@\u212A.test'] }, false, 'local@k.test'],
+    ['same Unicode keeps ASCII case compatibility', { cc: ['\u212A+NEW@OUTLOOK.COM'] }, true, '\u212A@outlook.com'],
+    ['Unicode case pair is distinct', { to: ['\u00e9+new@outlook.com'] }, false, '\u00c9@outlook.com'],
+    ['Unicode normalization is not identity', { to: ['e\u0301+new@outlook.com'] }, false, '\u00e9@outlook.com'],
+    ['legacy Unicode base cannot become whole mailbox', { to: ['k+new@outlook.com'] }, false, 'k@outlook.com', '\u212A+new@outlook.com'],
+    ['legacy Unicode base exact evidence', { to: ['\u212A+NEW@OUTLOOK.COM'] }, true, 'k@outlook.com', '\u212A+new@outlook.com'],
+    ['legacy Unicode domain cannot become whole mailbox', { to: ['local+new@k.test'] }, false, 'local@k.test', 'local+new@\u212A.test'],
+    ['legacy distinct bare identity stays scoped', { to: ['k@outlook.com'] }, false, 'k@outlook.com', '\u212A@outlook.com'],
+    ['legacy distinct bare identity exact evidence', { to: ['\u212A@OUTLOOK.COM'] }, true, 'k@outlook.com', '\u212A@outlook.com'],
+    ['ASCII-identical bare lease stays whole mailbox', {}, true, 'k@outlook.com', 'K@OUTLOOK.COM'],
+  ] as const)('independently checks guessed detail ids: %s', async (_name, recipients, allowed, accountEmail?, leaseAddress?) => {
+    const { email, inbox } = aliasLease(apiType, [mail('guessed', 10, { ...recipients })], accountEmail, leaseAddress);
+    expect((await new OutlookProvider().getMessages(inbox)).map((message) => message.id)).toEqual(allowed ? ['guessed'] : []);
+    const result = new OutlookProvider().getMessage(inbox, 'guessed');
+    if (allowed) await expect(result).resolves.toMatchObject({ id: 'guessed', text: 'Code: 654321' });
+    else await expect(result).rejects.toThrow(/not found/i);
+    const list = await app.request('/api/inbox/recipient-lease/messages', { headers: authHeaders() });
+    expect(list.status).toBe(200);
+    expect((await list.json() as { messages: unknown[] }).messages).toHaveLength(allowed ? 1 : 0);
+    const detail = await app.request('/api/inbox/recipient-lease/messages/guessed', { headers: authHeaders() });
+    expect(detail.status).toBe(allowed ? 200 : 404);
+    const code = await app.request('/api/inbox/recipient-lease/code', { headers: authHeaders() });
+    expect(code.status).toBe(200);
+    expect(await code.json()).toMatchObject(allowed
+      ? { messageId: 'guessed', codes: expect.arrayContaining([expect.objectContaining({ value: '654321' })]) }
+      : { codes: [], email: null, messageId: null });
+    expect((await fetchAccountMessage(email, 'guessed')).id).toBe('guessed');
+  });
+
+  it.each([
+    ['mismatched recipients', { detailTo: [old] }],
+    ['missing recipients', { detailTo: [] }],
+    ['a missing message', { detailMissing: true }],
+  ])('extracts no summary code and returns not-found after detail reports %s', async (_name, detail) => {
+    aliasLease(apiType, [mail('recipient-changed', 10, { to: [own], ...detail })]);
+    const code = await app.request('/api/inbox/recipient-lease/code', { headers: authHeaders() });
+    expect(code.status).toBe(200);
+    expect(await code.json()).toMatchObject({ codes: [], email: null, messageId: null });
+    const response = await app.request('/api/inbox/recipient-lease/messages/recipient-changed', { headers: authHeaders() });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Message not found' });
+  });
+
+  // A corrupt tenant identity must never turn an optional recipient into an
+  // unscoped transport call, even though the admin can still read the account.
+  it.each(['', ' ', '\t'])('rejects an empty stored lease identity %j before reading mail', async (address) => {
+    const { email, inbox } = aliasLease(apiType, [mail('private', 10, { to: [old] })], undefined, address);
+    const provider = new OutlookProvider();
+    await expect(provider.getMessages(inbox)).rejects.toThrow('Message not found');
+    await expect(provider.getMessage(inbox, 'private')).rejects.toThrow('Message not found');
+    for (const path of ['messages', 'messages/private', 'code']) {
+      const response = await app.request(`/api/inbox/recipient-lease/${path}`, { headers: authHeaders() });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: 'Message not found' });
+    }
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
+    expect((await fetchAccountMessage(email, 'private')).id).toBe('private');
   });
 });

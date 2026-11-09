@@ -2,14 +2,22 @@ import { parseTimestamp, utcFields } from '../time.js';
 import { Hono } from 'hono';
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { allRows, getDb, getRow, getSetting, logActivity, setSetting } from '../db.js';
-import { checkToken, fetchAccountMailbox, fetchAccountMessage, OAuthRejectedError, renewToken } from '../providers/outlook.js';
+import { checkToken, fetchAccountMailboxPage, fetchAccountMessage, OAuthRejectedError, probeIssuedAccessToken, renewToken } from '../providers/outlook.js';
+import { OutlookHistoryTokenError } from '../outlook-history.js';
+import {
+  beginCredentialRequest, checkpointCredentialResponse, credentialContext, credentialsCurrent,
+  CREDENTIAL_COLUMNS, extractIssuedCredentials, updateCredentialAccount, type OutlookCredentialRow,
+  OutlookCredentialStorageError,
+} from '../outlook-credentials.js';
 import { parseInboxStartTimestamp, parseInboxTimestamp } from '../inbox-lifecycle.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
 import { importDelimited } from '../import-utils.js';
 import { fetchWithTimeout } from '../utils.js';
 import { config } from '../config.js';
-import { errorMessage } from '../errors.js';
+import { errorMessage, httpStatus, retryAfterHeader } from '../errors.js';
 import { startBatchJob, runSynchronousBatch } from '../batch-jobs.js';
+import { MESSAGE_RECIPIENTS, type Message } from '../providers/base.js';
+import { foldAsciiCase } from '../mail-address.js';
 
 const MICROSOFT_AUTHORITY = 'https://login.microsoftonline.com';
 const OAUTH_SESSION_TTL_MINUTES = 30;
@@ -56,6 +64,10 @@ type OAuthSessionRow = {
 type OAuthTokenResponse = {
   access_token?: string;
   refresh_token?: string;
+  token_type?: string;
+  scope?: string;
+  expires_in?: number;
+  ext_expires_in?: number;
   error?: string;
   error_description?: string;
 };
@@ -144,7 +156,7 @@ function createOAuthSession(email: string, settings: OutlookOAuthSettings, autom
   preset: OAuthPreset;
   clientId: string;
   redirectUri: string;
-} {
+} | null {
   const db = getDb();
   const sessionId = randomUUID();
   const state = randomBase64Url(32);
@@ -152,40 +164,50 @@ function createOAuthSession(email: string, settings: OutlookOAuthSettings, autom
   const codeChallenge = sha256Base64Url(codeVerifier);
   const authorizeUrl = buildAuthorizeUrl(settings, email, state, codeChallenge);
 
-  db.prepare(`
-    INSERT INTO outlook_oauth_sessions
-      (id, email, client_id, redirect_uri, scopes, tenant, preset, state_hash, code_verifier, status, automation_status, claimed_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, CASE WHEN ? != '' THEN datetime('now') ELSE NULL END, datetime('now', ?))
-  `).run(
-    sessionId,
-    email,
-    settings.clientId,
-    settings.redirectUri,
-    settings.scopes,
-    settings.tenant,
-    settings.preset,
-    sha256Hex(state),
-    codeVerifier,
-    automationStatus,
-    automationStatus,
-    `+${OAUTH_SESSION_TTL_MINUTES} minutes`,
-  );
-  db.prepare(`
-    UPDATE outlook_accounts
-    SET token_status = 'pending_oauth',
-        oauth_last_session_id = ?,
-        oauth_last_error = NULL
-    WHERE email = ?
-  `).run(sessionId, email);
-
-  return {
-    sessionId,
-    authorizeUrl,
-    status: 'pending',
-    preset: settings.preset,
-    clientId: settings.clientId,
-    redirectUri: settings.redirectUri,
-  };
+  return db.transaction(() => {
+    const account = getRow<{ oauth_last_session_id: string | null }>(db, `
+      SELECT oauth_last_session_id FROM outlook_accounts
+      WHERE email = ? AND assigned_inbox_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM outlook_oauth_sessions s
+          WHERE s.id = outlook_accounts.oauth_last_session_id
+            AND s.status = 'exchanging' AND julianday(s.expires_at) > julianday('now')
+        )
+    `, email);
+    if (!account) return null;
+    const bound = db.prepare(`
+      UPDATE outlook_accounts
+      SET token_status = 'pending_oauth', oauth_last_session_id = ?, oauth_last_error = NULL
+      WHERE email = ? AND assigned_inbox_id IS NULL AND oauth_last_session_id IS ?
+    `).run(sessionId, email, account.oauth_last_session_id);
+    if (bound.changes !== 1) return null;
+    db.prepare(`
+      INSERT INTO outlook_oauth_sessions
+        (id, email, client_id, redirect_uri, scopes, tenant, preset, state_hash, code_verifier, status, automation_status, claimed_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, CASE WHEN ? != '' THEN datetime('now') ELSE NULL END, datetime('now', ?))
+    `).run(
+      sessionId,
+      email,
+      settings.clientId,
+      settings.redirectUri,
+      settings.scopes,
+      settings.tenant,
+      settings.preset,
+      sha256Hex(state),
+      codeVerifier,
+      automationStatus,
+      automationStatus,
+      `+${OAUTH_SESSION_TTL_MINUTES} minutes`,
+    );
+    return {
+      sessionId,
+      authorizeUrl,
+      status: 'pending',
+      preset: settings.preset,
+      clientId: settings.clientId,
+      redirectUri: settings.redirectUri,
+    };
+  }).immediate();
 }
 
 function getCompletableAccount(email: string): { email: string; password: string; assigned_inbox_id: string | null; client_id: string; refresh_token: string; token_status: string } | undefined {
@@ -208,25 +230,36 @@ function claimOAuthAccount(
   includeFailed = false,
 ): { sessionId: string; email: string; status: string; authorizeUrl: string; preset: OAuthPreset; clientId: string; redirectUri: string } | null {
   const failedFilter = includeFailed ? '' : `AND COALESCE(oauth_last_error, '') = ''`;
-  const account = getRow<{ email: string }>(getDb(), `
-    SELECT email
-    FROM outlook_accounts
-    WHERE assigned_inbox_id IS NULL
-      AND (client_id = '' OR refresh_token = '' OR COALESCE(token_status, '') IN (?, ?))
-      ${failedFilter}
-    ORDER BY created_at ASC
-    LIMIT 1
-  `, ...OAUTH_CLAIM_STATUSES);
-  if (!account) return null;
+  const db = getDb();
+  return db.transaction(() => {
+    const account = getRow<{ email: string }>(db, `
+      SELECT email
+      FROM outlook_accounts
+      WHERE assigned_inbox_id IS NULL
+        AND (client_id = '' OR refresh_token = '' OR COALESCE(token_status, '') IN (?, ?))
+        ${failedFilter}
+        AND NOT EXISTS (
+          SELECT 1 FROM outlook_oauth_sessions s
+          WHERE s.id = outlook_accounts.oauth_last_session_id
+            AND s.status IN ('pending', 'exchanging')
+            AND julianday(s.expires_at) > julianday('now')
+        )
+      ORDER BY created_at ASC
+      LIMIT 1
+    `, ...OAUTH_CLAIM_STATUSES);
+    if (!account) return null;
 
-  const claimError = ensureOAuthSettings(settings);
-  if (claimError) throw new Error(claimError);
+    const claimError = ensureOAuthSettings(settings);
+    if (claimError) throw new Error(claimError);
 
-  const session = createOAuthSession(account.email, settings, automationStatus);
-  return { ...session, email: account.email };
+    const session = createOAuthSession(account.email, settings, automationStatus);
+    return session ? { ...session, email: account.email } : null;
+  }).immediate();
 }
 
 async function exchangeAuthorizationCode(session: OAuthSessionRow, code: string): Promise<OAuthTokenResponse> {
+  const context = credentialContext({ email: session.email, client_id: session.client_id, refresh_token: '', oauth_last_session_id: session.id }, 'authorization-code');
+  beginCredentialRequest(context);
   const body = new URLSearchParams({
     client_id: session.client_id,
     grant_type: 'authorization_code',
@@ -240,20 +273,83 @@ async function exchangeAuthorizationCode(session: OAuthSessionRow, code: string)
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
   });
-  const data = await res.json().catch(() => ({})) as OAuthTokenResponse;
+  const data = checkpointCredentialResponse(context, res.status, await res.text()) as OAuthTokenResponse;
   if (!res.ok) {
-    return { error: data.error || `token_exchange_${res.status}`, error_description: data.error_description || 'Token exchange failed' };
+    // Error responses can still contain issued credentials. Preserve their
+    // fields for the private checkpoint while keeping the exchange failed.
+    return { ...data, error: `token_exchange_${res.status}`, error_description: 'Token exchange failed' };
   }
   return data;
 }
 
-function isOAuthSessionExpired(session: OAuthSessionRow): boolean {
-  const expiresAt = parseTimestamp(session.expires_at);
-  return !Number.isFinite(expiresAt) || expiresAt < Date.now();
+// Check authorization with the write, never with a pre-network snapshot.
+const CURRENT_OAUTH_SESSION_SQL = `
+  julianday(s.expires_at) > julianday('now')
+  AND EXISTS (
+    SELECT 1 FROM outlook_accounts a
+    WHERE a.email = s.email AND a.oauth_last_session_id = s.id
+      AND a.assigned_inbox_id IS NULL
+  )`;
+
+type OAuthAccountUpdate = { set: string; values: Array<string | null> };
+
+function transitionOAuthSession(
+  session: OAuthSessionRow,
+  expectedStatus: string,
+  nextStatus: string,
+  error: string,
+  accountUpdate?: OAuthAccountUpdate,
+  automationStatus?: string,
+): boolean {
+  const db = getDb();
+  return db.transaction(() => {
+    const changed = db.prepare(`
+      UPDATE outlook_oauth_sessions AS s
+      SET status = ?, error = ?, updated_at = datetime('now')
+          ${automationStatus === undefined ? '' : ', automation_status = ?'}
+      WHERE s.id = ? AND s.status = ? AND ${CURRENT_OAUTH_SESSION_SQL}
+    `).run(nextStatus, error, ...(automationStatus === undefined ? [] : [automationStatus]), session.id, expectedStatus);
+    if (changed.changes !== 1) return false;
+    if (accountUpdate) {
+      const account = db.prepare(`
+        UPDATE outlook_accounts SET ${accountUpdate.set}
+        WHERE email = ? AND oauth_last_session_id = ? AND assigned_inbox_id IS NULL
+          AND EXISTS (
+            SELECT 1 FROM outlook_oauth_sessions s
+            WHERE s.id = ? AND s.status = ? AND ${CURRENT_OAUTH_SESSION_SQL}
+          )
+      `).run(...accountUpdate.values, session.email, session.id, session.id, nextStatus);
+      if (account.changes !== 1) throw new Error('OAuth account binding changed during commit');
+    }
+    return true;
+  })();
+}
+
+function isCurrentOAuthSession(sessionId: string, expectedStatus: string): boolean {
+  return Boolean(getRow(getDb(), `
+    SELECT s.id FROM outlook_oauth_sessions s
+    WHERE s.id = ? AND s.status = ? AND ${CURRENT_OAUTH_SESSION_SQL}
+  `, sessionId, expectedStatus));
+}
+
+function failCurrentOAuthSession(session: OAuthSessionRow, expectedStatus: string, message: string, automationStatus?: string): boolean {
+  return transitionOAuthSession(session, expectedStatus, 'failed', message, {
+    set: "token_status = 'pending_oauth', oauth_last_error = ?", values: [message],
+  }, automationStatus);
+}
+
+function checkpointOAuthCredentials(sessionId: string, exchanged: OAuthTokenResponse): void {
+  const checkpoint = extractIssuedCredentials(exchanged);
+  if (!checkpoint.access_token && !checkpoint.refresh_token) return;
+  // Preserve issued credentials even after supersession, expiry, assignment or
+  // account deletion. This private asset write changes no business state and
+  // the sensitive column is excluded from every API projection.
+  getDb().prepare('UPDATE outlook_oauth_sessions SET credential_checkpoint = ? WHERE id = ?')
+    .run(JSON.stringify(checkpoint), sessionId);
 }
 
 function oauthErrorMessage(data: OAuthTokenResponse, fallback: string): string {
-  return data.error_description || data.error || fallback;
+  return data.error ? 'Token exchange failed' : fallback;
 }
 
 function escapeHtml(value: string): string {
@@ -265,96 +361,56 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-async function completeOAuthCodeExchange(session: OAuthSessionRow, code: string): Promise<{ ok: boolean; message: string }> {
-  const db = getDb();
-  if (session.status === 'completed') {
-    return { ok: true, message: 'Refresh token saved' };
-  }
-  if (session.status === 'exchanging') {
-    return { ok: false, message: 'OAuth session is already exchanging' };
-  }
-  if (isOAuthSessionExpired(session)) {
-    db.prepare(`UPDATE outlook_oauth_sessions SET status = 'failed', error = 'OAuth session expired', updated_at = datetime('now') WHERE id = ?`).run(session.id);
-    return { ok: false, message: 'OAuth session expired' };
-  }
+type OAuthExchangeResult = { ok: boolean; message: string; status: string };
 
-  const account = getRow<{ email: string; assigned_inbox_id: string | null }>(
-    db,
-    `SELECT email, assigned_inbox_id FROM outlook_accounts WHERE email = ?`,
-    session.email,
-  );
-  if (!account) {
-    db.prepare(`UPDATE outlook_oauth_sessions SET status = 'failed', error = 'Outlook account not found', updated_at = datetime('now') WHERE id = ?`).run(session.id);
-    return { ok: false, message: 'Outlook account not found' };
-  }
-  if (account.assigned_inbox_id) {
-    const message = 'Outlook account is already claimed';
-    db.prepare(`UPDATE outlook_oauth_sessions SET status = 'failed', error = ?, updated_at = datetime('now') WHERE id = ?`).run(message, session.id);
-    db.prepare(`UPDATE outlook_accounts SET oauth_last_error = ? WHERE email = ?`).run(message, session.email);
-    return { ok: false, message };
-  }
+function inactiveOAuthResult(session: OAuthSessionRow): OAuthExchangeResult {
+  const current = getRow<{ status: string }>(getDb(), 'SELECT status FROM outlook_oauth_sessions WHERE id = ?', session.id);
+  return {
+    ok: false,
+    message: current?.status === 'exchanging' ? 'OAuth session is already exchanging or no longer current' : 'OAuth session is not pending, current, unexpired and unassigned',
+    status: current?.status || 'failed',
+  };
+}
 
+async function completeOAuthCodeExchange(session: OAuthSessionRow, code: string): Promise<OAuthExchangeResult> {
+  if (session.status === 'completed') return { ok: true, message: 'Refresh token saved', status: 'completed' };
+  // Both callbacks must win this pending -> exchanging CAS. Failed codes are
+  // never consumed again; error callbacks/reports cannot take this lock.
+  if (!transitionOAuthSession(session, 'pending', 'exchanging', '')) return inactiveOAuthResult(session);
   try {
-    db.prepare(`UPDATE outlook_oauth_sessions SET status = 'exchanging', updated_at = datetime('now') WHERE id = ?`).run(session.id);
     const exchanged = await exchangeAuthorizationCode(session, code);
-    if (!exchanged.refresh_token) {
+    checkpointOAuthCredentials(session.id, exchanged);
+    if (!isCurrentOAuthSession(session.id, 'exchanging')) return inactiveOAuthResult(session);
+    if (typeof exchanged.refresh_token !== 'string' || !exchanged.refresh_token || exchanged.error) {
       const message = oauthErrorMessage(exchanged, 'Token exchange did not return refresh_token');
-      db.prepare(`UPDATE outlook_oauth_sessions SET status = 'failed', error = ?, updated_at = datetime('now') WHERE id = ?`).run(message, session.id);
-      db.prepare(`UPDATE outlook_accounts SET token_status = 'pending_oauth', oauth_last_error = ? WHERE email = ?`).run(message, session.email);
-      return { ok: false, message };
+      if (!failCurrentOAuthSession(session, 'exchanging', message)) return inactiveOAuthResult(session);
+      return { ok: false, message, status: 'failed' };
     }
 
-    db.prepare(`
-      UPDATE outlook_accounts
-      SET client_id = ?,
-          refresh_token = ?,
-          token_status = 'validating',
-          oauth_last_error = NULL,
-          oauth_last_session_id = ?,
-          token_renewed_at = datetime('now')
-      WHERE email = ?
-    `).run(session.client_id, exchanged.refresh_token, session.id, session.email);
-
-    const checked = await checkToken(session.email, session.client_id, exchanged.refresh_token);
-    if (checked.status === 'invalid') {
-      const message = 'Refresh token saved, but token validation failed';
-      db.prepare(`
-        UPDATE outlook_accounts
-        SET token_status = 'pending_oauth',
-            oauth_last_error = ?,
-            last_checked_at = datetime('now')
-        WHERE email = ?
-      `).run(message, session.email);
-      db.prepare(`UPDATE outlook_oauth_sessions SET status = 'failed', error = ?, updated_at = datetime('now') WHERE id = ?`).run(message, session.id);
-      return { ok: false, message };
-    }
-    if (checked.status === 'unknown') {
-      // Token exchange itself succeeded; validation was inconclusive (network /
-      // throttling). Keep the account allocable and let the daily check settle it.
-      db.prepare(`
-        UPDATE outlook_accounts
-        SET token_status = '',
-            oauth_last_error = NULL,
-            last_checked_at = NULL
-        WHERE email = ?
-      `).run(session.email);
-      db.prepare(`UPDATE outlook_oauth_sessions SET status = 'completed', error = '', updated_at = datetime('now') WHERE id = ?`).run(session.id);
-      return { ok: true, message: 'Refresh token saved (validation deferred: upstream unreachable)' };
-    }
-    db.prepare(`
-      UPDATE outlook_accounts
-      SET token_status = 'valid',
-          api_type = CASE WHEN ? != '' THEN ? ELSE api_type END,
-          last_checked_at = datetime('now')
-      WHERE email = ?
-    `).run(checked.apiType, checked.apiType, session.email);
-    db.prepare(`UPDATE outlook_oauth_sessions SET status = 'completed', error = '', updated_at = datetime('now') WHERE id = ?`).run(session.id);
-    return { ok: true, message: 'Refresh token saved' };
-  } catch (e) {
-    const message = errorMessage(e);
-    db.prepare(`UPDATE outlook_oauth_sessions SET status = 'failed', error = ?, updated_at = datetime('now') WHERE id = ?`).run(message, session.id);
-    db.prepare(`UPDATE outlook_accounts SET token_status = 'pending_oauth', oauth_last_error = ? WHERE email = ?`).run(message, session.email);
-    return { ok: false, message };
+    // Reuse the just-issued access token. Refreshing here could rotate it via
+    // the provider's separate account CAS before this session is committed.
+    const checked = typeof exchanged.access_token === 'string' && exchanged.access_token
+      ? await probeIssuedAccessToken(session.email, exchanged.access_token)
+      : { status: 'unknown' as const, apiType: '' };
+    const invalid = checked.status === 'invalid';
+    const deferredValidation = checked.status === 'unknown';
+    const message = invalid ? 'Refresh token saved, but token validation failed'
+      : deferredValidation ? 'Refresh token saved (validation deferred: upstream unreachable)' : 'Refresh token saved';
+    const nextStatus = invalid ? 'failed' : 'completed';
+    const committed = transitionOAuthSession(session, 'exchanging', nextStatus, invalid ? message : '', {
+      set: `client_id = ?, refresh_token = ?, token_status = ?, oauth_last_error = ?,
+            token_renewed_at = datetime('now'),
+            last_checked_at = ${deferredValidation ? 'NULL' : "datetime('now')"}
+            ${invalid || deferredValidation ? '' : ", api_type = CASE WHEN ? != '' THEN ? ELSE api_type END"}`,
+      values: [session.client_id, exchanged.refresh_token, invalid ? 'pending_oauth' : deferredValidation ? '' : 'valid', invalid ? message : null,
+        ...(invalid || deferredValidation ? [] : [checked.apiType || '', checked.apiType || ''])],
+    });
+    if (!committed) return inactiveOAuthResult(session);
+    return { ok: !invalid, message, status: nextStatus };
+  } catch (err) {
+    const message = 'OAuth exchange could not be completed';
+    if (!failCurrentOAuthSession(session, 'exchanging', message)) return inactiveOAuthResult(session);
+    return { ok: false, message, status: 'failed' };
   }
 }
 
@@ -443,6 +499,7 @@ outlookRoutes.post('/outlook/oauth/start', async (c) => {
   if (settingsError) return c.json({ error: settingsError }, 400);
 
   const session = createOAuthSession(email, settings, 'manual');
+  if (!session) return c.json({ error: 'Outlook OAuth exchange is in progress or account is unavailable' }, 409);
   return c.json({
     ...session,
     email,
@@ -455,8 +512,6 @@ outlookRoutes.get('/outlook/oauth/callback', async (c) => {
   const state = c.req.query('state') || '';
   const oauthError = c.req.query('error') || '';
   const oauthErrorDescription = c.req.query('error_description') || '';
-  const db = getDb();
-
   function html(title: string, body: string): Response {
     const safeTitle = escapeHtml(title);
     const safeBody = escapeHtml(body);
@@ -469,8 +524,7 @@ outlookRoutes.get('/outlook/oauth/callback', async (c) => {
 
   if (oauthError) {
     const message = oauthErrorDescription || oauthError;
-    db.prepare(`UPDATE outlook_oauth_sessions SET status = 'failed', error = ?, updated_at = datetime('now') WHERE id = ?`).run(message, session.id);
-    db.prepare(`UPDATE outlook_accounts SET token_status = 'pending_oauth', oauth_last_error = ? WHERE email = ?`).run(message, session.email);
+    failCurrentOAuthSession(session, 'pending', message);
     return html('Outlook OAuth failed', 'Microsoft returned an OAuth error. You can retry from Mail-Hub.');
   }
   if (!code) return html('Outlook OAuth failed', 'Missing authorization code.');
@@ -503,7 +557,7 @@ outlookRoutes.post('/outlook/oauth/code', async (c) => {
   if (sessionId && session.id !== sessionId) return c.json({ error: 'OAuth session does not match state' }, 400);
 
   const result = await completeOAuthCodeExchange(session, code);
-  if (!result.ok) return c.json({ error: result.message, sessionId: session.id, status: 'failed' }, 400);
+  if (!result.ok) return c.json({ error: result.message, sessionId: session.id, status: result.status }, 400);
   return c.json({ ok: true, sessionId: session.id, email: session.email, preset: session.preset, status: 'completed' });
 });
 
@@ -527,7 +581,7 @@ outlookRoutes.post('/outlook/oauth/password', async (c) => {
         SELECT a.email, a.password, COALESCE(a.token_status, '') AS token_status, a.assigned_inbox_id, a.client_id, a.refresh_token
         FROM outlook_oauth_sessions s
         JOIN outlook_accounts a ON a.email = s.email
-        WHERE s.id = ?
+        WHERE s.id = ? AND s.status = 'pending' AND ${CURRENT_OAUTH_SESSION_SQL}
       `, sessionId)
     : getRow<{ email: string; password: string; token_status: string; assigned_inbox_id: string | null; client_id: string; refresh_token: string }>(getDb(), `
         SELECT email, password, COALESCE(token_status, '') AS token_status, assigned_inbox_id, client_id, refresh_token
@@ -580,6 +634,7 @@ outlookRoutes.post('/outlook/oauth/automation/password', async (c) => {
     FROM outlook_oauth_sessions s
     JOIN outlook_accounts a ON a.email = s.email
     WHERE s.id = ? AND s.automation_status = 'claimed'
+      AND s.status = 'pending' AND ${CURRENT_OAUTH_SESSION_SQL}
   `, sessionId);
   if (!row) return c.json({ error: 'OAuth automation session not found' }, 404);
   return c.json({ email: row.email, password: row.password });
@@ -593,23 +648,21 @@ outlookRoutes.post('/outlook/oauth/automation/report', async (c) => {
   if (!sessionId) return c.json({ error: 'Missing required field: sessionId' }, 400);
   if (!allowed.has(status)) return c.json({ error: 'Invalid automation status' }, 400);
 
-  const session = getRow<{ id: string; email: string }>(getDb(), `SELECT id, email FROM outlook_oauth_sessions WHERE id = ?`, sessionId);
+  const session = getRow<OAuthSessionRow>(getDb(), `SELECT * FROM outlook_oauth_sessions WHERE id = ?`, sessionId);
   if (!session) return c.json({ error: 'OAuth session not found' }, 404);
 
   const message = typeof body.error === 'string' ? body.error.slice(0, 500) : '';
   if (status === 'failed') {
-    getDb().prepare(`
-      UPDATE outlook_oauth_sessions
-      SET status = 'failed', automation_status = ?, error = ?, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(status, message || 'Automation reported failure', sessionId);
-    getDb().prepare(`UPDATE outlook_accounts SET token_status = 'pending_oauth', oauth_last_error = ? WHERE email = ?`).run(message || 'Automation reported failure', session.email);
+    if (!failCurrentOAuthSession(session, 'pending', message || 'Automation reported failure', status)) {
+      return c.json({ error: 'OAuth session is not current and pending' }, 409);
+    }
   } else {
-    getDb().prepare(`
-      UPDATE outlook_oauth_sessions
+    const changed = getDb().prepare(`
+      UPDATE outlook_oauth_sessions AS s
       SET automation_status = ?, updated_at = datetime('now')
-      WHERE id = ?
+      WHERE s.id = ? AND s.status = 'pending' AND ${CURRENT_OAUTH_SESSION_SQL}
     `).run(status, sessionId);
+    if (changed.changes !== 1) return c.json({ error: 'OAuth session is not current and pending' }, 409);
   }
   return c.json({ ok: true });
 });
@@ -743,6 +796,18 @@ function classifyMessage(receivedAt: string | undefined, leases: Lease[]): { lea
   return { leaseId: null, leaseState: 'gap' };
 }
 
+/** Recipient evidence is independent of arrival windows and retained leases. */
+function recipientAttribution(message: Message): { recipientAddress?: string; recipientMatch: 'exact' | 'multiple' | 'unknown' } {
+  const addresses = new Map<string, string>();
+  for (const value of message[MESSAGE_RECIPIENTS] ?? []) {
+    const address = value.trim();
+    if (address) addresses.set(foldAsciiCase(address), addresses.get(foldAsciiCase(address)) ?? address);
+  }
+  if (addresses.size === 0) return { recipientMatch: 'unknown' };
+  if (addresses.size > 1) return { recipientMatch: 'multiple' };
+  return { recipientMatch: 'exact', recipientAddress: addresses.values().next().value! };
+}
+
 /**
  * The account's mailbox, not an inbox's view of it. An inbox is a lease and its
  * message list stays clipped to that lease — widening it would put a previous
@@ -750,9 +815,9 @@ function classifyMessage(receivedAt: string | undefined, leases: Lease[]): { lea
  * other question, "what else is in this mailbox", and only for an admin (the
  * whole /outlook/* tree is behind requireAdmin).
  *
- * `limit` is a real ceiling, not paging: Graph is asked for the newest N of
- * Inbox and Junk each, merged down to N. Older mail exists upstream and is not
- * reachable from here.
+ * A fresh request loads the newest `limit` messages. The opaque pageToken
+ * continues each folder and its unseen merge buffer with the original limit;
+ * repeating a token returns the same page and successor. Refresh starts over.
  */
 outlookRoutes.get('/outlook/accounts/:email/mailbox', async (c) => {
   const email = c.req.param('email');
@@ -767,15 +832,23 @@ outlookRoutes.get('/outlook/accounts/:email/mailbox', async (c) => {
   const leases = accountLeases(email);
 
   try {
-    const messages = await fetchAccountMailbox(email, limit);
+    const page = await fetchAccountMailboxPage(email, c.get('apiKey'), limit, c.req.query('pageToken'), c.req.raw.signal);
+    const { messages, nextPageToken } = page;
     return c.json({
       email,
-      limit,
-      truncated: messages.length >= limit,
-      messages: messages.map((m) => ({ ...m, ...classifyMessage(m.receivedAt, leases) })),
+      limit: page.limit,
+      truncated: nextPageToken !== null,
+      nextPageToken,
+      messages: messages.map((m) => ({ ...m, ...classifyMessage(m.receivedAt, leases), ...recipientAttribution(m) })),
       leases: leases.map(({ startMs: _s, endMs: _e, ...rest }) => utcFields(rest, 'createdAt', 'endedAt')),
     });
   } catch (e) {
+    if (e instanceof OutlookHistoryTokenError) return c.json({ error: e.message }, 400);
+    if (httpStatus(e, 0) === 429) {
+      const retryAfter = retryAfterHeader(e);
+      if (retryAfter !== undefined) c.header('Retry-After', retryAfter);
+      return c.json({ error: errorMessage(e) }, 429);
+    }
     return c.json({ error: errorMessage(e) }, 502);
   }
 });
@@ -785,7 +858,8 @@ outlookRoutes.get('/outlook/accounts/:email/mailbox/:mid', async (c) => {
   const exists = getRow<{ email: string }>(getDb(), `SELECT email FROM outlook_accounts WHERE email = ?`, email);
   if (!exists) return c.json({ error: 'Outlook account not found' }, 404);
   try {
-    return c.json(await fetchAccountMessage(email, c.req.param('mid')));
+    const message = await fetchAccountMessage(email, c.req.param('mid'));
+    return c.json({ ...message, ...classifyMessage(message.receivedAt, accountLeases(email)), ...recipientAttribution(message) });
   } catch (e) {
     return c.json({ error: errorMessage(e) }, 502);
   }
@@ -818,13 +892,13 @@ outlookRoutes.post('/outlook/check', async (c) => {
   const db = getDb();
   const concurrency = Math.max(1, parseInt(getSetting('batch_concurrency', '5'), 10) || 5);
 
-  let sql = `SELECT email, client_id, refresh_token FROM outlook_accounts`;
+  let sql = `SELECT ${CREDENTIAL_COLUMNS} FROM outlook_accounts`;
   if (body.emails?.length) {
     const placeholders = body.emails.map(() => '?').join(',');
     sql += ` WHERE email IN (${placeholders})`;
   }
 
-  const rows = allRows<{ email: string; client_id: string; refresh_token: string }>(db, sql, ...(body.emails ?? []));
+  const rows = allRows<OutlookCredentialRow>(db, sql, ...(body.emails ?? []));
 
   const noToken: typeof rows = [];
   const withToken: typeof rows = [];
@@ -833,21 +907,29 @@ outlookRoutes.post('/outlook/check', async (c) => {
   }
 
   const processAccount = async (row: (typeof rows)[number]) => {
+    const context = credentialContext(row, 'manual-check');
+    const stale = { email: row.email, valid: false, status: 'unknown' };
+    if (!credentialsCurrent(context)) return stale;
     if (!row.client_id || !row.refresh_token) {
-      db.prepare(`UPDATE outlook_accounts SET token_status = 'no_token', last_checked_at = datetime('now') WHERE email = ?`).run(row.email);
+      if (!updateCredentialAccount(context, "token_status = 'no_token', last_checked_at = datetime('now')")) return stale;
       return { email: row.email, valid: false, status: 'no_token' };
     }
-    const { status, apiType } = await checkToken(row.email, row.client_id, row.refresh_token);
+    let checked;
+    try { checked = await checkToken(context); }
+    catch (error) {
+      if (error instanceof OutlookCredentialStorageError) return stale;
+      throw error;
+    }
+    const { status, apiType } = checked;
     if (status === 'unknown') {
-      db.prepare(`UPDATE outlook_accounts SET last_checked_at = datetime('now') WHERE email = ?`).run(row.email);
+      if (!updateCredentialAccount(context, "last_checked_at = datetime('now')")) return stale;
       return { email: row.email, valid: false, status };
     }
     const updates = [`token_status = ?`];
     const params: unknown[] = [status];
     if (apiType) { updates.push(`api_type = ?`); params.push(apiType); }
     updates.push(`last_checked_at = datetime('now')`);
-    params.push(row.email);
-    db.prepare(`UPDATE outlook_accounts SET ${updates.join(', ')} WHERE email = ?`).run(...params);
+    if (!updateCredentialAccount(context, updates.join(', '), params)) return stale;
     return { email: row.email, valid: status === 'valid', status, apiType };
   };
   const orderedRows = [...noToken, ...withToken];
@@ -872,13 +954,13 @@ outlookRoutes.post('/outlook/renew', async (c) => {
   const db = getDb();
   const concurrency = Math.max(1, parseInt(getSetting('batch_concurrency', '5'), 10) || 5);
 
-  let sql = `SELECT email, client_id, refresh_token FROM outlook_accounts`;
+  let sql = `SELECT ${CREDENTIAL_COLUMNS} FROM outlook_accounts`;
   if (body.emails?.length) {
     const placeholders = body.emails.map(() => '?').join(',');
     sql += ` WHERE email IN (${placeholders})`;
   }
 
-  const rows = allRows<{ email: string; client_id: string; refresh_token: string }>(db, sql, ...(body.emails ?? []));
+  const rows = allRows<OutlookCredentialRow>(db, sql, ...(body.emails ?? []));
 
   const noToken: typeof rows = [];
   const withToken: typeof rows = [];
@@ -887,20 +969,15 @@ outlookRoutes.post('/outlook/renew', async (c) => {
   }
 
   const processAccount = async (row: (typeof rows)[number]) => {
+    const context = credentialContext(row, 'manual-renew');
+    const stale = { email: row.email, renewed: false, status: 'unknown' };
+    if (!credentialsCurrent(context)) return stale;
     if (!row.client_id || !row.refresh_token) return { email: row.email, renewed: false, status: 'no_token' };
     try {
-      const result = await renewToken(row.client_id, row.refresh_token);
-      const effectiveRefreshToken = result.newRefreshToken || row.refresh_token;
-      if (result.newRefreshToken) {
-        db.prepare(
-          `UPDATE outlook_accounts SET refresh_token = ?, token_renewed_at = datetime('now') WHERE email = ? AND refresh_token = ?`,
-        ).run(result.newRefreshToken, row.email, row.refresh_token);
-      }
-      const capability = await checkToken(row.email, row.client_id, effectiveRefreshToken, result.accessToken);
+      const result = await renewToken(context);
+      const capability = await checkToken(context, result.accessToken);
       if (capability.status === 'valid') {
-        db.prepare(
-          `UPDATE outlook_accounts SET token_status = 'valid', api_type = ?, last_checked_at = datetime('now') WHERE email = ?`,
-        ).run(capability.apiType, row.email);
+        if (!updateCredentialAccount(context, "token_status = 'valid', api_type = ?, last_checked_at = datetime('now')", [capability.apiType])) return stale;
         return {
           email: row.email,
           renewed: Boolean(result.newRefreshToken),
@@ -909,9 +986,9 @@ outlookRoutes.post('/outlook/renew', async (c) => {
         };
       }
       if (capability.status === 'invalid') {
-        db.prepare(`UPDATE outlook_accounts SET token_status = 'invalid', last_checked_at = datetime('now') WHERE email = ?`).run(row.email);
+        if (!updateCredentialAccount(context, "token_status = 'invalid', last_checked_at = datetime('now')")) return stale;
       } else {
-        db.prepare(`UPDATE outlook_accounts SET last_checked_at = datetime('now') WHERE email = ?`).run(row.email);
+        if (!updateCredentialAccount(context, "last_checked_at = datetime('now')")) return stale;
       }
       return {
         email: row.email,
@@ -920,7 +997,7 @@ outlookRoutes.post('/outlook/renew', async (c) => {
       };
     } catch (e) {
       if (e instanceof OAuthRejectedError) {
-        db.prepare(`UPDATE outlook_accounts SET token_status = 'invalid' WHERE email = ?`).run(row.email);
+        if (!updateCredentialAccount(context, "token_status = 'invalid'")) return stale;
         return { email: row.email, renewed: false, status: 'invalid' };
       }
       // Network / throttling / 5xx — leave the stored status untouched.

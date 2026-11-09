@@ -50,7 +50,7 @@ function registerTemplateProviders(): void {
       if (!cfg.name) { log.error('template provider missing name', { row: row.name }); continue; }
       registry.register(new TemplateProvider(cfg));
     } catch (e) {
-      log.error('failed to load template provider', { name: row.name, error: String(e) });
+      log.error('failed to load template provider', { name: row.name, error: e });
     }
   }
 }

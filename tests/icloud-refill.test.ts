@@ -50,6 +50,53 @@ describe('pool refill', () => {
       `SELECT COUNT(*) AS c FROM icloud_addresses WHERE state = 'free'`,
     ).get() as { c: number };
     expect(free.c).toBe(3);
+    expect(getDb().prepare(`SELECT upstream_active, upstream_checked_at FROM icloud_addresses`).all())
+      .toEqual(Array.from({ length: 3 }, () => ({ upstream_active: null, upstream_checked_at: null })));
+  });
+
+  it('excludes inactive aliases from both target reads and mints only the shortfall after adoption', async () => {
+    seedAccount();
+    setSetting('icloud_pool_target', '2');
+    const db = getDb();
+    for (let n = 0; n < 2; n++) db.prepare(`INSERT INTO icloud_addresses
+      (hme, account_id, anonymous_id, upstream_active) VALUES (?, 'acc-1', ?, 0)`).run(`dead${n}@icloud.com`, `dead${n}`);
+    let generated = 0;
+    const fetchSpy = vi.fn(async (url: string) => {
+      const body = String(url).includes('/list')
+        ? { hmeEmails: [
+          { hme: 'adopt@icloud.com', anonymousId: 'adopt', label: 'mail-hub', isActive: true },
+          { hme: 'inactive-adopt@icloud.com', anonymousId: 'inactive-adopt', label: 'mail-hub', isActive: false },
+        ] }
+        : String(url).includes('/generate') ? { hme: `mint${++generated}@icloud.com` }
+        : { hme: { hme: `mint${generated}@icloud.com`, anonymousId: `mint${generated}` } };
+      return new Response(JSON.stringify({ success: true, result: body }));
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    expect((await runRefillOnce()).created).toBe(1);
+    expect(generated).toBe(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(db.prepare(`SELECT state, upstream_active FROM icloud_addresses WHERE anonymous_id = 'inactive-adopt'`).get())
+      .toEqual({ state: 'retired', upstream_active: 0 });
+    expect(db.prepare(`SELECT upstream_active, upstream_checked_at FROM icloud_addresses WHERE anonymous_id = 'mint1'`).get())
+      .toEqual({ upstream_active: null, upstream_checked_at: null });
+  });
+
+  it.each([
+    { success: true, result: {} }, { success: true, result: { hmeEmails: null } },
+    { result: { hmeEmails: [] } }, { success: true, result: { hmeEmails: [], hasMore: true } },
+    { success: true, result: { hmeEmails: [{ hme: 'known@icloud.com', anonymousId: 'known', isActive: false }, null] } },
+  ])('does not mint, spend cooldown, or alter markers after an unusable list: %j', async envelope => {
+    seedAccount(); setSetting('icloud_pool_target', '2');
+    const db = getDb();
+    db.prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id) VALUES ('known@icloud.com', 'acc-1', 'known')`).run();
+    const before = db.prepare(`SELECT * FROM icloud_addresses`).all();
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(envelope)));
+    vi.stubGlobal('fetch', fetchSpy);
+    const result = await runRefillOnce();
+    expect(result.created).toBe(0); expect(result.errors).toHaveLength(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(db.prepare(`SELECT * FROM icloud_addresses`).all()).toEqual(before);
+    expect(db.prepare(`SELECT pool_cooldown_until FROM icloud_accounts`).get()).toEqual({ pool_cooldown_until: null });
   });
 
   it('does nothing when the pool is already at target', async () => {
@@ -147,7 +194,8 @@ describe('pool refill', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({ accountId: 'acc-1' });
     expect(warnings[0]?.operatorAction).toMatch(/cookie.*SRP/i);
-    expect(warnings[0]?.error).toMatch(/session is not valid/i);
+    expect(warnings[0]?.error).toEqual({ class: 'UpstreamHttpError', category: 'upstream_http', status: 421 });
+    expect(output.join('')).not.toMatch(/session is not valid/i);
   });
 
   it('backs off and keeps Apple’s own wording when a mint is refused', async () => {

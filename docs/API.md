@@ -70,7 +70,7 @@ Response 200:
 ```json
 {
   "status": "ok",
-  "version": "0.11.8",
+  "version": "0.12.0",
   "startedAt": "2025-01-01T00:00:00Z",
   "uptime": 3600,
   "db": "connected"
@@ -133,6 +133,14 @@ the same account can register at the same service repeatedly. The service is
 still recorded, so a later request *without* `alias` still finds the account
 excluded. Turning the flag off restores the original one-account-one-service
 guarantee.
+
+**Recipient isolation.** Alias inbox lists, details, and codes require exact
+To/Cc recipient evidence. Address comparisons fold ASCII A-Z only and preserve
+all Unicode characters without case or compatibility normalization. An Outlook
+inbox whose address differs from its account stays recipient-scoped, including
+legacy rows; an empty stored inbox address returns `404 Message not found`.
+The account's plain address and admin account-mailbox endpoints retain access to
+the whole mailbox.
 
 Two caveats worth knowing before relying on this: a site that strips `+tag`
 before comparing will still see one mailbox and may treat the second signup as a
@@ -234,15 +242,45 @@ Retrieve messages in the inbox.
 ```
 
 Pool providers hand out mailboxes that already hold a previous tenant's mail, so
-this list is clipped to the inbox's own lifetime (`created_at`, minus 60s of
-clock slack). Mail that predates the inbox is not returned even though it is
-still sitting in the upstream mailbox.
+this list is clipped to the inbox's own lifetime. The lower bound is the start
+of the second after `created_at`, accounting for SQLite's second precision.
+The upper bound is the earlier valid `closed_at` or `expires_at`, exclusive.
+Closed history with an unknown end or message timestamp is withheld. Mail
+outside these bounds is not returned even when it remains upstream. Each
+completed read rechecks the current inbox ownership and lifetime.
+
+Closed inbox records are kept for the configured `retention_inbox_days` after
+that same effective end. A delayed cleanup does not extend this period. Legacy
+closed records with no usable end are retained and counted in cleanup warnings;
+their creation time is not used to guess when the lease ended.
 
 `accountEmail` is present only for Outlook, where one mailbox serves one inbox at
 a time; it names the pool account so an admin client can reach
 [the mailbox view](#get-apioutlookaccountsemailmailbox--account-mailbox).
 
 **Errors**: 400 (no polling support), 404, 429 (rate limit), 502 (upstream error)
+
+For tenant message reads (`/messages`, `/messages/:mid`, and `/code`), upstream
+401/403 responses indicate a provider credential failure and return 502. An
+upstream 429 returns 429 and preserves its `Retry-After` HTTP header when present;
+other upstream failures return 502. Mail-Hub's own authentication still returns
+401. Invalid JSON, explicit provider failure, and malformed message responses
+are errors; only a valid successful empty list means no mail.
+
+All three tenant read routes share the provider's `pollPerMinute` budget across
+all inboxes in a rolling 60-second window. Each route-initiated `getMessages`
+or `getMessage` operation spends one read before it runs, including cache hits
+and failed reads. The budget counts provider operations, not network packets,
+folders, token refreshes or internal reads such as a template `fromList` detail
+loading its list cache. Once exhausted, a route returns 429 with `provider` and
+`retryAfter` (the next available UTC timestamp) without calling the provider.
+Administrative whole-mailbox endpoints retain their existing behavior.
+
+A normal successful `/code` request that reads one list and one detail spends
+two reads. At the existing 10 reads/minute limit, this allows roughly five such
+code retrievals per minute per provider; empty waiting polls each spend another
+read. Limits are unchanged. Clients must wait for budget capacity after 429;
+summary extraction cannot bypass an exhausted detail budget.
 
 ---
 
@@ -265,21 +303,26 @@ inbox's lifetime returns 404 rather than a previous tenant's content.
 }
 ```
 
-**Errors**: 404, 502
+**Errors**: 404, 429 (shared provider read budget or upstream rate limit), 502
 
 ---
 
 ### GET /api/inbox/:id/code — Extract Verification Code
 
-Extract verification codes from the latest email. Supports long-polling — the recommended endpoint for most use cases.
+Extract verification codes from the latest email, or opt into bounded matching for Outlook. Supports long-polling.
 
 **Query parameters**:
 | Param | Values | Description |
 |-------|--------|-------------|
 | `wait` | `true` | Long-poll until a message arrives (recommended) |
-| `timeout` | integer (default 60, max 120) | Max wait time in seconds |
+| `selection` | `latest` (default) / `matching` | `matching` is Outlook-only and skips candidates without the requested code type; unsupported values and non-Outlook matching return 400 |
+| `timeout` | positive integer (default 60, capped at 120) | Request deadline in seconds, including provider reads; invalid or nonpositive values return 400 |
 | `type` | `numeric` / `alphanumeric` / `link` | Filter code type |
 | `since` | ISO datetime / epoch milliseconds | Only consider messages received after this timestamp |
+| `excludeMessageId` | repeated string | Subtract these IDs from candidates in either selection mode; at most 20 supplied values, each at most 2048 UTF-16 code units, combined UTF-8 value bytes at most 8192. Over limits returns 400 without truncation; duplicates count toward limits |
+
+In `selection=matching`, an unknown or empty `type` returns 400. Omitting it
+accepts any existing extractor type; the extraction rules are unchanged.
 
 **Response 200**:
 ```json
@@ -306,7 +349,93 @@ No messages yet:
 { "codes": [], "email": null, "messageId": null, "receivedAt": null }
 ```
 
-**Behavior**: When `wait=true`, polls every 3s for the first 20s, then every 5s until timeout. Returns immediately if matching messages already exist. For repeated retrieval, store the previous response `receivedAt` and call `GET /api/inbox/:id/code?wait=true&since=<receivedAt>` to wait for a later message without reusing the same email.
+**Latest behavior** (omitted `selection`, or `selection=latest`): When `wait=true`, polls every 3s for the first 20s, then every 5s until timeout. Returns immediately when any candidate message exists, and extracts only from the newest message. `since` remains a strict lower bound (`receivedAt > since`), so it excludes all equal timestamps. Use it only when a strictly later message is wanted.
+
+**Repeated retrieval**: remember returned `messageId` values and append one
+`excludeMessageId` parameter per ID, for example:
+`GET /api/inbox/:id/code?selection=matching&wait=true&excludeMessageId=A&excludeMessageId=B`.
+This can return a different code with the same received timestamp. Exclusions
+only subtract from already eligible candidates; they never request a detail by
+ID, enlarge the current provider window, or bypass owner, recipient or inbox
+lifetime checks. They combine with `since` as an intersection, so an excluded
+ID never changes its strict time bound. No server consumption state is stored.
+
+The Outlook UI remembers only returned IDs in page memory, separately per inbox.
+Continue retrieval waits with those exclusions while keeping the displayed result
+available for review and copying. Copying does not consume it. At 20 remembered
+IDs, continuing requires an explicit reset; no older IDs are silently evicted.
+Resetting may return an earlier result. Refresh, logout or identity change clears
+the page session; closing an inbox clears its IDs, including batch close. Other
+tabs/windows have independent sessions. Bodies and credentials are never stored
+in this ID map or persisted to local storage.
+
+**Outlook matching**: `GET /api/inbox/:id/code?selection=matching&wait=true&timeout=30`
+checks a bounded Inbox/Junk window in received-time descending order, with
+code-unit ascending message ID ties. One request reads at most five upstream
+list pages, 100 candidate metadata entries **before local recipient filtering**,
+and five candidate details. These limits are shared across both folders, token
+refresh retries and all waiting rounds. HTTP pages request 20 entries, alternate
+between Inbox/Junk, and use bounded local To/Cc filtering. Duplicate IDs still
+consume metadata budget before the merge. IMAP searches To/Cc first, then reads
+bounded UID metadata pages and requires an exact envelope recipient match for
+aliases. IMAP scans and their detail IDs are bound to UIDVALIDITY; a changed
+mailbox generation returns an error instructing the caller to reload.
+For IMAP exclusions, retain IDs returned by matching itself: generation-qualified
+matching IDs differ from the legacy mailbox/UID IDs returned by latest/admin
+listings, and are not interchangeable. IDs from the previous UIDVALIDITY must
+never suppress mail in a new generation.
+
+Each actual list page and each detail consumes one read from the existing shared
+poll budget. HTTP scan pages have no automatic network retry and reject redirects;
+continuations must use HTTPS, the exact API host, and the same mailbox folder path.
+Successfully checked unmatched IDs are remembered only within that request, so
+waiting rounds do not reread the same notifications. Waiting continues until a
+code matches, any request cap is reached, the lease ends, or the deadline passes.
+For a small empty window, another waiting round can observe newly arrived mail;
+its list pages still consume the same request caps. Exhausting the page/metadata
+budget ends waiting with explicit truncation rather than resetting the caps.
+Every awaited read rechecks ownership, lease and recipient isolation. A provider
+operation already in flight may finish after the deadline; its late code is
+discarded and no further read begins. This does not cancel the upstream operation.
+
+Matching retains `codes`, `email`, `messageId`, and `receivedAt`, and adds:
+```json
+{ "scan": { "checked": 2, "scope": "inbox_and_junk", "pages": 2,
+  "metadata": 3, "complete": true, "truncated": false, "partial": false,
+  "folders": [{ "folder": "Inbox", "complete": true },
+              { "folder": "Junk", "complete": true }], "reason": "matched" } }
+```
+`reason` is `matched`, `window_exhausted`, `scan_limit`, or `timeout` on success;
+scan read errors add `reason=error` to their 429/502 response.
+`complete` describes only the current candidate window, never the entire mailbox;
+a match with unvisited candidates or an incomplete folder has `complete=false`.
+`truncated` reports an incomplete list window. `folders` reports each folder's
+list exhaustion (IMAP uses actual folder paths); one exhausted folder cannot make
+the whole window complete. Partial folder failures return an error with
+`partial=true` and `complete=false`, without returning an unchecked code.
+Reaching any cap with further candidates/pages returns empty codes,
+`scan_limit`, and `complete=false`.
+An exhausted window with `wait=false` returns empty codes and `window_exhausted`;
+`wait=true` waits for matching content instead of stopping at a notification.
+Successful matching results add `email.recipientAddress`: the exact inbox address
+only when To/Cc evidence confirms it, otherwise `null`. The UI labels unknown
+recipient attribution explicitly. Matching errors stop immediately: there is no
+summary fallback and an older code cannot hide a detail failure. Upstream 429
+preserves `Retry-After`; other upstream failures return the controlled read error.
+
+For latest selection, an initial list failure returns an error immediately. Waiting retries may
+continue after a temporary failure, but the last completed poll determines the
+timeout result: a final failure returns an error; a successful empty list clears
+an earlier failure. A 429 ends the wait immediately, and no poll starts after
+the deadline. Inbox ownership/existence, lease and cancellation checks take
+precedence over a simultaneous failure.
+
+For latest selection, if the selected message's detail read has an ordinary failure (including an
+upstream 503), code extraction may still use its summary. A detail 429 returns
+the rate limit error; a missing or out-of-scope message returns the empty code
+response. Summary fallback cannot bypass ownership or message lifetime checks.
+
+**Errors**: 400 (invalid query or no polling support), 404, 429, 502
 
 ---
 
@@ -406,6 +535,7 @@ Returns all registered email providers with their capabilities and configuration
   "name": "mailtm",
   "displayName": "Mail.tm",
   ...,
+  "domainMode": "endpoint",
   "domains": ["dpptd.com", "exelica.com"],
   "stats": {
     "success_count": 150,
@@ -425,11 +555,25 @@ Returns all registered email providers with their capabilities and configuration
 ```json
 {
   "provider": "mailtm",
+  "domainMode": "endpoint",
   "domains": ["dpptd.com", "exelica.com"]
 }
 ```
 
 **Errors**: 404, 502
+
+Both provider detail and domain responses include the runtime `domainMode`:
+`endpoint`, `static`, or `from_create`. These GET endpoints never create an
+inbox or call an upstream create endpoint, including when a provider is
+disabled or cooling down. Endpoint-based discovery may still fetch its
+domain list and use its existing cache.
+
+For `from_create` templates (including TempMail.lol and TempMail.ing),
+`domains` contains the configured `domains.list`, or `[]` when none is known.
+An empty list means the address and domain are decided at creation time;
+it does not mean the provider is unavailable. Repeated reads do not probe
+upstream or populate a domain cache. Use `POST /api/inbox` for a controlled
+create whose returned inbox is saved normally.
 
 ---
 
@@ -794,7 +938,18 @@ The plaintext `key` is only returned once at creation.
 
 ### POST /api/template-providers — Create Template
 
-**Request** (JSON): Full provider config object (see template schema).
+**Request** (JSON): Wrap the full provider config (see template schema) in `config`.
+Optional `enabled` defaults to `true`; pass `false` to save a disabled template
+without registering it for dispatch, including after a restart.
+
+```json
+{ "config": { "name": "custom-provider", "...": "full template config" }, "enabled": false }
+```
+
+The editor's connection test saves its `_test_...` configuration with
+`enabled: false` and retains it afterward. Disabled templates can still run
+the test pipeline and recover authentication. An administrator must enable
+the compatible configuration before claiming a retained inbox.
 
 **Response 200**:
 ```json
@@ -833,7 +988,11 @@ The plaintext `key` is only returned once at creation.
 
 ### POST /api/template-providers/:name/test — Test Template Pipeline
 
-Runs the full lifecycle: getDomains → createInbox → getMessages → deleteInbox.
+Admin only. Runs getDomains (except `from_create`) → createInbox → getMessages.
+The created account is retained. This endpoint never deletes the upstream
+account, even when message reading or authentication fails. Generated
+credentials and raw responses are stored privately before continuing; the
+response includes safe `recovery` metadata whenever creation has a checkpoint.
 
 **Response 200**:
 ```json
@@ -842,11 +1001,86 @@ Runs the full lifecycle: getDomains → createInbox → getMessages → deleteIn
   "steps": [
     { "step": "getDomains", "ok": true, "detail": "3 domains: a.com, b.com, c.com" },
     { "step": "createInbox", "ok": true, "detail": "Created: test@a.com" },
-    { "step": "getMessages", "ok": true, "detail": "0 messages (expected for new inbox)" },
-    { "step": "deleteInbox", "ok": true, "detail": "Deleted" }
-  ]
+    { "step": "getMessages", "ok": true, "detail": "0 messages" }
+  ],
+  "recovery": {
+    "id": "recovery-uuid",
+    "provider": "mailtm",
+    "phase": "ready",
+    "address": "test@a.com",
+    "createdAt": "2026-11-07T00:00:00.000Z",
+    "updatedAt": "2026-11-07T00:00:01.000Z",
+    "expiresAt": "2026-11-08T00:00:00.000Z",
+    "claimedInboxId": null,
+    "lastStatus": 200,
+    "operationActive": false,
+    "canRetry": false,
+    "canClaim": true
+  }
 }
 ```
+
+### GET /api/template-providers/:name/recoveries — List Retained Assets
+
+Admin only. Returns `{ "recoveries": [...] }`, using the controlled metadata
+shape above. Config snapshots, passwords, variables, authentication data, raw
+responses, credential checkpoints, and operation IDs are never returned.
+Listing remains available after the live template configuration is deleted.
+`canRetry` and `canClaim` describe the asset state; claim also checks the current
+template configuration. Ordinary API keys receive 403 on all recovery routes.
+
+Phases: `attempting` (create started), `upstream_created` (account checkpoint),
+`auth_pending` (authentication incomplete), `ready`, `claimed`, and
+`outcome_unknown` (create may have committed; manual inspection required).
+Recovery records survive inbox retention and keep their original expiry.
+
+### POST /api/template-providers/:name/recoveries/:id/retry — Retry Authentication
+
+Admin only. Takes no credential or configuration overrides. Uses the immutable
+creation snapshot, original address, and saved password to repeat **only**
+`postCreate`. It never calls create, domain discovery, or delete. It remains
+available if the live template is changed, disabled, or deleted; claiming still
+requires a compatible enabled live template.
+
+The original authentication and retries share a persistent operation lease
+(45 seconds) and a fixed 15-second network budget without automatic retries.
+An active operation returns 409 without another network request, including
+after a server restart. Expired or superseded responses may append private
+credential checkpoints, but cannot overwrite current credentials or status.
+
+Returns 200 `{ "recovery": { ... } }` after success. `ready` and `claimed` are
+idempotent and perform no network calls. `outcome_unknown` returns 409 without
+replaying creation. Local inbox expiry does not block authentication recovery
+of the paid upstream account; expiry remains unchanged and claim still returns
+410 for expired assets. Upstream HTTP errors keep their status (including 401, 429, and 503); invalid
+JSON or missing/invalid credentials return 500. Errors use
+`{ "error": "safe message", "recovery": { ... } }` when the asset is known.
+
+### POST /api/template-providers/:name/recoveries/:id/claim — Claim a Ready Asset
+
+Admin only. Takes no owner or credential overrides. Requires `ready`, original
+expiry in the future, and an enabled current template with the same semantic
+configuration fingerprint. Disabled, deleted, or changed templates return 409;
+expiry returns 410. Both preserve the retained asset. Display labels and rate
+limits do not affect the fingerprint.
+
+One SQLite transaction inserts the inbox and permanently records its claimed
+ID. The inbox is visible only to administrators (`owner_key` is null). Its
+creation time and expiry come from the original account allocation, so recovery
+does not grant a new lifetime. Returns 200:
+
+```json
+{
+  "id": "inbox-id",
+  "address": "test@a.com",
+  "provider": "mailtm",
+  "expiresAt": "2026-11-08T00:00:00.000Z",
+  "recovery": { "id": "recovery-uuid", "phase": "claimed", "claimedInboxId": "inbox-id" }
+}
+```
+
+Repeating claim returns the original inbox ID, including after the inbox row
+has been purged. It never creates a second inbox or makes another upstream call.
 
 ---
 
@@ -924,7 +1158,9 @@ inbox's lifetime — deliberately, since a recycled account arrives holding the
 previous tenant's mail. This endpoint answers the other question: what else is in
 this mailbox. Admin only.
 
-**Query parameters**: `limit=1..100` (default 50)
+**Query parameters**: `limit=1..100` (default 50) on the first page;
+`pageToken=<nextPageToken>` for a continuation. The token fixes the original
+page size, account and administrator identity.
 
 **Response 200**:
 ```json
@@ -932,6 +1168,7 @@ this mailbox. Admin only.
   "email": "user@outlook.com",
   "limit": 50,
   "truncated": false,
+  "nextPageToken": null,
   "messages": [
     {
       "id": "msg-id",
@@ -940,7 +1177,9 @@ this mailbox. Admin only.
       "excerpt": "",
       "receivedAt": "2026-07-27T14:03:11Z",
       "leaseId": "i-abc123",
-      "leaseState": "lease"
+      "leaseState": "lease",
+      "recipientAddress": "user+ab12cd34@outlook.com",
+      "recipientMatch": "exact"
     }
   ],
   "leases": [
@@ -956,7 +1195,8 @@ this mailbox. Admin only.
 }
 ```
 
-Every message is attributed to the inbox that held the mailbox when it arrived:
+`leaseId` and `leaseState` describe the **arrival time window**, independently
+of the address the message was sent to. They are not proof of recipient ownership:
 
 | `leaseState` | Meaning |
 |---|---|
@@ -965,15 +1205,59 @@ Every message is attributed to the inbox that held the mailbox when it arrived:
 | `before` | Older than the account's first lease |
 | `undated` | No parseable timestamp; kept rather than dropped |
 
-A lease's window ends at whichever came first: `closed_at`, `expires_at` (only a
-fallback, for rows closed before `closed_at` was recorded), or the moment the
-next lease took the account.
+A lease's window ends at the earliest valid `closed_at`, `expires_at` (including
+an active row awaiting cleanup), or the moment the next lease took the account.
 
-`limit` is a hard ceiling, not paging: the newest `limit` of Inbox and Junk are
-fetched and merged down to `limit`. Older mail exists upstream and is not
-reachable from here; `truncated` is `true` when the cap was hit.
+Admin mailbox lists and details also expose recipient evidence from the upstream
+To/Cc fields (Graph/Outlook REST) or envelope (IMAP):
 
-**Errors**: 403 (not admin), 404 (no such account), 502 (upstream error)
+| Field | Meaning |
+|---|---|
+| `recipientMatch: "exact"` | One distinct recipient address is known |
+| `recipientMatch: "multiple"` | More than one distinct recipient address is known; no single lease is claimed |
+| `recipientMatch: "unknown"` | No usable recipient evidence; the account address is not substituted |
+| `recipientAddress` | The single confirmed address for `exact`; omitted otherwise |
+
+Addresses are deduplicated using ASCII case folding. These fields do not grant
+access and are only added by the admin account-mailbox routes. A delayed message
+to an old alias can have that alias as `recipientAddress` while `leaseId` names
+the newer usage period. If old lease records were cleaned up, recipient evidence
+remains available, but no deleted lease is reconstructed. Ordinary inbox routes
+retain their recipient and lifetime isolation and do not expose internal raw
+recipient metadata.
+
+The UI displays mail receive times in the browser's local timezone to the second;
+hovering or focusing a time reveals the UTC ISO instant and local timezone.
+Missing/invalid timestamps remain unknown. Equal receive times use a stable ID
+tie-break for display, which does not establish actual delivery order.
+
+`limit` is the page size. `nextPageToken` is a random server-side continuation
+ID, or `null` when the loaded history ends. Pass it back to this same account
+route to load earlier mail; never supply a Microsoft URL. Each state retains
+per-folder positions and unshown merged messages. Repeating a continuation
+returns the same page and next token; a failed read leaves it available to retry.
+State lives only in server memory, expires after 10 minutes and is limited to
+100 active states with LRU eviction. Expired, evicted or mismatched tokens
+require reloading the mailbox. No access token is stored in pagination state.
+
+Graph/REST continuations validate the HTTPS host and folder path. IMAP retains
+the folder UIDVALIDITY and backward UID boundary; changed UIDVALIDITY requires
+a reload. Each upstream list page consumes the existing shared read budget.
+IMAP history follows UID boundaries and sorts each returned page by receive
+time. Imported/copied mail can have nonmonotonic INTERNALDATE values, so receive
+times need not descend across pages; those existing messages are not discarded.
+Normal token rotation performed by the history read preserves retry/cached-page
+tokens; an external credential replacement still requires reloading.
+New mail is obtained by refreshing without a token; continuing history does
+not restart at the top. Upstream mail moves may change IDs or page ordering:
+this is not a database snapshot and cannot promise zero omissions/duplicates.
+The UI labels the loaded count, appends history, retains an expanded message
+and keeps loaded results on retryable errors. Its local pager only paginates
+already loaded results.
+
+**Errors**: 403 (not admin), 404 (no such account), 429 (read budget/upstream
+throttle), 502 (upstream error); invalid/expired continuation responses instruct
+the administrator to reload.
 
 ---
 
@@ -982,7 +1266,9 @@ reachable from here; `truncated` is `true` when the cap was hit.
 Full content of one message from the account mailbox, not clipped to any lease.
 Admin only.
 
-**Response 200**: same shape as `GET /api/inbox/:id/messages/:mid`.
+**Response 200**: same shape as `GET /api/inbox/:id/messages/:mid`, plus the admin
+`recipientAddress` and `recipientMatch` fields described above, and the same
+temporal `leaseId` / `leaseState` classification as the mailbox list.
 
 **Errors**: 403 (not admin), 404 (no such account), 502 (upstream error)
 
@@ -1034,6 +1320,13 @@ IMAP first. Deterministic OAuth/authentication rejection is `invalid`; network,
 proxy, throttling, 5xx, and temporary IMAP failures are `unknown` and do not
 invalidate the stored account.
 
+Checks and renewals capture the account's client ID, refresh token and current
+OAuth session when selected. A queued or in-flight result whose generation has
+changed returns `unknown` without changing status, transport or check time.
+Accounts with pending OAuth or a current exchange are also left untouched.
+Scheduled invalid-account cleanup rechecks the same generation and requires an
+unassigned short-term account that is still invalid before deleting it.
+
 ### POST /api/outlook/renew — Renew Tokens
 
 Supports the same [background task mode](#background-pool-tasks-admin).
@@ -1060,9 +1353,29 @@ the detected `apiType` is persisted. `not_rotated` means the refresh token was
 accepted and the mailbox capability was validated, but Microsoft did not issue
 a replacement refresh token. Infrastructure failures remain `unknown`.
 
+Received token responses are saved to private append-only credential history
+before HTTP/shape validation or a generation check, including late responses,
+error bodies and responses received after account deletion. A rotation becomes
+current only after a conditional account update succeeds; a losing operation
+returns `unknown` and cannot report a committed renewal. Storage failure also
+returns `unknown` without changing the account. Check/renew results, background
+summaries, OAuth status and logs do not expose this private history or tokens.
+
+The SQLite connection uses WAL with `synchronous=FULL` so each commit requests
+a WAL sync for issued tokens and created-account recovery assets. This depends
+on the filesystem/device honoring synchronization calls; it is not an absolute
+guarantee against physical storage failure. Syncing every commit can increase
+write latency; production throughput has not been load-tested for this change.
+
 ### POST /api/outlook/oauth/start — Start Authorization Completion
 
 Creates an authorization session for a pending account and returns an authorize URL. The default preset is the built-in Thunderbird public-client flow; `custom` keeps compatibility with user-provided OAuth app settings. After code exchange, Mail Hub validates real mailbox-read capability before finalizing the account. Thunderbird's IMAP-scoped token therefore completes as `token_status=valid` with `api_type=imap` even when Graph and Outlook REST reject it.
+
+A manual start may replace a pending session. An unexpired exchange already in progress returns 409. Code exchange and callback errors only update the account's current, unexpired session while the account is unassigned.
+
+Token-endpoint errors use fixed public messages; raw response/error text and
+issued credentials remain in private history. Just-issued access tokens are
+validated directly without an additional refresh-token exchange.
 
 **Request** (JSON):
 ```json
@@ -1087,6 +1400,8 @@ Creates an authorization session for a pending account and returns an authorize 
 
 Used when the authorization redirect is captured outside Mail Hub. Submit either `finalUrl` or `code` plus `state`. Tokens are stored server-side and are not returned.
 
+Only one request can exchange a pending session. Completed replay returns success without another exchange; failed or superseded sessions cannot reuse the code. When the token response contains only a refresh token, validation is deferred without making another refresh request. Issued credentials are retained privately even if the session becomes stale before the response arrives; status responses do not expose this checkpoint.
+
 **Request** (JSON):
 ```json
 { "sessionId": "...", "finalUrl": "https://localhost/?code=...&state=..." }
@@ -1107,6 +1422,8 @@ Used when the authorization redirect is captured outside Mail Hub. Submit either
 ### POST /api/outlook/oauth/password — Get Pending Account Password
 
 Admin-only helper for the UI/manual authorization flow. It returns the password for an unassigned pending/no-token Outlook account by `sessionId` or `email`, and does not return any token.
+
+The `sessionId` form additionally requires the account's current, unexpired pending session. The email form retains its account eligibility checks.
 
 **Request** (JSON):
 ```json
@@ -1137,6 +1454,8 @@ External browser automation can claim one pending account. It receives the autho
 ```
 `includeProxy` returns the configured proxy URL for the external automation helper. It is admin-only and should not be logged. By default, accounts with `oauth_last_error` are skipped; set `includeFailed: true` only for an explicit retry workflow.
 
+Claims exclude accounts with a current, unexpired pending or exchanging session, so concurrent workers receive different accounts.
+
 **Response 200**:
 ```json
 {
@@ -1154,6 +1473,8 @@ External browser automation can claim one pending account. It receives the autho
 ### POST /api/outlook/oauth/automation/password — Get Claimed Password
 
 Admin-only helper for external automation after a session has been claimed.
+
+The claimed session must still be current, pending and unexpired, and its account must remain unassigned.
 
 **Request** (JSON):
 ```json
@@ -1173,6 +1494,8 @@ Admin-only helper for external automation after a session has been claimed.
 ```
 
 Allowed statuses: `started`, `waiting_user`, `failed`, `completed`.
+
+Reports require the current, unexpired pending session and an unassigned account. An exchanging, final or superseded session returns 409 without changing account state. Reporting automation `completed` does not complete the OAuth exchange.
 
 **Response 200**:
 ```json
@@ -1406,6 +1729,14 @@ parts are name-shaped rather than a random string — `nathanlambert@`,
 already holds is never reissued. Pass `username` on `POST /api/inbox` to pick
 the local part yourself.
 
+Active address claims and exact To/Cc recipient checks use the same ASCII-only
+case folding. Unicode characters remain distinct; missing recipient evidence
+does not establish inbox ownership. Legacy address padding keeps its existing
+trim behavior. Empty or whitespace-only stored addresses return the fixed
+`404 Message not found` for lists, details and codes before any mailbox access.
+Shared IMAP reads, including iCloud and Outlook aliases, reject an explicitly
+empty recipient scope; administrator reads that omit the scope remain available.
+
 ### GET /api/imap/stats — Pool Statistics
 
 **Response 200**:
@@ -1541,6 +1872,16 @@ inbox — releasing an inbox returns its address to the pool.
 | `assigned` | Held by a live inbox |
 | `retired` | Deactivated at Apple after being burned; never handed out again, and its slot stays spent |
 
+Upstream delivery is tracked separately from local ownership. A complete,
+successful Apple list records `upstream_active` (`1` active, `0` inactive,
+`null` unverified) and `upstream_checked_at`. An inactive free address becomes
+retired; an inactive assigned address keeps its inbox until release, then becomes
+retired. Confirmed inactive addresses are excluded from allocation and the refill
+target. Unverified addresses retain their existing behavior, including newly
+reserved addresses until a list verifies them. Missing entries, failed lists and
+partial lists do not establish activity. A later active result never automatically
+returns a retired or retiring address to the free pool.
+
 ### GET /api/icloud/accounts — List Accounts
 
 Cookies, the Apple ID password, the trust token and the IMAP password are never
@@ -1615,6 +1956,10 @@ with `?force=1` to delete anyway.
 
 ### GET /api/icloud/addresses — The Address Pool
 
+Each address includes nullable `upstream_active` and `upstream_checked_at` alongside
+its local state and assignment. `upstream_checked_at` is a UTC timestamp of the last
+complete list that explicitly included this address.
+
 ### GET /api/icloud/addresses/:hme/messages — Read an Address's Mail
 
 Everything that has ever arrived at the address, unlike `GET /api/inbox/:id/messages`
@@ -1627,6 +1972,28 @@ which hides anything older than the inbox asking.
 Deactivates it at Apple and never hands it out again. Refuses with `409` while
 an inbox holds it. **The slot it occupies stays spent** — 750 is the lifetime
 total for one Apple ID.
+
+Each attempt claims a persistent operation with a fixed 120-second lease. A
+currently running attempt returns `409` without contacting Apple. After a restart,
+expired attempt, or legacy `retiring` row, retrying this endpoint first reads a
+complete, positively successful Hide My Email list. A confirmed inactive alias
+finishes locally without a deactivate request; a confirmed active alias permits
+one deactivate request. Matching uses the account and anonymous ID, preserving
+the local address if Apple has renamed it.
+
+Missing aliases, malformed or partial lists, authentication failures, and network
+errors leave recovery `retiring` and return `502` with an error beginning
+`Retirement unresolved:`. A completed ambiguous attempt releases its own lease so
+the administrator can retry verification immediately. An attempt that expires or
+loses ownership returns `409`; its late responses cannot change a newer attempt
+or report successful retirement. No retry automatically returns a recovering
+address to the free pool. The bounded network sequence is at most 77.4 seconds
+under the configured timeouts, and the lease is never extended across awaits.
+
+For an initial free/retired address, an explicit rejection retains its previous
+state, except that an address concurrently confirmed inactive remains retired.
+An uncertain write result stays `retiring`. Deactivate requests are never retried
+automatically; a local lease cannot establish exactly-once delivery at Apple.
 
 ### Automatic refill
 
@@ -1759,7 +2126,7 @@ Mounted under `/api/admin`.
 **Response 200**:
 ```json
 {
-  "version": "0.11.8",
+  "version": "0.12.0",
   "uptime": 3600,
   "dbPath": "/app/data/mail.db",
   "dbSize": "1.2 MB",
@@ -1775,8 +2142,8 @@ Queries the Mail Hub GitHub repository for the highest stable `vX.Y.Z` tag and c
 **Response 200**:
 ```json
 {
-  "currentVersion": "0.11.8",
-  "latestVersion": "0.11.8",
+  "currentVersion": "0.12.0",
+  "latestVersion": "0.12.0",
   "updateAvailable": true,
   "checkedAt": "2026-07-17T00:00:00.000Z",
   "source": "github-api"

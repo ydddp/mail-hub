@@ -5,10 +5,11 @@ import { _pageState, paginateTable } from '../components/pagination.js';
 import { resetScopeIndicator, syncScopeIndicator } from '../components/scope-tabs.js';
 import { EL, on } from '../core/actions.js';
 import { api, apiAllInboxes } from '../core/api.js';
+import { codeSession } from '../core/code-session.js';
 import { hideDialog, showDialog } from '../core/dialog.js';
 import { t } from '../core/i18n.js';
 import { motionDelay, prefersReducedMotion } from '../core/motion.js';
-import { emptyStateRow, esc, escAttr, fmtTime, iconBtn, inboxStatusBadge, renderLoading, targetEl, toast } from '../core/util.js';
+import { compareMailReceived, emptyStateRow, esc, escAttr, fmtTime, iconBtn, inboxStatusBadge, mailTime, mailTooltipPosition, renderLoading, targetEl, toast } from '../core/util.js';
 import { loadDashboard } from './dashboard.js';
 // ─── Inboxes ───
 let _allInboxes = [];
@@ -106,6 +107,7 @@ async function enterInboxDetail() {
 }
 
 async function exitInboxDetail(restoreScroll = true, animate = true) {
+  invalidateCodeView();
   const view = document.getElementById('v-inboxes');
   if (!view || !view.classList.contains('detail-mode')) return;
   resetScopeIndicator();
@@ -136,8 +138,9 @@ async function fadeOutDetail(area) {
  * meant a local fetch inserted a panel and replaced it 7ms later, so the
  * entrance animation restarted from zero and the whole thing read as a flicker.
  */
-function deferredLoading(area, text) {
+function deferredLoading(area, text, current = () => true) {
   const timer = setTimeout(() => {
+    if (!current()) return;
     area.innerHTML = `<div class="detail-panel"><p class="text-3">${text}</p></div>`;
   }, 150);
   return () => clearTimeout(timer);
@@ -163,24 +166,93 @@ function msgTableHead() {
   return `<thead><tr><th>${t('inbox.from')}</th><th>${t('inbox.subject')}</th><th data-i18n="common.time">${t('common.time')}</th><th>${t('common.actions')}</th></tr></thead>`;
 }
 
-function msgRow(m, readAction) {
-  return `<tr>
+let _mailTimeHelpReady = false;
+let _mailTimeHelp = null;
+
+function initMailTimeHelp() {
+  if (_mailTimeHelpReady) return;
+  _mailTimeHelpReady = true;
+  const close = () => {
+    if (_mailTimeHelp?.tip.isConnected && _mailTimeHelp.tip.matches(':popover-open')) _mailTimeHelp.tip.hidePopover();
+    _mailTimeHelp = null;
+  };
+  const show = anchor => {
+    if (!anchor || _mailTimeHelp?.anchor === anchor) return;
+    close();
+    const tip = anchor.querySelector('.mail-time-tip');
+    if (!tip) return;
+    // A native popover escapes .panel/.table-wrap overflow and transformed
+    // detail panels. Its viewport coordinates cannot widen the scroll area.
+    tip.showPopover();
+    const position = mailTooltipPosition(anchor.getBoundingClientRect(), tip.getBoundingClientRect(), window.innerWidth, window.innerHeight);
+    tip.style.left = position.left + 'px';
+    tip.style.top = position.top + 'px';
+    _mailTimeHelp = { anchor, tip };
+  };
+  document.addEventListener('pointerover', event => show(event.target.closest?.('.mail-time')));
+  document.addEventListener('focusin', event => show(event.target.closest?.('.mail-time')));
+  document.addEventListener('pointerout', event => {
+    const anchor = event.target.closest?.('.mail-time');
+    if (anchor && !anchor.contains(event.relatedTarget) && !anchor.contains(document.activeElement)) close();
+  });
+  document.addEventListener('focusout', event => {
+    const anchor = event.target.closest?.('.mail-time');
+    if (anchor && !anchor.contains(event.relatedTarget) && !anchor.matches(':hover')) close();
+  });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
+  document.addEventListener('scroll', close, true);
+  window.addEventListener('resize', close);
+}
+
+function mailTimeLabel(value) {
+  const time = mailTime(value);
+  if (!time.iso) return esc(time.label);
+  initMailTimeHelp();
+  const description = `${time.iso} · ${t('time.zone', { zone: time.zone })}`;
+  return `<span class="mail-time" tabindex="0" aria-label="${escAttr(time.label + ' · ' + description)}"><time datetime="${escAttr(time.iso)}">${esc(time.label)}</time><span class="mail-time-tip" role="tooltip" popover="manual">${esc(description)}</span></span>`;
+}
+
+function mailArrivalLabel(m, leaseById) {
+  const lease = leaseById[m.leaseId];
+  if (m.leaseState === 'lease') return lease ? t(lease.status === 'active' ? 'mailbox.lease_current' : 'mailbox.lease_past') : t('mailbox.no_records');
+  if (!Object.keys(leaseById).length && m.leaseState !== 'undated') return t('mailbox.no_records');
+  return t('mailbox.state_' + m.leaseState);
+}
+
+function mailRecipientLabel(m, leaseById) {
+  if (!m.recipientMatch) return '';
+  let recipient = t(m.recipientMatch === 'multiple' ? 'mailbox.recipient_multiple' : 'mailbox.recipient_unknown');
+  if (m.recipientMatch === 'exact' && m.recipientAddress) {
+    const fold = value => value.replace(/[A-Z]/g, char => char.toLowerCase());
+    const retained = Object.values(leaseById).some(lease => fold(lease.address || '') === fold(m.recipientAddress));
+    recipient = m.recipientAddress + (retained ? '' : `（${t('mailbox.no_records')}）`);
+  }
+  return `${esc(t('mailbox.recipient'))}${esc(recipient)}；${esc(t('mailbox.arrival'))}${esc(mailArrivalLabel(m, leaseById))}`;
+}
+
+function msgRow(m, readAction, leaseById) {
+  return `<tr data-message-id="${escAttr(m.id)}">
     <td class="fs-base">${esc(m.from)}</td>
-    <td>${esc(m.subject)}</td>
-    <td class="time">${fmtTime(m.receivedAt, 'date')}</td>
+    <td>${esc(m.subject)}${leaseById ? `<div class="cell-sub mail-attribution">${mailRecipientLabel(m, leaseById)}</div>` : ''}</td>
+    <td class="time">${mailTimeLabel(m.receivedAt)}</td>
     <td>${iconBtn('mail', t('inbox.read'), readAction, 'blue')}</td>
   </tr>`;
 }
 
 async function viewInbox(id) {
+  invalidateCodeView();
+  const request = _codeRequest;
   const area = document.getElementById('inbox-detail-area');
   await enterInboxDetail();
+  if (request !== _codeRequest) return;
   await fadeOutDetail(area);
-  const stopLoading = deferredLoading(area, t('common.loading') || 'Loading...');
+  if (request !== _codeRequest) return;
+  const stopLoading = deferredLoading(area, t('common.loading') || 'Loading...', () => request === _codeRequest);
   try {
     const data = await api(`/inbox/${id}/messages`);
     stopLoading();
-    const msgs = data.messages || [];
+    if (request !== _codeRequest) return;
+    const msgs = (data.messages || []).slice().sort(compareMailReceived);
     // An inbox is a lease over a mailbox and this list stays clipped to the
     // lease. The tab is the way out to the mailbox itself — offered only when
     // the server names an account, i.e. only for Outlook, where one mailbox
@@ -215,7 +287,7 @@ async function viewInbox(id) {
       </div>
     `;
     syncScopeIndicator(area.querySelector('.scope-tabs'));
-  } catch (e) { stopLoading(); renderDetailError(area, e, on('click', 'viewInbox', id)); }
+  } catch (e) { stopLoading(); if (request === _codeRequest) renderDetailError(area, e, on('click', 'viewInbox', id)); }
 }
 
 /**
@@ -225,14 +297,18 @@ async function viewInbox(id) {
  * here", which the lease view cannot and should not.
  */
 async function viewMailbox(email, backInboxId) {
+  invalidateCodeView();
+  const request = _codeRequest;
   const area = document.getElementById('inbox-detail-area');
   await enterInboxDetail();
   await fadeOutDetail(area);
-  const stopLoading = deferredLoading(area, t('common.loading') || 'Loading...');
+  if (request !== _codeRequest) return;
+  const stopLoading = deferredLoading(area, t('common.loading') || 'Loading...', () => request === _codeRequest);
   try {
     const data = await api(`/outlook/accounts/${encodeURIComponent(email)}/mailbox`);
     stopLoading();
-    const msgs = data.messages || [];
+    if (request !== _codeRequest) return;
+    const msgs = (data.messages || []).slice().sort(compareMailReceived);
     const leases = data.leases || [];
     const leaseById = {};
     leases.forEach(l => { leaseById[l.id] = l; });
@@ -241,7 +317,7 @@ async function viewMailbox(email, backInboxId) {
       <div class="scope-tabs">
         <span class="scope-ind"></span>
         <button class="scope-tab"${on('click', 'scopeSwitch', EL, 'lease', email, backInboxId)}>${t('mailbox.scope_lease')}</button>
-        <button class="scope-tab active">${t('mailbox.scope_all')} (${msgs.length})</button>
+        <button class="scope-tab active">${t('mailbox.scope_all')}</button>
       </div>` : '';
 
     const header = `<div class="detail-head">
@@ -251,61 +327,95 @@ async function viewMailbox(email, backInboxId) {
     </div>`;
     const refresh = iconBtn('refresh', t('nav.refresh'), on('click', 'viewMailbox', email, backInboxId || ''), 'blue');
 
-    if (!msgs.length) {
-      area.innerHTML = `<div class="detail-panel">${header}<p class="text-3">${t('mailbox.empty')}</p><div class="detail-actions">${refresh}</div></div>`;
-      return;
-    }
-
     area.innerHTML = `
       <div class="detail-panel">
         ${header}
         <div class="detail-bar">
-          <h3>${t('inbox.messages_title', {n: msgs.length})}</h3>
+          <h3 id="mailbox-loaded-count">${t('mailbox.loaded', {n: msgs.length})}</h3>
           ${refresh}
         </div>
         <div class="panel"><div class="table-wrap"><table>${msgTableHead()}<tbody id="mailbox-list"></tbody></table></div></div>
         <div id="mailbox-pager"></div>
-        ${data.truncated ? `<div class="detail-note">${t('mailbox.limit_note', {n: data.limit})}</div>` : ''}
+        <div id="mailbox-history-controls"></div>
       </div>
     `;
     // A full mailbox is 50 rows — long enough that the pager beats scrolling.
-    _mailboxCtx = { email, leaseById };
+    _mailboxCtx = { email, leaseById, messages: msgs, nextPageToken: data.nextPageToken, loading: false };
     delete _pageState['mailbox'];
     paginateTable('mailbox', msgs, renderMailboxRows, 'mailbox-pager');
+    renderMailboxHistoryControls();
     syncScopeIndicator(area.querySelector('.scope-tabs'));
-  } catch (e) { stopLoading(); renderDetailError(area, e, on('click', 'viewMailbox', email, ...(backInboxId ? [backInboxId] : []))); }
+  } catch (e) { stopLoading(); if (request === _codeRequest) renderDetailError(area, e, on('click', 'viewMailbox', email, ...(backInboxId ? [backInboxId] : []))); }
 }
 
 let _mailboxCtx = null;
 
+function renderMailboxHistoryControls(error = '') {
+  const ctx = _mailboxCtx;
+  const area = document.getElementById('mailbox-history-controls');
+  if (!ctx || !area) return;
+  const count = document.getElementById('mailbox-loaded-count');
+  if (count) count.textContent = t('mailbox.loaded', { n: ctx.messages.length });
+  area.innerHTML = `<p class="detail-note">${t('mailbox.history_note')}</p>
+    <p class="text-3" role="status">${esc(error)}</p>
+    ${ctx.nextPageToken ? `<button class="btn btn-sm"${ctx.loading ? ' disabled' : ''}${on('click', 'loadEarlierMailbox')}>${t(ctx.loading ? 'common.loading' : error ? 'common.retry' : 'mailbox.load_earlier')}</button>` : ''}`;
+}
+
+async function loadEarlierMailbox() {
+  const ctx = _mailboxCtx;
+  if (!ctx || ctx.loading || !ctx.nextPageToken) return;
+  ctx.loading = true;
+  renderMailboxHistoryControls();
+  try {
+    const query = new URLSearchParams({ pageToken: ctx.nextPageToken });
+    const data = await api(`/outlook/accounts/${encodeURIComponent(ctx.email)}/mailbox?${query}`);
+    if (_mailboxCtx !== ctx) return;
+    const known = new Set(ctx.messages.map(message => message.id));
+    for (const message of data.messages || []) if (!known.has(message.id)) { known.add(message.id); ctx.messages.push(message); }
+    for (const lease of data.leases || []) ctx.leaseById[lease.id] = lease;
+    ctx.nextPageToken = data.nextPageToken;
+    paginateTable('mailbox', ctx.messages, renderMailboxRows, 'mailbox-pager');
+  } catch (error) {
+    if (_mailboxCtx === ctx) { ctx.loading = false; renderMailboxHistoryControls(error.message); }
+    return;
+  }
+  if (_mailboxCtx === ctx) { ctx.loading = false; renderMailboxHistoryControls(); }
+}
+
 function renderMailboxRows(rows) {
+  if (!_mailboxCtx) return;
   const { email, leaseById } = _mailboxCtx;
+  const list = document.getElementById('mailbox-list');
+  if (!list) return;
+  const expanded = list.querySelector('.msg-expand');
+  const expandedId = expanded?.previousElementSibling?.dataset.messageId;
   // Dividers are recomputed per page, so page 2 opens with the lease its first
   // row belongs to rather than inheriting a heading the reader cannot see.
   let bucket;
-  document.getElementById('mailbox-list').innerHTML = rows.map(m => {
+  list.innerHTML = rows.map(m => {
     const key = m.leaseState === 'lease' ? m.leaseId : m.leaseState;
     let sep = '';
     if (key !== bucket) {
       bucket = key;
-      sep = `<tr class="lease-sep"><td colspan="4">${leaseSepLabel(m, leaseById, email)}</td></tr>`;
+      sep = `<tr class="lease-sep"><td colspan="4">${leaseSepLabel(m, leaseById)}</td></tr>`;
     }
-    return sep + msgRow(m, on('click', 'readMailboxMessage', email, m.id, EL));
-  }).join('');
+    return sep + msgRow(m, on('click', 'readMailboxMessage', email, m.id, EL), leaseById);
+  }).join('') || emptyStateRow(4, t('mailbox.empty'));
+  if (expandedId) [...list.querySelectorAll('tr[data-message-id]')].find(row => row.dataset.messageId === expandedId)?.after(expanded);
 }
 
-function leaseSepLabel(m, leaseById, accountEmail) {
-  if (m.leaseState !== 'lease') return `<span class="lease-name">${t('mailbox.state_' + m.leaseState)}</span>`;
+function leaseSepLabel(m, leaseById) {
+  const arrival = `<span class="lease-name">${esc(t('mailbox.arrival') + mailArrivalLabel(m, leaseById))}</span>`;
+  if (m.leaseState !== 'lease') return arrival;
   const l = leaseById[m.leaseId];
-  if (!l) return `<span class="lease-name">${t('mailbox.state_gap')}</span>`;
+  if (!l) return arrival;
   const parts = [
     // Newest ≠ running: an account whose last lease was closed and not yet
     // re-leased still has that lease on top, and calling it "current" would say
     // the mailbox is in use when it is idle. Status is the only honest source.
-    `<span class="lease-name">${l.status === 'active' ? t('mailbox.lease_current') : t('mailbox.lease_past')}</span>`,
+    arrival,
     `<span class="mono">${esc(l.id)}</span>`,
   ];
-  if (l.address && l.address !== accountEmail) parts.push(`<span class="mono">${esc(l.address)}</span>`);
   if (l.targetService) parts.push(esc(l.targetService));
   parts.push(`${fmtTime(l.createdAt, 'date')} → ${l.endedAt ? fmtTime(l.endedAt, 'date') : t('mailbox.lease_open')}`);
   return parts.join(' · ');
@@ -316,7 +426,7 @@ function leaseSepLabel(m, leaseById, accountEmail) {
  * appears where the eye already is. Rendering it below the whole table meant a
  * second scroll for every message read.
  */
-function renderMessage(m, btn) {
+function renderMessage(m, btn, leaseById) {
   const row = btn?.closest('tr');
   if (!row) return;
   // allow-same-origin (still WITHOUT allow-scripts, so nothing in the mail can
@@ -334,7 +444,7 @@ function renderMessage(m, btn) {
   tr.className = 'msg-expand';
   tr.innerHTML = `<td colspan="4"><div class="msg-expand-wrap"><div>
     <div class="msg-viewer">
-      <div class="msg-header"><h3>${esc(m.subject)}</h3><p>From: ${esc(m.from)} · ${fmtTime(m.receivedAt)}</p></div>
+      <div class="msg-header"><h3>${esc(m.subject)}</h3><p>From: ${esc(m.from)} · ${mailTimeLabel(m.receivedAt)}</p>${leaseById ? `<p class="mail-attribution">${mailRecipientLabel(m, leaseById)}</p>` : ''}</div>
       <div class="msg-body">${bodyHtml}</div>
     </div>
   </div></div></td>`;
@@ -385,28 +495,86 @@ async function readMessage(inboxId, msgId, btn) {
 
 async function readMailboxMessage(email, msgId, btn) {
   if (collapseOwnMessage(btn)) return;
+  const ctx = _mailboxCtx;
   try {
-    renderMessage(await api(`/outlook/accounts/${encodeURIComponent(email)}/mailbox/${encodeURIComponent(msgId)}`), btn);
+    const message = await api(`/outlook/accounts/${encodeURIComponent(email)}/mailbox/${encodeURIComponent(msgId)}`);
+    if (_mailboxCtx !== ctx || !ctx || ctx.email !== email) return;
+    renderMessage(message, btn, ctx.leaseById);
   } catch (e) { toast(e.message, 'error'); }
 }
 
-async function getCode(id, wait = false) {
+let _codeRequest = 0;
+let _codeResultInbox = null;
+function invalidateCodeView() { _codeRequest++; _codeResultInbox = null; _mailboxCtx = null; }
+function clearCodeSession() {
+  codeSession.clear();
+  invalidateCodeView();
+  _allInboxes = [];
+  const area = document.getElementById('inbox-detail-area');
+  if (area) area.innerHTML = '';
+}
+function codeSessionControls(id, message = '') {
+  const full = codeSession.ids(id).length >= 20;
+  return `<div class="code-session-controls"><p class="text-3" role="status">${esc(message || (full ? t('inbox.code_session_full') : ''))}</p>
+    <p class="code-meta">${esc(t('inbox.code_session_hint'))}</p>
+    <button class="btn btn-primary btn-sm"${full ? ' disabled' : ''}${on('click', 'getCode', id, true, true)}>${t('inbox.continue_code')}</button>
+    <button class="btn btn-sm"${on('click', 'resetCodeSession', id)}>${t('inbox.reset_code_session')}</button></div>`;
+}
+function updateCodeSessionControls(area, id, message) {
+  const controls = area.querySelector('.code-session-controls');
+  if (controls) controls.outerHTML = codeSessionControls(id, message);
+  else area.innerHTML += codeSessionControls(id, message);
+}
+function resetCodeSession(id) {
+  codeSession.reset(id);
+  _codeRequest++;
+  updateCodeSessionControls(document.getElementById('inbox-detail-area'), id, t('inbox.code_session_reset'));
+}
+
+async function getCode(id, wait = false, keepResult = false) {
+  wait = wait === true || wait === 'true';
+  keepResult = (keepResult === true || keepResult === 'true') && _codeResultInbox === id;
+  const ticket = codeSession.capture(id);
+  const request = ++_codeRequest;
+  const current = () => codeSession.current(ticket) && request === _codeRequest;
   const area = document.getElementById('inbox-detail-area');
   await enterInboxDetail();
-  await fadeOutDetail(area);
-  const stopLoading = deferredLoading(area, wait ? t('inbox.extracting_wait') : t('inbox.extracting'));
+  if (!current()) return;
+  if (!keepResult) await fadeOutDetail(area);
+  if (!current()) return;
+  if (!keepResult) { area.innerHTML = ''; _codeResultInbox = null; }
+  let matching = _allInboxes.find(inbox => inbox.id === id)?.provider === 'outlook';
+  const stopLoading = keepResult ? () => {} : deferredLoading(area, wait && matching ? t('inbox.match_wait') : wait ? t('inbox.extracting_wait') : t('inbox.extracting'), current);
   try {
-    const data = await api(`/inbox/${id}/code?wait=${wait}&timeout=30`);
-    stopLoading();
-    if (!data.codes?.length) {
-      area.innerHTML = `<div class="detail-panel"><p class="text-3">${t('inbox.no_code')}</p><button class="btn btn-primary btn-sm detail-actions"${on('click', 'getCode', id, true)}>${t('inbox.wait_retry')}</button></div>`;
+    const inbox = _allInboxes.find(inbox => inbox.id === id) || await api(`/inbox/${id}`);
+    if (!current()) return;
+    matching = inbox.provider === 'outlook';
+    if (matching && codeSession.ids(id).length >= 20) {
+      stopLoading();
+      updateCodeSessionControls(area, id, t('inbox.code_session_full'));
       return;
     }
-    addActivity('green', `${esc(t('inbox.extract') + (data.codes[0].type === 'link' ? 'link' : 'code'))} <span class="activity-hl">${esc(data.codes[0].type === 'link' ? '(link)' : data.codes[0].value)}</span>`, true);
+    if (matching && keepResult) updateCodeSessionControls(area, id, t('inbox.match_wait'));
+    const exclusions = matching ? codeSession.ids(id).map(messageId => `&excludeMessageId=${encodeURIComponent(messageId)}`).join('') : '';
+    const data = await api(`/inbox/${id}/code?wait=${wait}&timeout=30${matching ? '&selection=matching' : ''}${exclusions}`);
+    stopLoading();
+    if (!current()) return;
+    if (!data.codes?.length) {
+      const state = matching ? data.scan?.reason === 'scan_limit' ? 'inbox.match_limit'
+        : data.scan?.reason === 'timeout' ? 'inbox.match_timeout' : 'inbox.match_empty' : 'inbox.no_code';
+      if (matching && keepResult) updateCodeSessionControls(area, id, t(state));
+      else area.innerHTML = `<div class="detail-panel"><p class="text-3">${t(state)}</p>${matching ? codeSessionControls(id) : `<button class="btn btn-primary btn-sm detail-actions"${on('click', 'getCode', id, true)}>${t('inbox.wait_retry')}</button>`}</div>`;
+      return;
+    }
+    if (matching) codeSession.remember(ticket, data.messageId);
+    _codeResultInbox = id;
+    addActivity('green', t('inbox.extract') + (matching ? ' · matching' : ' · latest'));
     area.innerHTML = `
       <div class="detail-panel">
         <h3>${t('inbox.extract')}</h3>
         ${data.email ? `<p class="code-from">${t('inbox.from')}: ${esc(data.email.from)} · ${esc(data.email.subject)}</p>` : ''}
+        ${matching ? `<p class="code-meta">${mailTimeLabel(data.receivedAt)} · ${esc(t('inbox.requested_address'))}: ${esc(inbox.address)} · ${esc(t('mailbox.recipient'))}${esc(data.email?.recipientAddress || t('mailbox.recipient_unknown'))}</p>` : ''}
+        ${matching && (data.scan?.truncated || data.scan?.complete === false) ? `<p class="text-3">${esc(t('inbox.match_range'))}</p>` : ''}
         ${data.codes.map(c => `
           <div class="code-box">
             <div class="code-meta"><span class="text-2">${esc(c.type)}</span> · ${t('inbox.confidence')}: ${(c.confidence*100).toFixed(0)}%</div>
@@ -414,9 +582,17 @@ async function getCode(id, wait = false) {
             <div class="code-meta">${esc(c.context)}</div>
           </div>
         `).join('')}
+        ${matching ? codeSessionControls(id) : ''}
       </div>
     `;
-  } catch (e) { stopLoading(); renderDetailError(area, e, on('click', 'getCode', id, wait ? 'true' : 'false')); }
+  } catch (e) {
+    stopLoading();
+    if (!current()) return;
+    const error = matching && (e.status === 429 || e.status >= 500)
+      ? new Error(t(e.status === 429 ? 'inbox.match_rate_limit' : 'inbox.match_upstream') + ' · ' + e.message) : e;
+    if (matching && keepResult) updateCodeSessionControls(area, id, error.message);
+    else renderDetailError(area, error, on('click', 'getCode', id, wait));
+  }
 }
 
 async function reportInbox(id, success) {
@@ -444,6 +620,7 @@ async function doClose(id) {
   hideDialog();
   try {
     await api(`/inbox/${id}`, { method: 'DELETE' });
+    codeSession.reset(id);
     toast(t('toast.inbox_closed'));
     addActivity('rose', t('activity.closed_inbox'));
     loadInboxes();
@@ -467,7 +644,7 @@ async function batchCloseInbox() {
   if (!confirm(t('inbox.confirm_batch_close') || '批量关闭所选邮箱?')) return;
   let ok = 0, fail = 0;
   for (const id of ids) {
-    try { await api(`/inbox/${id}`, { method: 'DELETE' }); ok++; }
+    try { await api(`/inbox/${id}`, { method: 'DELETE' }); codeSession.reset(id); ok++; }
     catch (e) { fail++; console.error('batchClose', id, e); }
   }
   const msg = fail
@@ -491,4 +668,4 @@ async function batchReportInbox(success) {
   toast(msg, fail ? 'warn' : 'success');
   loadInboxes();
 }
-export { batchCloseInbox, batchReportInbox, closeInbox, collapseOwnMessage, createInbox, deferredLoading, doClose, enterInboxDetail, exitInboxDetail, fadeOutDetail, fitMsgFrame, getCode, loadInboxes, msgRow, msgTableHead, readMailboxMessage, readMessage, renderDetailError, renderMessage, reportInbox, toggleAllInbox, viewInbox, viewMailbox };
+export { batchCloseInbox, batchReportInbox, clearCodeSession, closeInbox, collapseOwnMessage, createInbox, deferredLoading, doClose, enterInboxDetail, exitInboxDetail, fadeOutDetail, fitMsgFrame, getCode, invalidateCodeView, loadEarlierMailbox, loadInboxes, msgRow, msgTableHead, readMailboxMessage, readMessage, renderDetailError, renderMessage, reportInbox, resetCodeSession, toggleAllInbox, viewInbox, viewMailbox };

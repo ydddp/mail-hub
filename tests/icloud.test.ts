@@ -14,13 +14,14 @@ const imapMockState = vi.hoisted(() => ({
   searchResult: [] as number[],
   junkSearchResult: [] as number[],
   lockPaths: [] as string[],
+  connectCount: 0,
   envelopeTo: undefined as { address: string }[] | undefined,
 }));
 
 vi.mock('imapflow', () => {
   class FakeImapFlow {
     private selected = 'INBOX';
-    async connect(): Promise<void> {}
+    async connect(): Promise<void> { imapMockState.connectCount++; }
     once(): void {}
     async logout(): Promise<void> {}
     async list(): Promise<Array<{ path: string; specialUse?: string }>> {
@@ -55,6 +56,12 @@ vi.mock('imapflow', () => {
         };
       }
     }
+    async fetchOne(): Promise<unknown> {
+      return { uid: 1, envelope: { to: [{ address: 'personal@icloud.com' }] }, bodyStructure: { type: 'text/plain' } };
+    }
+    async download(): Promise<{ meta: {}; content: AsyncIterable<Buffer> }> {
+      return { meta: {}, content: (async function* () { yield Buffer.from('private Code: 654321'); })() };
+    }
   }
   return { ImapFlow: FakeImapFlow };
 });
@@ -84,6 +91,63 @@ function seedAddress(hme: string, accountId = 'acc-1', state = 'free'): void {
 }
 
 describe('IcloudProvider pool', () => {
+  it('advertises and allocates only active or unknown free aliases within the requested account/domain', async () => {
+    seedAccount(); seedAccount('acc-other');
+    seedAddress('inactive@privaterelay.appleid.com');
+    seedAddress('active@icloud.com');
+    seedAddress('legacy@private.icloud.com');
+    seedAddress('other@privaterelay.appleid.com', 'acc-other');
+    const db = getDb();
+    db.prepare(`UPDATE icloud_addresses SET upstream_active = 0 WHERE hme = 'inactive@privaterelay.appleid.com'`).run();
+    db.prepare(`UPDATE icloud_addresses SET upstream_active = 1 WHERE hme = 'active@icloud.com'`).run();
+    db.prepare(`UPDATE icloud_accounts SET status = 'pending' WHERE id = 'acc-other'`).run();
+    const provider = new IcloudProvider();
+    expect((await provider.getDomains()).sort()).toEqual(['icloud.com', 'private.icloud.com']);
+    await expect(provider.createInbox({ domain: 'privaterelay.appleid.com', account: 'acc-1', inboxId: 'bad' }))
+      .rejects.toThrow(/no free iCloud address/i);
+    expect((await provider.createInbox({ domain: 'icloud.com', account: 'acc-1', inboxId: 'active' })).address).toBe('active@icloud.com');
+    expect((await provider.createInbox({ domain: 'private.icloud.com', inboxId: 'legacy' })).address).toBe('legacy@private.icloud.com');
+    // Empty-held fallback remains the existing public domain-discovery contract.
+    expect(await provider.getDomains()).toEqual(['icloud.com', 'private.icloud.com', 'privaterelay.appleid.com']);
+  });
+
+  it('rechecks the upstream activity condition when claiming a candidate that was just invalidated', async () => {
+    seedAccount(); seedAddress('race@icloud.com');
+    const db = getDb();
+    const prepare = db.prepare.bind(db);
+    const spy = vi.spyOn(db, 'prepare').mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (sql.includes('SELECT a.hme, a.account_id, a.anonymous_id')) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, 'all').mockImplementation((...params) => {
+          const candidates = all(...params);
+          prepare(`UPDATE icloud_addresses SET upstream_active = 0 WHERE hme = 'race@icloud.com'`).run();
+          return candidates;
+        });
+      }
+      return statement;
+    });
+    try {
+      await expect(new IcloudProvider().createInbox({ inboxId: 'racing-owner' })).rejects.toThrow(/no free iCloud address/i);
+      expect(prepare(`SELECT assigned_inbox_id, use_count FROM icloud_addresses`).get())
+        .toEqual({ assigned_inbox_id: null, use_count: 0 });
+    } finally { spy.mockRestore(); }
+  });
+
+  it.each([null, 1, 0].flatMap(active => ['assigned', 'retired', 'retiring'].map(state => ({ active, state }))))
+    ('releases only assigned ownership, respecting upstream marker $active in state $state', async ({ active, state }) => {
+      seedAccount(); seedAddress('release@icloud.com', 'acc-1', state);
+      const db = getDb();
+      db.prepare(`UPDATE icloud_addresses SET assigned_inbox_id = 'owner', assigned_at = '2026-01-01',
+        use_count = 4, upstream_active = ?`).run(active);
+      await new IcloudProvider().releaseInbox({} as InboxData, 'owner');
+      expect(db.prepare(`SELECT state, assigned_inbox_id, assigned_at, use_count FROM icloud_addresses`).get()).toEqual({
+        state: state === 'assigned' ? (active === 0 ? 'retired' : 'free') : state,
+        assigned_inbox_id: state === 'assigned' ? null : 'owner',
+        assigned_at: state === 'assigned' ? null : '2026-01-01', use_count: 4,
+      });
+    });
+
   it('claims a free address and marks it assigned to the inbox', async () => {
     seedAccount();
     seedAddress('one@icloud.com');
@@ -226,6 +290,19 @@ describe('IcloudProvider pool', () => {
 });
 
 describe('IcloudProvider reading', () => {
+  it.each(['', ' \t\n'].flatMap(address => ['list', 'detail'].map(entry => ({ address, entry }))))
+  ('rejects blank iCloud recipient scope before the $entry transport: $address', async ({ address, entry }) => {
+    seedAccount('blank-scope-account');
+    imapMockState.searchResult = [1];
+    const inbox: InboxData = { address, provider: 'icloud', apiBase: '', authData: { icloudAccountId: 'blank-scope-account' } };
+    const before = imapMockState.connectCount;
+    const provider = new IcloudProvider();
+    const result = entry === 'list' ? provider.getMessages(inbox) : provider.getMessage(inbox, encodeMailboxMessageId(JUNK_PATH, '1'));
+    await expect(result).rejects.toThrow('Message not found');
+    expect(imapMockState.connectCount).toBe(before);
+    expect(imapMockState.lockPaths).toEqual([]);
+  });
+
   it('searches the forward-to mailbox by the alias', async () => {
     seedAccount();
     seedAddress('read@icloud.com');

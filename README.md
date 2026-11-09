@@ -12,7 +12,9 @@
 - **10+ 渠道聚合** — 统一 REST API，无需对接各家 SDK
 - **可见的调度顺序** — 不指定渠道时按你设定的顺序逐个尝试（可全局、可按目标服务），跳过禁用/限流/冷却中的，`/api/dispatch/preview` 可预演
 - **自定义渠道** — Web UI 添加 REST / GraphQL 邮件渠道，无需写代码
-- **验证码提取** — 自动识别数字、字母数字、链接型验证码
+- **验证码提取** — 自动识别数字、字母数字、链接型验证码；Outlook 支持匹配取码和按邮件 ID 继续获取
+- **Outlook 收件与历史** — 接收时间精确到秒，分开展示收件别名与到达时段；有界扫描 Inbox/Junk，管理员可加载更早邮件
+- **失败恢复与隔离** — 收件人及租期隔离；模板建号后认证失败保留恢复记录，避免重复创建和遗失凭据
 - **账号池管理** — Outlook / YYDS Mail / IMAP 域名邮箱 / iCloud 别名批量管理
 - **权限控制** — API Key 分级（管理员 / 普通用户 + 配额限制）
 - **Gmail 别名生成器** — dot-trick / +后缀 / googlemail.com 等价域
@@ -103,7 +105,7 @@ pm2 start ecosystem.config.cjs
 
 | 渠道 | 类型 | 说明 |
 |------|------|------|
-| Outlook | 账号池 | 导入 Outlook 账号，自动识别 Microsoft Graph、Outlook REST 与 IMAP XOAUTH2（含 Thunderbird 公共 OAuth 令牌）；支持裸账号授权补全；1:1 分配，关闭后回池；可选 `+` 子地址别名；账号页可查看整个邮箱并按租期分段 |
+| Outlook | 账号池 | 导入 Outlook 账号，自动识别 Microsoft Graph、Outlook REST 与 IMAP XOAUTH2（含 Thunderbird 公共 OAuth 令牌）；支持裸账号授权补全；1:1 分配，关闭后回池；可选 `+` 子地址别名；账号页可分开展示收件地址和到达时段，并加载更早邮件 |
 | YYDS Mail | API Key 池 | 导入 Key，按 key 轮转，单 Key 每日 20,000 次调用 |
 | IMAP 域名邮箱 | 账号池 | 连接自有域名邮箱（catch-all），一个邮箱支撑多个收件箱；生成人名形态地址，默认调度顺序排最前 |
 | iCloud 别名 | 地址池 | 用 iCloud+ 的隐藏邮件地址签发 `@icloud.com` 地址，转发到你自己的信箱后按收件人分拣；地址回收复用，后台按 Apple 的限速自动补货 |
@@ -163,8 +165,8 @@ curl http://localhost:3100/api/inbox/{id}/messages \
 curl "http://localhost:3100/api/inbox/{id}/code?wait=true" \
   -H "Authorization: Bearer YOUR_KEY"
 
-# 多次取件：用上次响应的 receivedAt 作为 since，避免重复返回同一封
-curl "http://localhost:3100/api/inbox/{id}/code?wait=true&since=2026-06-05T00%3A01%3A00.000Z" \
+# Outlook 多次取件：重复传入已返回的 messageId，同秒其他邮件仍可匹配
+curl "http://localhost:3100/api/inbox/{id}/code?selection=matching&wait=true&excludeMessageId=message-123" \
   -H "Authorization: Bearer YOUR_KEY"
 
 # 上报结果

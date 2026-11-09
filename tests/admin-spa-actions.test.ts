@@ -1,5 +1,6 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { runInNewContext } from 'vm';
 import { describe, expect, it } from 'vitest';
 import { spaFiles } from './helpers/spa-source.js';
 
@@ -27,6 +28,18 @@ function registeredNames(): Set<string> {
 }
 
 describe('admin SPA actions', () => {
+  // The code result distinguishes throttling from upstream failure using the
+  // real API client's error status; preserving only a message hides that state.
+  it.each([429, 502])('retains HTTP %s for actionable UI retry states', async status => {
+    const source = read('js/core/api.js').replace(/^import .*;\r?\n/gm, '').replace(/^export .*;\r?$/gm, '');
+    const context = {
+      API: '/api', getToken: () => 'admin-secret',
+      fetch: async () => ({ status, ok: false, headers: new Headers({ 'Retry-After': '23' }), json: async () => ({ error: 'Mailbox unavailable' }) }),
+    };
+    const api = runInNewContext(source + '\napi;', context) as (path: string) => Promise<unknown>;
+    await expect(api('/inbox/matching/code?selection=matching')).rejects.toMatchObject({ status, message: 'Mailbox unavailable' });
+  });
+
   it('writes no inline event handler attributes', () => {
     const offenders: string[] = [];
     for (const path of sources) {

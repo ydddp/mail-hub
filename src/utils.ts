@@ -65,11 +65,17 @@ export async function runConcurrent<T, R>(items: T[], limit: number, fn: (item: 
 
 export async function fetchWithTimeout(
   url: string,
-  opts: RequestInit & { timeout?: number; retries?: number } = {},
+  opts: RequestInit & { timeout?: number; retries?: number; retryMode?: 'safe' | 'never' } = {},
 ): Promise<Response> {
-  const { timeout = 15000, retries = 2, ...fetchOpts } = opts;
+  const { timeout = 15000, retries = 2, retryMode, ...fetchOpts } = opts;
   const proxyUrl = getEffectiveProxyUrl();
-  const maxRetries = proxyUrl ? Math.max(retries, 3) : retries;
+  const method = (fetchOpts.method ?? 'GET').toUpperCase();
+  // A disconnect can happen after the server committed a write. Only reads
+  // retry by default; callers may opt in after verifying idempotent semantics.
+  const mayRetry = retryMode !== 'never' && (retryMode === 'safe' || method === 'GET' || method === 'HEAD');
+  const maxRetries = mayRetry && Number.isFinite(retries)
+    ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.floor(retries)))
+    : 0;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {

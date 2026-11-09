@@ -5,10 +5,99 @@ import { config } from './config.js';
 import { hashApiKey, encryptApiKey } from './crypto.js';
 import { createLogger } from './logger.js';
 import { errorMessage } from './errors.js';
+import { foldAsciiCase } from './mail-address.js';
+import { parseTimestamp } from './time.js';
 
 const log = createLogger('db');
 
 let db: Database.Database;
+
+/** SQLite lower() and this funnel both fold ASCII only. Match JS trim in SQL. */
+export function canonicalImapAddress(value: string): string {
+  const separator = value.indexOf('@');
+  const trimmed = separator < 0 ? value.trim()
+    : `${value.slice(0, separator).trim()}@${value.slice(separator + 1).trim()}`;
+  return foldAsciiCase(trimmed);
+}
+
+function imapAddressSql(column: string): string {
+  const whitespace = 'char(9,10,11,12,13,32,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288,65279)';
+  const separator = `instr(${column}, '@')`;
+  return `lower(CASE WHEN ${separator} = 0 THEN trim(${column}, ${whitespace})
+    ELSE trim(substr(${column}, 1, ${separator} - 1), ${whitespace}) || '@'
+      || trim(substr(${column}, ${separator} + 1), ${whitespace}) END)`;
+}
+
+export const IMAP_ADDRESS_KEY_SQL = imapAddressSql('address');
+
+export interface ImapLeaseWindow {
+  created_at: string;
+  closed_at: string | null;
+  expires_at: string | null;
+}
+
+/** Missing bounds cannot prove separation; equal endpoints allow adjacent reuse. */
+export function imapLeasesOverlap(a: ImapLeaseWindow, b: ImapLeaseWindow): boolean {
+  const bounds = (lease: ImapLeaseWindow) => {
+    const created = parseTimestamp(lease.created_at);
+    const ends = [parseTimestamp(lease.closed_at), parseTimestamp(lease.expires_at)].filter(Number.isFinite);
+    return [Number.isFinite(created) ? created : -Infinity, ends.length ? Math.min(...ends) : Infinity];
+  };
+  const [aStart, aEnd] = bounds(a);
+  const [bStart, bEnd] = bounds(b);
+  return aStart < aEnd && bStart < bEnd && aStart < bEnd && bStart < aEnd;
+}
+
+function guardImapAddresses(database: Database.Database): void {
+  // Triggers preserve pre-existing duplicates while guarding every subsequent
+  // writer atomically. A unique index would prevent startup on legacy data.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS imap_ambiguous_leases (inbox_id TEXT PRIMARY KEY);
+    CREATE INDEX IF NOT EXISTS idx_inboxes_imap_active_address
+      ON inboxes(${IMAP_ADDRESS_KEY_SQL}) WHERE provider = 'imap' AND status = 'active';
+    CREATE TRIGGER IF NOT EXISTS imap_active_address_insert
+    BEFORE INSERT ON inboxes WHEN NEW.provider = 'imap' AND NEW.status = 'active'
+    BEGIN
+      SELECT RAISE(ABORT, 'IMAP active address conflict') WHERE EXISTS (
+        SELECT 1 FROM inboxes WHERE provider = 'imap' AND status = 'active'
+          AND ${IMAP_ADDRESS_KEY_SQL} = ${imapAddressSql('NEW.address')}
+      );
+    END;
+    CREATE TRIGGER IF NOT EXISTS imap_active_address_update
+    BEFORE UPDATE OF address, provider, status ON inboxes
+    WHEN NEW.provider = 'imap' AND NEW.status = 'active'
+    BEGIN
+      SELECT RAISE(ABORT, 'IMAP active address conflict') WHERE EXISTS (
+        SELECT 1 FROM inboxes WHERE provider = 'imap' AND status = 'active' AND id != OLD.id
+          AND ${IMAP_ADDRESS_KEY_SQL} = ${imapAddressSql('NEW.address')}
+      );
+    END;
+  `);
+
+  const duplicates = allRows<{ address: string; count: number; inbox_ids: string }>(database, `
+    SELECT ${IMAP_ADDRESS_KEY_SQL} AS address, COUNT(*) AS count, json_group_array(id) AS inbox_ids
+    FROM (SELECT id, address FROM inboxes WHERE provider = 'imap' AND status = 'active' ORDER BY id)
+    GROUP BY ${IMAP_ADDRESS_KEY_SQL} HAVING COUNT(*) > 1 ORDER BY address
+  `);
+  if (duplicates.length > 0) {
+    const groups = duplicates.map(({ address, count, inbox_ids }) => ({ address, count, inboxIds: JSON.parse(inbox_ids) as string[] }));
+    const quarantine = database.prepare('INSERT OR IGNORE INTO imap_ambiguous_leases (inbox_id) VALUES (?)');
+    database.transaction(() => {
+      for (const group of groups) {
+        const leases = allRows<ImapLeaseWindow & { id: string }>(database,
+          `SELECT id, created_at, closed_at, expires_at FROM inboxes WHERE provider = 'imap' AND status = 'active' AND ${IMAP_ADDRESS_KEY_SQL} = ?`, group.address);
+        for (let i = 0; i < leases.length; i++) for (const other of leases.slice(i + 1)) {
+          if (imapLeasesOverlap(leases[i], other)) { quarantine.run(leases[i].id); quarantine.run(other.id); }
+        }
+      }
+    })();
+    log.warn('ambiguous active IMAP addresses', {
+      groupCount: groups.length,
+      inboxCount: groups.reduce((count, group) => count + group.count, 0),
+      groups,
+    });
+  }
+}
 
 export const DEFAULT_SETTINGS = {
   backup_enabled: '1',
@@ -45,6 +134,39 @@ CREATE TABLE IF NOT EXISTS batch_jobs (
   updated_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS batch_jobs_running_pool ON batch_jobs(pool) WHERE status = 'running';
+
+-- Asset recovery rows are permanent; inbox retention must never cascade here.
+CREATE TABLE IF NOT EXISTS creation_recoveries (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  phase TEXT NOT NULL CHECK (phase IN ('attempting','upstream_created','auth_pending','ready','claimed','outcome_unknown')),
+  config_snapshot TEXT NOT NULL,
+  config_fingerprint TEXT NOT NULL,
+  api_base TEXT NOT NULL,
+  variables_json TEXT NOT NULL,
+  address TEXT NOT NULL,
+  auth_data TEXT NOT NULL,
+  response_history_json TEXT NOT NULL DEFAULT '[]',
+  credential_checkpoint_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT,
+  upstream_created_at TEXT,
+  requested_inbox_id TEXT,
+  claimed_inbox_id TEXT,
+  claimed_at TEXT,
+  last_status INTEGER,
+  operation_id TEXT,
+  operation_lease_until TEXT
+);
+CREATE INDEX IF NOT EXISTS creation_recoveries_phase ON creation_recoveries(phase, created_at);
+CREATE TRIGGER IF NOT EXISTS creation_recovery_immutable_snapshot
+BEFORE UPDATE OF provider, config_snapshot, config_fingerprint, api_base, variables_json, created_at, expires_at, requested_inbox_id ON creation_recoveries
+BEGIN SELECT RAISE(ABORT, 'Creation recovery snapshot is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS creation_recovery_permanent_claim
+BEFORE UPDATE OF claimed_inbox_id ON creation_recoveries
+WHEN OLD.claimed_inbox_id IS NOT NULL AND NEW.claimed_inbox_id IS NOT OLD.claimed_inbox_id
+BEGIN SELECT RAISE(ABORT, 'Creation recovery was already claimed'); END;
 
 CREATE TABLE IF NOT EXISTS inboxes (
   id TEXT PRIMARY KEY,
@@ -110,6 +232,21 @@ CREATE TABLE IF NOT EXISTS outlook_accounts (
   oauth_last_error TEXT,
   used_services TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Private append-only token response assets; deliberately no cascading FK.
+CREATE TABLE IF NOT EXISTS outlook_credential_checkpoints (
+  id TEXT PRIMARY KEY,
+  operation_id TEXT NOT NULL,
+  email TEXT,
+  issuing_client_id TEXT NOT NULL,
+  origin_refresh_fingerprint TEXT NOT NULL,
+  origin_oauth_session_id TEXT,
+  source TEXT NOT NULL,
+  http_status INTEGER,
+  received_at TEXT NOT NULL,
+  credentials_json TEXT NOT NULL,
+  raw_response TEXT
 );
 
 CREATE TABLE IF NOT EXISTS outlook_oauth_sessions (
@@ -248,6 +385,11 @@ CREATE TABLE IF NOT EXISTS icloud_addresses (
   assigned_inbox_id TEXT,
   assigned_at TEXT,
   use_count INTEGER NOT NULL DEFAULT 0,
+  upstream_active INTEGER,
+  upstream_checked_at TEXT,
+  retire_op_id TEXT,
+  retire_started_at INTEGER,
+  retire_lease_until INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -271,12 +413,17 @@ export function initDb(): Database.Database {
 
   db = new Database(config.dbPath);
   db.pragma('journal_mode = WAL');
-  // Standard WAL pairing: syncs at checkpoint instead of every commit. Worst
-  // case on OS crash is losing the last moments of writes; scheduled backups
-  // cover that, and all data here is re-importable.
-  db.pragma('synchronous = NORMAL');
+  // Created accounts and issued tokens are permanent assets that cannot be
+  // re-imported or safely reissued after a lost commit. FULL syncs the WAL on
+  // every commit, including private recovery/checkpoint writes. Durability
+  // still depends on the underlying storage honoring synchronization calls.
+  db.pragma('synchronous = FULL');
 
   db.exec(SCHEMA);
+  // A create may have committed just before the process stopped. Do not replay
+  // the write or assume it failed merely because its response was not saved.
+  db.prepare(`UPDATE creation_recoveries SET phase = 'outcome_unknown', updated_at = ? WHERE phase = 'attempting'`)
+    .run(new Date().toISOString());
   // A process restart cannot safely replay an in-flight refresh-token rotation.
   db.prepare(`UPDATE batch_jobs SET status = 'interrupted', error = 'Server restarted; unfinished accounts were not retried', updated_at = ? WHERE status = 'running'`)
     .run(new Date().toISOString());
@@ -310,13 +457,27 @@ export function initDb(): Database.Database {
     // from being written; icloud_addresses has carried the same column from
     // birth for the same reason.
     `ALTER TABLE outlook_accounts ADD COLUMN assigned_at TEXT`,
+    // An authorization code may issue credentials just as its account/session
+    // is superseded. Retain those paid credentials separately from the guarded
+    // account commit; this sensitive checkpoint is never part of public status.
+    `ALTER TABLE outlook_oauth_sessions ADD COLUMN credential_checkpoint TEXT`,
+    // Old rows are unknown until a complete successful Apple LIST verifies them.
+    `ALTER TABLE icloud_addresses ADD COLUMN upstream_active INTEGER`,
+    `ALTER TABLE icloud_addresses ADD COLUMN upstream_checked_at TEXT`,
+    // Milliseconds from Date.now(), shared by acquisition and all lease fences.
+    // NULL legacy operations are recovered only after a complete Apple LIST.
+    `ALTER TABLE icloud_addresses ADD COLUMN retire_op_id TEXT`,
+    `ALTER TABLE icloud_addresses ADD COLUMN retire_started_at INTEGER`,
+    `ALTER TABLE icloud_addresses ADD COLUMN retire_lease_until INTEGER`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch (e) {
       const message = errorMessage(e);
-      if (!message.includes('duplicate column')) log.warn('migration failed', { error: message });
+      if (!message.includes('duplicate column')) log.warn('migration failed', { error: e });
     }
   }
+
+  guardImapAddresses(db);
 
   removeNullProviderConfigRows(db);
 
@@ -502,7 +663,7 @@ function pruneBackups(): void {
     try {
       deleteBackup(backup.filename);
     } catch (e) {
-      log.warn('failed to prune backup', { filename: backup.filename, error: errorMessage(e) });
+      log.warn('failed to prune backup', { filename: backup.filename, error: e });
     }
   }
 }

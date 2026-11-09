@@ -13,6 +13,8 @@ Multi-provider temporary email aggregation — unified API across 10+ email prov
 - **Visible Dispatch Order** — without an explicit provider, tries providers in the order you set (globally or per target service), skipping disabled/rate-limited/cooling ones; `/api/dispatch/preview` dry-runs it
 - **Custom Providers** — add REST or GraphQL providers via Web UI, zero coding
 - **Code Extraction** — auto-detect numeric, alphanumeric, and link-type verification codes
+- **Outlook Retrieval** — Second-level receive times, separate recipient and arrival-window attribution, bounded matching scans, explicit message-ID continuation, and administrator history paging
+- **Recovery and Isolation** — Recipient/lease isolation and retained template-account recovery after authentication failure
 - **Pool Management** — Outlook / YYDS Mail / IMAP domain email / iCloud aliases at scale
 - **Access Control** — API keys with admin/user tiers and daily quotas
 - **Gmail Alias Generator** — dot-trick / +suffix / googlemail.com variants
@@ -103,7 +105,7 @@ These are built into the code (not templates). Enable/disable, auto-dispatch par
 
 | Provider | Type | Description |
 |----------|------|-------------|
-| Outlook | Account Pool | Import Outlook accounts with automatic Microsoft Graph, Outlook REST, or IMAP XOAUTH2 detection (including Thunderbird public OAuth tokens); complete missing authorization, 1:1 assignment, returned to pool on close; optional `+` sub-address alias; the account page can read the whole mailbox, grouped by lease |
+| Outlook | Account Pool | Import Outlook accounts with automatic Microsoft Graph, Outlook REST, or IMAP XOAUTH2 detection (including Thunderbird public OAuth tokens); complete missing authorization, 1:1 assignment, returned to pool on close; optional `+` sub-address alias; the account page separates recipient evidence from arrival windows and loads earlier mail |
 | YYDS Mail | API Key Pool | Import keys, round-robin rotation, 20,000 calls/day per key |
 | IMAP Domain Email | Account Pool | Connect your own domain via IMAP with catch-all; one mailbox backs many inboxes, with name-shaped generated addresses; leads the default dispatch order |
 | iCloud Aliases | Address pool | Mints `@icloud.com` addresses through iCloud+ Hide My Email; they forward to your own mailbox and are sorted by recipient. Addresses are recycled, and a background task tops the pool up within Apple's rate limit |
@@ -163,9 +165,9 @@ curl http://localhost:3100/api/inbox/{id}/messages \
 curl "http://localhost:3100/api/inbox/{id}/code?wait=true" \
   -H "Authorization: Bearer YOUR_KEY"
 
-# Repeated retrieval: pass the previous receivedAt as since to avoid reusing one email
-curl "http://localhost:3100/api/inbox/{id}/code?wait=true&since=2026-06-05T00%3A01%3A00.000Z" \
-  -H "Authorization: Bearer YOUR_KEY"
+# Outlook: exclude returned IDs to retrieve another message, including equal timestamps
+curl "http://localhost:3100/api/inbox/{id}/code?selection=matching&wait=true&excludeMessageId=message-123" \
+  -H "Authorization: Bearer your-secret"
 
 # Report result
 curl -X POST http://localhost:3100/api/inbox/{id}/report \

@@ -51,6 +51,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  log.error('failed to start', { error: String(e) });
+  log.error('failed to start', { error: e });
   process.exit(1);
 });

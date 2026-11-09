@@ -56,6 +56,43 @@ function slowUpstream() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('background pool operations', () => {
+  it.each(['check', 'renew'])('holds queued %s rows to their selection generation', async operation => {
+    seed();
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const pairs: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('/token')) {
+        pairs.push(String(init?.body)); entered(); await gate;
+        return new Response('{"access_token":"secret-access"}');
+      }
+      return new Response('{"value":[]}');
+    }));
+    const response = await post(`outlook/${operation}`, { background: true });
+    const id = (await response.json()).job.id;
+    await started;
+    getDb().prepare("UPDATE outlook_accounts SET oauth_last_session_id = 'queued-new-session' WHERE email = 'test2@outlook.com'").run();
+    const expected = getDb().prepare("SELECT * FROM outlook_accounts WHERE email = 'test2@outlook.com'").get();
+    release();
+    await vi.waitFor(async () => expect(await job(id)).toMatchObject({ status: 'completed', completed: 2, summary: { unknown: 1 } }));
+    expect(pairs).toHaveLength(1);
+    expect(getDb().prepare("SELECT * FROM outlook_accounts WHERE email = 'test2@outlook.com'").get()).toEqual(expected);
+  });
+
+  it('does not overwrite credentials installed before a queued no-token check starts', async () => {
+    getDb().prepare("INSERT INTO outlook_accounts (email, password) VALUES ('queued-empty@outlook.com', 'pw')").run();
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    const response = await post('outlook/check', { background: true });
+    const id = (await response.json()).job.id;
+    getDb().prepare("UPDATE outlook_accounts SET client_id = 'new-client', refresh_token = 'new-refresh', token_status = 'valid', oauth_last_session_id = 'new-session' WHERE email = 'queued-empty@outlook.com'").run();
+    const expected = getDb().prepare("SELECT * FROM outlook_accounts WHERE email = 'queued-empty@outlook.com'").get();
+    await vi.waitFor(async () => expect(await job(id)).toMatchObject({ status: 'completed', summary: { unknown: 1 } }));
+    expect(getDb().prepare("SELECT * FROM outlook_accounts WHERE email = 'queued-empty@outlook.com'").get()).toEqual(expected);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each(cases)('%s returns before upstream finishes and persists progress', async (path, kind) => {
     seed();
     const upstream = slowUpstream();
@@ -116,14 +153,22 @@ describe('background pool operations', () => {
 
   it.each(cases)('%s keeps infrastructure failures unknown', async (path) => {
     seed();
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('upstream unreachable'); }));
-    const response = await post(path);
-    expect(response.status).toBe(202);
-    const id = (await response.json()).job.id;
-    await vi.waitFor(async () => expect(await job(id)).toMatchObject({ status: 'completed', completed: 2 }));
-    expect((await job(id)).summary.unknown).toBe(2);
-    expect(getDb().prepare(`SELECT COUNT(*) AS n FROM outlook_accounts WHERE token_status = 'valid'`).get()).toEqual({ n: 2 });
-    expect(getDb().prepare(`SELECT COUNT(*) AS n FROM yyds_accounts WHERE status = 'active'`).get()).toEqual({ n: 2 });
+    const marker = 'opaque-batch-upstream-96';
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error(marker); }));
+    const output: string[] = [];
+    const spies = [process.stdout, process.stderr].map(stream => vi.spyOn(stream, 'write').mockImplementation(chunk => { output.push(String(chunk)); return true; }));
+    try {
+      const response = await post(path);
+      expect(response.status).toBe(202);
+      const id = (await response.json()).job.id;
+      await vi.waitFor(async () => expect(await job(id)).toMatchObject({ status: 'completed', completed: 2 }));
+      expect((await job(id)).summary.unknown).toBe(2);
+      expect(getDb().prepare(`SELECT COUNT(*) AS n FROM outlook_accounts WHERE token_status = 'valid'`).get()).toEqual({ n: 2 });
+      expect(getDb().prepare(`SELECT COUNT(*) AS n FROM yyds_accounts WHERE status = 'active'`).get()).toEqual({ n: 2 });
+      const logs = output.join('') + JSON.stringify(getDb().prepare('SELECT text FROM activity_log').all());
+      expect(logs).not.toContain(marker);
+      expect(logs).not.toMatch(/secret-(?:password|client|refresh|access|key)/);
+    } finally { spies.forEach(spy => spy.mockRestore()); }
   });
 
   it.each([429, 500, 502, 503, 524])('YYDS HTTP %s preserves stored key status as unknown', async status => {

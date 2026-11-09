@@ -1,10 +1,15 @@
-import type { Message, MessageDetail } from './base.js';
+import type { MailboxScanControl, Message, MessageDetail } from './base.js';
 import {
   assertMailboxReadable,
   fetchMessageDetailAcrossMailboxes,
   fetchMessagesAcrossMailboxes,
+  scanMessagesAcrossMailboxes,
+  inboxAndJunkMailboxes,
+  fetchImapHistoryPage,
+  checkImapHistoryGenerations,
   type ImapCreds,
 } from './imap-core.js';
+import type { HistoryFolder, HistoryReadControl } from '../outlook-history.js';
 
 const IMAP_HOST = 'outlook.office365.com';
 const IMAP_PORT = 993;
@@ -14,6 +19,17 @@ const IMAP_PORT = 993;
  * Outlook so an operator reading a 502 knows which transport refused.
  */
 const INVALID_MESSAGE_ID = 'Invalid Outlook IMAP message id';
+
+export async function initializeOutlookImapHistory(creds: ImapCreds, control: HistoryReadControl): Promise<HistoryFolder[]> {
+  return (await inboxAndJunkMailboxes(creds, control)).map(folder => ({ folder, next: 'imap', buffer: [] }));
+}
+export const fetchOutlookImapHistoryPage = fetchImapHistoryPage;
+export const checkOutlookImapHistoryGenerations = checkImapHistoryGenerations;
+
+export function scanOutlookImapMessages(creds: ImapCreds, control: MailboxScanControl, recipient?: string) {
+  const criteria = recipient !== undefined ? { or: [{ to: recipient }, { cc: recipient }] } : { all: true as const };
+  return scanMessagesAcrossMailboxes(creds, criteria, control, recipient);
+}
 
 export function outlookImapCreds(email: string, accessToken: string, proxy?: string): ImapCreds {
   return {
@@ -29,18 +45,26 @@ export function outlookImapCreds(email: string, accessToken: string, proxy?: str
   };
 }
 
-export async function fetchOutlookImapMessages(creds: ImapCreds, limit: number): Promise<Message[]> {
+export async function fetchOutlookImapMessages(creds: ImapCreds, limit: number, recipient?: string): Promise<Message[]> {
   // Outlook's mailbox view is newest-first, unlike the catch-all providers
   // whose listings the SPA reverses itself. The shared merge is ascending, so
   // this is where the two conventions meet.
-  const messages = await fetchMessagesAcrossMailboxes(creds, { all: true }, { limit });
+  const criteria = recipient !== undefined ? { or: [{ to: recipient }, { cc: recipient }] } : { all: true as const };
+  const messages = await fetchMessagesAcrossMailboxes(creds, criteria, {
+    limit, ...(recipient !== undefined ? { recipient, strictRecipient: true } : {}),
+  });
   return messages.reverse();
 }
 
-export async function fetchOutlookImapMessage(creds: ImapCreds, messageId: string): Promise<MessageDetail> {
+export async function fetchOutlookImapMessage(creds: ImapCreds, messageId: string, recipient?: string, control?: MailboxScanControl): Promise<MessageDetail> {
   // No allowBareUid: this transport has always minted mailbox-qualified ids,
   // so a bare UID could only ever be a guess at someone else's message.
-  return fetchMessageDetailAcrossMailboxes(creds, messageId, { invalidMessage: INVALID_MESSAGE_ID });
+  return fetchMessageDetailAcrossMailboxes(creds, messageId, {
+    invalidMessage: INVALID_MESSAGE_ID,
+    allowUidValidity: true,
+    control,
+    ...(recipient !== undefined ? { recipient, strictRecipient: true } : {}),
+  });
 }
 
 export async function checkOutlookImap(creds: ImapCreds): Promise<void> {

@@ -18,8 +18,12 @@ import { dispatchRoutes } from './routes/dispatch.js';
 import { allRows, DEFAULT_SETTINGS, getDb, getRow, getSetting, logActivity } from './db.js';
 import { hashApiKey, secureCompare } from './crypto.js';
 import { requireAdmin, type AdminEnv } from './routes/admin.js';
-import { parseStoredInbox, releaseInboxResources } from './inbox-lifecycle.js';
+import { parseInboxEndTimestamp, parseStoredInbox, releaseInboxResources } from './inbox-lifecycle.js';
 import { checkToken } from './providers/outlook.js';
+import {
+  CREDENTIAL_COLUMNS, credentialContext, credentialsCurrent, purgeInvalidCredentialAccount,
+  updateCredentialAccount, type OutlookCredentialRow,
+} from './outlook-credentials.js';
 import { reapOrphanedAddresses } from './providers/icloud.js';
 import { createLogger } from './logger.js';
 import { settingsRoutes } from './routes/settings.js';
@@ -27,7 +31,7 @@ import { batchJobRoutes } from './routes/batch-jobs.js';
 import { runningBatchJob, runSynchronousBatch } from './batch-jobs.js';
 import { todayDateString } from './utils.js';
 import { APP_VERSION } from './version.js';
-import { errorMessage, httpStatus, jsonStatus } from './errors.js';
+import { httpStatus, jsonStatus } from './errors.js';
 import { loadPublicBundle, registerAssetRoutes, type PublicBundle } from './static-assets.js';
 import { requestLogger } from './request-logger.js';
 
@@ -185,6 +189,13 @@ same service repeatedly, each time with a fresh address. Two things to know:
     one pooled account, so repeat registrations are sequential. Close the
     current inbox before creating the next one.
 
+Alias inbox reads require exact To/Cc recipient evidence. Address comparisons
+fold ASCII A-Z only; Unicode characters remain distinct. An Outlook inbox whose
+address differs from its account stays recipient-scoped, including legacy rows.
+An empty stored inbox address returns 404 Message not found.
+The account's plain address and admin account-mailbox reads retain whole-mailbox
+access.
+
 ### GET /api/inboxes
 List your inboxes.
 
@@ -209,13 +220,19 @@ Response 200:
   { "id", "from", "subject", "excerpt", "receivedAt", "text": "...", "html": "..." }
 
 ### GET /api/inbox/:id/code
-Extract verification codes from the latest email. Supports long-polling.
+Extract verification codes from the latest email, or bounded Outlook matching. Supports long-polling.
 
 Query parameters:
   ?wait=true       — long-poll until a message arrives (recommended)
+  ?selection=matching — Outlook only: scan Inbox/Junk, at most 5 upstream list pages,
+                        100 metadata entries before local filtering, and 5 eligible
+                        details total per request, including all waiting rounds
   ?timeout=60      — max wait time in seconds (default 60, max 120)
   ?type=numeric    — filter code type (numeric, alphanumeric, link)
   ?since=ISO_TIME  — only consider messages received after this timestamp
+  ?excludeMessageId=ID — repeat to subtract returned IDs (both selection modes)
+                         max 20 supplied values, 2048 UTF-16 code units each, 8192 UTF-8
+                         value bytes total; excess returns 400, never truncates
 
 Response 200:
   {
@@ -229,7 +246,24 @@ Response 200:
 
 This is the recommended endpoint for most use cases — it handles polling,
 message retrieval, and code extraction in a single call. For repeated retrieval,
-pass the previous response "receivedAt" as "since" to avoid returning the same message again.
+remember returned "messageId" values and append repeated "excludeMessageId" parameters.
+This preserves different messages with the same timestamp. "since" remains strictly
+newer-than and excludes equal timestamps; use it only when that time bound is wanted.
+Exclusions only subtract eligible candidates; they do not fetch details by ID or widen
+ownership, recipient, inbox lifetime or provider-window boundaries. No server consumption
+state is stored. The Outlook UI keeps returned IDs in page memory per inbox, retains the
+current result for copying during Continue retrieval, and requires explicit reset at 20
+IDs. Refresh/logout/identity change clears it; closing an inbox clears its IDs. Tabs have
+independent sessions. No bodies or credentials enter the ID map or local storage.
+Matching returns scan.scope="inbox_and_junk", pages, metadata, checked, complete,
+truncated, partial and per-folder completion. Complete covers only the scanned
+window, never the whole mailbox. Both folders must finish and all eligible
+candidates must be checked. An exhausted request budget stops waiting with
+reason="scan_limit" and complete=false. Folder/read errors return controlled
+429/502 errors (partial folder failures include scan.partial=true); no summary
+fallback can hide a failed detail. Each list page and detail charges the same
+shared poll budget. IMAP scan IDs carry UIDVALIDITY; changed generations require
+a reload. HTTP scan continuations reject other hosts/paths and redirects.
 
 ### POST /api/inbox/:id/report
 ⚠️ MANDATORY — Report the outcome of using this inbox.
@@ -348,6 +382,13 @@ Uses a pool of pre-imported Microsoft accounts (1:1 assignment per inbox).
 Accounts are returned to the pool when the inbox is closed.
 Auto-dispatch: off by default (paid). Use provider: "outlook" to request explicitly.
 
+Admin POST /api/outlook/check and /api/outlook/renew return unknown for stale
+credential generations or pending OAuth, without changing current account
+state. Token responses are preserved in private append-only history before
+validation; this history and its tokens are never returned in check/renew
+results, background summaries or OAuth status. Token-endpoint errors use fixed
+public messages. Scheduled invalid cleanup also rechecks generation/ownership.
+
 ### iCloud / Hide My Email
 
 Mints @icloud.com addresses through iCloud+ Hide My Email, so the Apple ID must
@@ -427,6 +468,9 @@ enabled serves as a pool resource — the dispatcher invents an address
 under your domain for each inbox and sorts the shared mailbox by
 recipient, so one mailbox backs many concurrent inboxes.
 
+Claims and To/Cc recipient checks fold ASCII A-Z only and keep Unicode characters
+distinct. Missing recipient evidence cannot establish inbox ownership.
+
 Generated local parts are name-shaped rather than a random string
 (nathanlambert, lisa.chen, d_watson91, vera.oconnell8); pass "username"
 to choose your own. Addresses in use by a live inbox are never reissued.
@@ -475,7 +519,7 @@ export function createApp(): Hono<AdminEnv> {
   app.onError((err, c) => {
     const status = httpStatus(err);
     if (status !== 500) return c.json({ error: err.message }, jsonStatus(status));
-    log.error('unhandled error', { path: c.req.path, error: err.message });
+    log.error('unhandled error', { path: c.req.path, error: err });
     return c.json({ error: 'Internal Server Error' }, 500);
   });
 
@@ -486,7 +530,7 @@ export function createApp(): Hono<AdminEnv> {
     try {
       dbOk = getDb().open;
     } catch (e) {
-      log.error('health check DB error', { error: (e as Error)?.message });
+      log.error('health check DB error', { error: e });
     }
     const status = dbOk ? 'ok' : 'degraded';
     return c.json({
@@ -572,7 +616,7 @@ export function createApp(): Hono<AdminEnv> {
         createLogger('auth').error('failed to consume unlimited API key quota', { key: keyHash });
       }
     } catch (e) {
-      createLogger('auth').error('auth middleware error', { error: errorMessage(e) });
+      createLogger('auth').error('auth middleware error', { error: e });
     }
 
     return c.json({ error: 'Unauthorized' }, 401);
@@ -605,7 +649,7 @@ export function createApp(): Hono<AdminEnv> {
               return c.json({ error: 'Request body must be a JSON object' }, 400);
             }
           } catch (error) {
-            createLogger('request').warn('invalid JSON request body', { path: c.req.path, error: errorMessage(error) });
+            createLogger('request').warn('invalid JSON request body', { path: c.req.path, error: error });
             return c.json({ error: 'Invalid JSON in request body' }, 400);
           }
         }
@@ -666,7 +710,7 @@ export async function cleanupExpired(): Promise<void> {
 
     // 1. Close expired inboxes and release their pool resources immediately,
     //    so Outlook accounts / YYDS slots return to the pool at expiry time
-    //    instead of waiting for the purge a day later.
+    //    instead of waiting for the history retention purge.
     const expired = allRows<{ id: string; provider: string; address: string; auth_data: string; api_base: string | null }>(db, `
       SELECT id, provider, address, auth_data, api_base
       FROM inboxes
@@ -679,7 +723,7 @@ export async function cleanupExpired(): Promise<void> {
         try {
           await releaseInboxResources(parseStoredInbox(row), { deleteExternal: false });
         } catch (e) {
-          log.error('failed to release inbox resources', { inboxId: row.id, error: errorMessage(e) });
+          log.error('failed to release inbox resources', { inboxId: row.id, error: e });
         }
       }
       log.info('closed expired inboxes', { count: expired.length });
@@ -688,29 +732,54 @@ export async function cleanupExpired(): Promise<void> {
     // 2. Purge old closed inboxes. Releasing again is near-idempotent (YYDS
     //    inbox_count may double-decrement, it is display-only and floored at 0)
     //    and catches rows closed before release-at-expiry existed.
-    const rows = allRows<{ id: string; provider: string; address: string; auth_data: string; api_base: string | null }>(db, `
-      SELECT id, provider, address, auth_data, api_base
+    const retentionCutoff = Date.now() - retentionInboxDays * 86_400_000;
+    let unknownEndCount = 0;
+    const rows = allRows<{
+      id: string; provider: string; address: string; auth_data: string; api_base: string | null;
+      closed_at: string | null; expires_at: string | null;
+    }>(db, `
+      SELECT id, provider, address, auth_data, api_base, closed_at, expires_at
       FROM inboxes
       WHERE status = 'closed'
-        AND (
-          (expires_at IS NOT NULL AND datetime(expires_at) < datetime('now', '-1 day'))
-          OR (expires_at IS NULL AND datetime(created_at) < datetime('now', ?))
-        )
-    `, `-${retentionInboxDays} days`);
-
+    `).filter((row) => {
+      const end = parseInboxEndTimestamp(row);
+      if (end === undefined) {
+        unknownEndCount++;
+        return false;
+      }
+      return end < retentionCutoff;
+    });
     for (const row of rows) {
       try {
         await releaseInboxResources(parseStoredInbox(row), { deleteExternal: false });
       } catch (e) {
-        log.error('failed to release inbox resources', { error: errorMessage(e) });
+        log.error('failed to release inbox resources', { error: e });
       }
     }
 
-    if (rows.length > 0) {
-      for (const row of rows) {
-        db.prepare(`DELETE FROM inboxes WHERE id = ?`).run(row.id);
+    let purgedCount = 0;
+    for (const row of rows) {
+      // Resource release awaits provider work. A row changed during that wait
+      // must still be closed and past retention when its deletion is claimed.
+      const current = getRow<{ status: string; closed_at: string | null; expires_at: string | null }>(
+        db, `SELECT status, closed_at, expires_at FROM inboxes WHERE id = ?`, row.id,
+      );
+      if (!current || current.status !== 'closed') continue;
+      const end = parseInboxEndTimestamp(current);
+      if (end === undefined) {
+        unknownEndCount++;
+        continue;
       }
-      log.info('purged expired inboxes', { count: rows.length });
+      if (end >= retentionCutoff) continue;
+      purgedCount += db.prepare(
+        `DELETE FROM inboxes WHERE id = ? AND status = 'closed' AND closed_at IS ? AND expires_at IS ?`,
+      ).run(row.id, current.closed_at, current.expires_at).changes;
+    }
+    if (unknownEndCount > 0) {
+      log.warn('retained closed inboxes with unknown end timestamp', { count: unknownEndCount });
+    }
+    if (purgedCount > 0) {
+      log.info('purged expired inboxes', { count: purgedCount });
     }
 
     // 3. Retention purges run before any network-dependent work so an upstream
@@ -745,8 +814,8 @@ export async function cleanupExpired(): Promise<void> {
     // 5. Daily Outlook token check. 'unknown' (network/throttle/5xx) must never
     //    flip token_status — the purge below deletes invalid accounts, and an
     //    upstream outage must not wipe the pool.
-    const toCheck = allRows<{ email: string; client_id: string; refresh_token: string }>(db, `
-      SELECT email, client_id, refresh_token FROM outlook_accounts
+    const toCheck = allRows<OutlookCredentialRow>(db, `
+      SELECT ${CREDENTIAL_COLUMNS} FROM outlook_accounts
       WHERE account_type = 'short'
         AND client_id != ''
         AND refresh_token != ''
@@ -755,44 +824,49 @@ export async function cleanupExpired(): Promise<void> {
 
     if (toCheck.length > 0 && !runningBatchJob('outlook')) {
       const concurrency = Math.max(1, parseInt(getSetting('batch_concurrency', DEFAULT_SETTINGS.batch_concurrency), 10) || 5);
+      const purgeEvidence = allRows<OutlookCredentialRow>(db, `SELECT ${CREDENTIAL_COLUMNS} FROM outlook_accounts
+        WHERE account_type = 'short' AND token_status = 'invalid' AND assigned_inbox_id IS NULL`)
+        .map(row => credentialContext(row, 'scheduled-invalid-purge'));
       let invalidCount = 0;
       let unknownCount = 0;
-      await runSynchronousBatch('outlook-check', ['scheduled-daily-check'], toCheck, concurrency, async ({ email, client_id: clientId, refresh_token: refreshToken }) => {
+      await runSynchronousBatch('outlook-check', ['scheduled-daily-check'], toCheck, concurrency, async (row) => {
+        const { email } = row;
+        const context = credentialContext(row, 'scheduled-daily-check');
         try {
-          const { status, apiType } = await checkToken(email, clientId, refreshToken);
+          if (!credentialsCurrent(context)) { unknownCount++; return { status: 'unknown' }; }
+          const { status, apiType } = await checkToken(context);
+          let accepted: boolean;
           if (status === 'unknown') {
-            unknownCount++;
-            db.prepare(`UPDATE outlook_accounts SET last_checked_at = datetime('now') WHERE email = ?`).run(email);
+            accepted = updateCredentialAccount(context, "last_checked_at = datetime('now')");
           } else {
-            if (status === 'invalid') invalidCount++;
             if (status === 'valid' && apiType) {
-              db.prepare(
-                `UPDATE outlook_accounts SET token_status = ?, api_type = ?, last_checked_at = datetime('now') WHERE email = ?`,
-              ).run(status, apiType, email);
+              accepted = updateCredentialAccount(context, "token_status = ?, api_type = ?, last_checked_at = datetime('now')", [status, apiType]);
             } else {
-              db.prepare(`UPDATE outlook_accounts SET token_status = ?, last_checked_at = datetime('now') WHERE email = ?`).run(status, email);
+              accepted = updateCredentialAccount(context, "token_status = ?, last_checked_at = datetime('now')", [status]);
             }
           }
+          if (!accepted || status === 'unknown') unknownCount++;
+          else if (status === 'invalid') { invalidCount++; purgeEvidence.push({ ...context }); }
+          if (!accepted) return { status: 'unknown' };
           return { status, apiType };
         } catch (e) {
           unknownCount++;
-          log.warn('Outlook token check errored, leaving account status untouched', { email, error: errorMessage(e) });
+          log.warn('Outlook token check errored, leaving account status untouched', { email });
           return { status: 'unknown' };
         }
       });
 
-      const deleted = getRow<{ count: number }>(
-        db,
-        `SELECT COUNT(*) AS count FROM outlook_accounts WHERE account_type = 'short' AND token_status = 'invalid' AND assigned_inbox_id IS NULL`,
-      ) ?? { count: 0 };
-      if (deleted.count > 0) {
-        db.prepare(`DELETE FROM outlook_accounts WHERE account_type = 'short' AND token_status = 'invalid' AND assigned_inbox_id IS NULL`).run();
-        log.info('purged invalid short-term Outlook accounts', { count: deleted.count });
+      // Earlier invalid rows and this run's accepted verdicts each retain their
+      // own evidence. Never adopt a replacement generation during the purge.
+      let deleted = 0;
+      for (const context of purgeEvidence) deleted += purgeInvalidCredentialAccount(context);
+      if (deleted > 0) {
+        log.info('purged invalid short-term Outlook accounts', { count: deleted });
       }
       log.info('Outlook token check complete', { checked: toCheck.length, invalid: invalidCount, unknown: unknownCount });
     }
   } catch (e) {
-    log.error('cleanup failed', { error: errorMessage(e) });
+    log.error('cleanup failed', { error: e });
   } finally {
     cleanupRunning = false;
   }

@@ -208,26 +208,46 @@ async function saveTplProvider() {
   } catch (e) { st.textContent = ''; toast(e.message, 'error'); }
 }
 
-function showTestResults(data) {
-  if (!data.steps?.length) {
-    toast(data.error || t('toast.testing').replace('…',''), 'error');
-    return;
-  }
-  const stepNames = { getDomains: t('provider.domains'), createInbox: t('inbox.create'), getMessages: t('inbox.receive'), deleteInbox: t('common.delete') };
-  const lines = data.steps.map(s => {
+function showTestResults(data, configName, { confirmed = true, disabled = false } = {}) {
+  const stepNames = { getDomains: t('provider.domains'), createInbox: t('inbox.create'), getMessages: t('inbox.receive') };
+  const stepErrors = { 'No available domains': 'tpl.test_no_domains', 'Template domain discovery failed': 'tpl.test_domains_failed', 'Template inbox creation requires recovery': 'tpl.test_create_recovery', 'Template message read failed': 'tpl.test_messages_failed' };
+  const lines = (data.steps || []).map(s => {
     const icon = s.ok ? '✓' : '✗';
     const name = stepNames[s.step] || s.step;
-    return `<div class="tpl-test-step"><span class="${s.ok ? 'tone-ok' : 'tone-bad'} fw-semibold">${icon}</span> ${esc(name)}${s.detail ? ` <span class="text-3">— ${esc(s.detail)}</span>` : ''}${s.error ? ` <span class="tone-bad">— ${esc(s.error)}</span>` : ''}</div>`;
+    let detail = s.detail;
+    const domains = s.step === 'getDomains' && /^(\d+) domains: (.*)$/.exec(detail || '');
+    const messages = s.step === 'getMessages' && /^(\d+) messages$/.exec(detail || '');
+    if (domains) detail = t('tpl.test_domain_count', { count: domains[1], domains: domains[2] });
+    if (messages) detail = t('tpl.test_message_count', { count: messages[1] });
+    const error = Object.hasOwn(stepErrors, s.error) ? t(stepErrors[s.error]) : s.error;
+    return `<div class="tpl-test-step"><span class="${s.ok ? 'tone-ok' : 'tone-bad'} fw-semibold">${icon}</span> ${esc(name)}${detail ? ` <span class="text-3">— ${esc(detail)}</span>` : ''}${error ? ` <span class="tone-bad">— ${esc(error)}</span>` : ''}</div>`;
   }).join('');
-  showDialog(data.success ? t('common.success') : t('common.fail'), lines, `<button class="btn" data-no-loading${on('click', 'hideDialog')}>${t('common.close')}</button>`);
+  const configKey = !confirmed ? 'tpl.test_config_unconfirmed' : disabled ? 'tpl.test_config_retained_disabled' : 'tpl.test_config_retained';
+  const configNotice = `<p>${esc(t(configKey, { name: configName }))}</p>`;
+  let recoveryNotice = '';
+  if (data.recovery) {
+    const recovery = data.recovery;
+    const phases = ['attempting', 'upstream_created', 'auth_pending', 'ready', 'claimed', 'outcome_unknown'];
+    const phase = phases.includes(recovery.phase) ? recovery.phase : 'outcome_unknown';
+    const hint = recovery.operationActive ? 'active' : recovery.canRetry ? 'retry' : recovery.canClaim ? 'claim' : 'inspect';
+    recoveryNotice = `<p>${esc(t('tpl.test_asset_retained'))}</p>
+      <div class="tpl-test-step">${esc(t('tpl.test_recovery_id', { id: recovery.id }))}</div>
+      <div class="tpl-test-step">${esc(t('tpl.test_recovery_phase', { phase: t('tpl.test_phase_' + phase) }))}</div>
+      <p class="form-hint">${esc(t('tpl.test_recovery_' + hint))}${disabled ? ` ${esc(t('tpl.test_recovery_disabled'))}` : ''}</p>`;
+  }
+  const requestNotice = data.requestInterrupted ? `<p class="tone-warn">${esc(t('tpl.test_request_interrupted'))}</p>` : '';
+  showDialog(data.success ? t('common.success') : t('common.fail'), configNotice + lines + recoveryNotice + requestNotice, `<button class="btn" data-no-loading${on('click', 'hideDialog')}>${t('common.close')}</button>`);
 }
 
 async function testTpl(name) {
+  const disabled = _allTemplates.find(provider => provider.name === name)?.enabled === false;
   toast(t('toast.testing'));
   try {
     const data = await api(`/template-providers/${name}/test`, { method: 'POST' });
-    showTestResults(data);
-  } catch (e) { toast(e.message, 'error'); }
+    showTestResults(data, name, { disabled });
+  } catch {
+    showTestResults({ success: false, requestInterrupted: true }, name, { disabled });
+  }
 }
 
 async function testTplProvider() {
@@ -238,16 +258,16 @@ async function testTplProvider() {
   toast(t('toast.testing'));
   let created = false;
   try {
-    await api('/template-providers', { method: 'POST', body: JSON.stringify({ config: cfg }) });
+    await api('/template-providers', { method: 'POST', body: JSON.stringify({ config: cfg, enabled: false }) });
     created = true;
     const data = await api(`/template-providers/${cfg.name}/test`, { method: 'POST' });
-    await api(`/template-providers/${cfg.name}`, { method: 'DELETE' });
-    showTestResults(data);
-  } catch (e) {
-    if (created) {
-      try { await api(`/template-providers/${cfg.name}`, { method: 'DELETE' }); } catch (e) { console.error('templateDelete', e); }
-    }
-    toast(e.message, 'error');
+    showTestResults(data, cfg.name, { disabled: true });
+  } catch {
+    showTestResults({ success: false, requestInterrupted: true }, cfg.name, { confirmed: created, disabled: true });
+  } finally {
+    // A lost response can still leave a saved config. Keep it available in the
+    // existing list so the operator can return to its recovery records.
+    loadTemplates();
   }
 }
 

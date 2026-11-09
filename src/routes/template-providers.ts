@@ -4,9 +4,13 @@ import { allRows, getDb, getRow, logActivity } from '../db.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
 import { TemplateProvider, type TemplateProviderConfig } from '../providers/template-provider.js';
 import { registry } from '../providers/registry.js';
-import { errorMessage } from '../errors.js';
+import { errorMessage, httpStatus, jsonStatus, TemplateCreationRecoveryError } from '../errors.js';
 import type { InboxData } from '../providers/base.js';
 import { BUILTIN_TEMPLATE_NAMES } from '../providers/builtin-templates.js';
+import {
+  claimCreationRecoveryForAdmin, CreationRecoveryActionError, creationRecoveryMetadata,
+  listCreationRecoveries, readCreationRecovery,
+} from '../creation-recovery.js';
 
 export const templateProviderRoutes = new Hono<AdminEnv>();
 
@@ -19,6 +23,35 @@ interface TemplateProviderRow {
 }
 
 templateProviderRoutes.use('/template-providers/*', requireAdmin);
+
+templateProviderRoutes.get('/template-providers/:name/recoveries', (c) => {
+  return c.json({ recoveries: listCreationRecoveries(c.req.param('name')) });
+});
+
+templateProviderRoutes.post('/template-providers/:name/recoveries/:id/retry', async (c) => {
+  const name = c.req.param('name');
+  const id = c.req.param('id');
+  try {
+    const row = readCreationRecovery(name, id);
+    const provider = new TemplateProvider(JSON.parse(row.config_snapshot) as TemplateProviderConfig);
+    await provider.authenticateRecovery(id);
+    return c.json({ recovery: creationRecoveryMetadata(readCreationRecovery(name, id)) });
+  } catch (error) {
+    const known = error instanceof CreationRecoveryActionError || error instanceof TemplateCreationRecoveryError;
+    let recovery;
+    try { recovery = creationRecoveryMetadata(readCreationRecovery(name, id)); } catch { /* Missing records reveal no private state. */ }
+    return c.json({ error: known ? error.message : 'Creation recovery request failed', ...(recovery ? { recovery } : {}) }, jsonStatus(known ? httpStatus(error) : 500));
+  }
+});
+
+templateProviderRoutes.post('/template-providers/:name/recoveries/:id/claim', (c) => {
+  try {
+    return c.json(claimCreationRecoveryForAdmin(c.req.param('name'), c.req.param('id')));
+  } catch (error) {
+    const known = error instanceof CreationRecoveryActionError || error instanceof TemplateCreationRecoveryError;
+    return c.json({ error: known ? error.message : 'Creation recovery claim failed' }, jsonStatus(known ? httpStatus(error) : 500));
+  }
+});
 
 templateProviderRoutes.get('/template-providers', (c) => {
   const db = getDb();
@@ -56,10 +89,12 @@ templateProviderRoutes.post('/template-providers', async (c) => {
   const existing = db.prepare(`SELECT name FROM template_providers WHERE name = ?`).get(cfg.name);
   if (existing) return c.json({ error: 'Name already exists' }, 409);
 
-  db.prepare(`INSERT INTO template_providers (name, config_json) VALUES (?, ?)`).run(cfg.name, JSON.stringify(cfg));
+  const enabled = body.enabled !== false;
+  db.prepare(`INSERT INTO template_providers (name, config_json, enabled) VALUES (?, ?, ?)`).run(cfg.name, JSON.stringify(cfg), enabled ? 1 : 0);
 
   try {
-    registry.register(new TemplateProvider(cfg));
+    const provider = new TemplateProvider(cfg);
+    if (enabled) registry.register(provider);
   } catch (e) {
     db.prepare(`DELETE FROM template_providers WHERE name = ?`).run(cfg.name);
     return c.json({ error: `Registration failed: ${errorMessage(e)}` }, 500);
@@ -151,7 +186,7 @@ templateProviderRoutes.post('/template-providers/:name/test', async (c) => {
       }
       steps.push({ step: 'getDomains', ok: true, detail: `${domains.length} domains: ${domains.slice(0, 3).join(', ')}` });
     } catch (e) {
-      steps.push({ step: 'getDomains', ok: false, error: errorMessage(e) });
+      steps.push({ step: 'getDomains', ok: false, error: 'Template domain discovery failed' });
       return c.json({ success: false, steps });
     }
 
@@ -159,16 +194,18 @@ templateProviderRoutes.post('/template-providers/:name/test', async (c) => {
       inbox = await provider.createInbox({ domain: domains[0] });
       steps.push({ step: 'createInbox', ok: true, detail: inbox.address });
     } catch (e) {
-      steps.push({ step: 'createInbox', ok: false, error: errorMessage(e) });
-      return c.json({ success: false, steps });
+      steps.push({ step: 'createInbox', ok: false, error: 'Template inbox creation requires recovery' });
+      const recovery = e instanceof TemplateCreationRecoveryError ? creationRecoveryMetadata(readCreationRecovery(name, e.recoveryId)) : undefined;
+      return c.json({ success: false, steps, ...(recovery ? { recovery } : {}) });
     }
   } else {
     try {
       inbox = await provider.createInbox();
       steps.push({ step: 'createInbox', ok: true, detail: inbox.address });
     } catch (e) {
-      steps.push({ step: 'createInbox', ok: false, error: errorMessage(e) });
-      return c.json({ success: false, steps });
+      steps.push({ step: 'createInbox', ok: false, error: 'Template inbox creation requires recovery' });
+      const recovery = e instanceof TemplateCreationRecoveryError ? creationRecoveryMetadata(readCreationRecovery(name, e.recoveryId)) : undefined;
+      return c.json({ success: false, steps, ...(recovery ? { recovery } : {}) });
     }
   }
 
@@ -176,16 +213,10 @@ templateProviderRoutes.post('/template-providers/:name/test', async (c) => {
     const msgs = await provider.getMessages(inbox);
     steps.push({ step: 'getMessages', ok: true, detail: `${msgs.length} messages` });
   } catch (e) {
-    steps.push({ step: 'getMessages', ok: false, error: errorMessage(e) });
-  }
-
-  try {
-    await provider.deleteInbox(inbox);
-    steps.push({ step: 'deleteInbox', ok: true });
-  } catch (e) {
-    steps.push({ step: 'deleteInbox', ok: false, error: errorMessage(e) });
+    steps.push({ step: 'getMessages', ok: false, error: 'Template message read failed' });
   }
 
   const allOk = steps.every(s => s.ok);
-  return c.json({ success: allOk, steps });
+  const recovery = inbox.creationRecoveryId ? creationRecoveryMetadata(readCreationRecovery(name, inbox.creationRecoveryId)) : undefined;
+  return c.json({ success: allOk, steps, ...(recovery ? { recovery } : {}) });
 });

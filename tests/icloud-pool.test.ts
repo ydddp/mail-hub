@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getDb } from '../src/db.js';
-import { inCooldown, setCooldown, clearCooldown, reconcileAccount, reapOrphanedAddresses } from '../src/providers/icloud.js';
+import { IcloudProvider, inCooldown, setCooldown, clearCooldown, reconcileAccount, reapOrphanedAddresses } from '../src/providers/icloud.js';
 import { MAILHUB_HME_LABEL } from '../src/providers/icloud-client.js';
 
 function seed(id = 'acc-1'): void {
@@ -91,9 +91,11 @@ describe('pool reconciliation', () => {
 
     expect(result.adopted).toEqual(['lost@icloud.com']);
     const row = getDb().prepare(
-      `SELECT state FROM icloud_addresses WHERE hme = 'lost@icloud.com'`,
-    ).get() as { state: string };
+      `SELECT state, upstream_active, upstream_checked_at FROM icloud_addresses WHERE hme = 'lost@icloud.com'`,
+    ).get() as { state: string; upstream_active: number; upstream_checked_at: string };
     expect(row.state).toBe('free');
+    expect(row.upstream_active).toBe(1);
+    expect(row.upstream_checked_at).toBeTruthy();
   });
 
   it('refuses an unmarked address and reports it instead', async () => {
@@ -134,6 +136,27 @@ describe('pool reconciliation', () => {
 });
 
 describe('orphan reaping', () => {
+  it.each([null, 1, 0])('releases an old orphan using upstream marker %s while sparing live/fresh ownership', active => {
+    seed();
+    const db = getDb();
+    db.prepare(`INSERT INTO inboxes (id, provider, address, auth_data, api_base, expires_at)
+      VALUES ('live', 'icloud', 'live@icloud.com', '{}', '', datetime('now', '+1 day'))`).run();
+    const insert = db.prepare(`INSERT INTO icloud_addresses
+      (hme, account_id, anonymous_id, state, assigned_inbox_id, assigned_at, upstream_active)
+      VALUES (?, 'acc-1', ?, ?, ?, ?, ?)`);
+    for (const [id, state, owner, time] of [
+      ['old', 'assigned', 'gone', '2000-01-01'], ['legacy', 'assigned', 'gone', null],
+      ['live', 'assigned', 'live', '2000-01-01'], ['fresh', 'assigned', 'pending', new Date().toISOString()],
+      ['retired', 'retired', 'gone', null], ['retiring', 'retiring', 'gone', null],
+    ]) insert.run(`${id}@icloud.com`, id, state, owner, time, active);
+    expect(reapOrphanedAddresses()).toBe(2);
+    const released = { state: active === 0 ? 'retired' : 'free', assigned_inbox_id: null, assigned_at: null };
+    for (const id of ['old', 'legacy']) expect(db.prepare(`SELECT state, assigned_inbox_id, assigned_at
+      FROM icloud_addresses WHERE anonymous_id = ?`).get(id)).toEqual(released);
+    expect(db.prepare(`SELECT state, assigned_inbox_id FROM icloud_addresses WHERE anonymous_id = 'live'`).get())
+      .toEqual({ state: 'assigned', assigned_inbox_id: 'live' });
+    expect(db.prepare(`SELECT state FROM icloud_addresses WHERE anonymous_id = 'fresh'`).get()).toEqual({ state: 'assigned' });
+  });
   it('returns an address whose inbox no longer exists', () => {
     seed('acc-o1');
     getDb().prepare(
@@ -207,6 +230,97 @@ describe('orphan reaping', () => {
 });
 
 describe('reconciliation and deactivated aliases', () => {
+  function snapshot(hmeEmails: unknown, flags = {}) {
+    return { listWithForwarding: async () => ({ hmeEmails, ...flags }) } as never;
+  }
+  const known = { hme: 'known@icloud.com', anonymousId: 'known', label: MAILHUB_HME_LABEL, note: '', isActive: false };
+  const adopted = { ...known, hme: 'adopted@icloud.com', anonymousId: 'adopted', isActive: true };
+
+  it.each(['free', 'assigned', 'retired', 'retiring'])('tracks inactive known %s without changing assignment ownership', async state => {
+    seed();
+    const db = getDb();
+    db.prepare(`INSERT INTO icloud_addresses
+      (hme, account_id, anonymous_id, state, assigned_inbox_id, assigned_at, use_count)
+      VALUES ('known@icloud.com', 'acc-1', 'known', ?, 'owner', '2026-01-01 00:00:00', 9)`).run(state);
+    await reconcileAccount('acc-1', snapshot([{ ...known, label: 'owner renamed label' }]));
+    expect(db.prepare(`SELECT state, assigned_inbox_id, assigned_at, use_count, upstream_active FROM icloud_addresses`).get())
+      .toEqual({ state: state === 'free' ? 'retired' : state, assigned_inbox_id: 'owner', assigned_at: '2026-01-01 00:00:00', use_count: 9, upstream_active: 0 });
+    expect((db.prepare(`SELECT upstream_checked_at FROM icloud_addresses`).get() as { upstream_checked_at: string }).upstream_checked_at).toBeTruthy();
+    await reconcileAccount('acc-1', snapshot([{ ...known, isActive: true }]));
+    expect(db.prepare(`SELECT state, upstream_active FROM icloud_addresses`).get())
+      .toEqual({ state: state === 'free' ? 'retired' : state, upstream_active: 1 });
+  });
+
+  it.each([
+    { entries: undefined }, { entries: null }, { entries: [known, adopted, null] },
+    { entries: [known, adopted, { ...adopted, anonymousId: 'late', hme: 'late@icloud.com', isActive: 'false' }] },
+    { entries: [known, adopted], partial: true }, { entries: [known, adopted], nextPageToken: 'next' },
+    { entries: [known, adopted, { ...known, isActive: true }] },
+    { entries: [known, adopted, { ...adopted, anonymousId: 'conflict' }] },
+  ])('rejects invalid whole snapshots before any writes: %j', async ({ entries, ...flags }) => {
+    seed();
+    const db = getDb();
+    db.prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id, upstream_active, upstream_checked_at)
+      VALUES ('known@icloud.com', 'acc-1', 'known', 0, 'previous')`).run();
+    const before = db.prepare(`SELECT * FROM icloud_addresses`).all();
+    await expect(reconcileAccount('acc-1', snapshot(entries, flags))).rejects.toThrow();
+    expect(db.prepare(`SELECT * FROM icloud_addresses`).all()).toEqual(before);
+  });
+
+  it('leaves missing aliases and other accounts untouched and never relinks local unique collisions', async () => {
+    seed(); seed('acc-2');
+    const db = getDb();
+    db.prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id) VALUES ('known@icloud.com', 'acc-1', 'known')`).run();
+    db.prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id) VALUES ('collision@icloud.com', 'acc-1', 'collision')`).run();
+    const before = db.prepare(`SELECT * FROM icloud_addresses ORDER BY hme`).all();
+    await reconcileAccount('acc-1', snapshot([]));
+    expect(db.prepare(`SELECT * FROM icloud_addresses ORDER BY hme`).all()).toEqual(before);
+    expect(await reconcileAccount('acc-2', snapshot([known, { ...adopted, hme: 'collision@icloud.com' }])))
+      .toEqual({ adopted: [], unowned: [] });
+    expect(db.prepare(`SELECT * FROM icloud_addresses ORDER BY hme`).all()).toEqual(before);
+  });
+
+  it('keeps confirmed inactive delivery and its holder unchanged when LIST fails', async () => {
+    seed();
+    const db = getDb();
+    db.prepare(`INSERT INTO icloud_addresses
+      (hme, account_id, anonymous_id, state, assigned_inbox_id, upstream_active, upstream_checked_at)
+      VALUES ('known@icloud.com', 'acc-1', 'known', 'assigned', 'owner', 0, 'previous')`).run();
+    const before = db.prepare(`SELECT * FROM icloud_addresses`).all();
+    await expect(reconcileAccount('acc-1', { listWithForwarding: async () => { throw new Error('LIST failed'); } } as never))
+      .rejects.toThrow('LIST failed');
+    expect(db.prepare(`SELECT * FROM icloud_addresses`).all()).toEqual(before);
+  });
+
+  it('rolls back the whole batch if a write fails after an earlier alias was updated', async () => {
+    seed();
+    const db = getDb();
+    db.prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id) VALUES ('known@icloud.com', 'acc-1', 'known')`).run();
+    db.exec(`CREATE TEMP TRIGGER r14_abort_adoption BEFORE INSERT ON icloud_addresses
+      WHEN NEW.anonymous_id = 'adopted' BEGIN SELECT RAISE(ABORT, 'simulated disk write failure'); END`);
+    const before = db.prepare(`SELECT * FROM icloud_addresses`).all();
+    try {
+      await expect(reconcileAccount('acc-1', snapshot([known, adopted]))).rejects.toThrow('simulated disk write failure');
+      expect(db.prepare(`SELECT * FROM icloud_addresses`).all()).toEqual(before);
+    } finally { db.exec(`DROP TRIGGER r14_abort_adoption`); }
+  });
+
+  it.each(['claim', 'release'])('uses the current state after a delayed list and concurrent %s', async action => {
+    seed();
+    const db = getDb();
+    db.prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id) VALUES ('known@icloud.com', 'acc-1', 'known')`).run();
+    const provider = new IcloudProvider();
+    const inbox = action === 'release' ? await provider.createInbox({ inboxId: 'owner' }) : undefined;
+    let resolve!: (value: { hmeEmails: unknown[] }) => void;
+    const reconcile = reconcileAccount('acc-1', { listWithForwarding: () => new Promise(done => { resolve = done; }) } as never);
+    if (inbox) await provider.releaseInbox(inbox, 'owner');
+    else await provider.createInbox({ inboxId: 'new-owner' });
+    resolve({ hmeEmails: [known] });
+    await reconcile;
+    expect(db.prepare(`SELECT state, assigned_inbox_id, upstream_active FROM icloud_addresses`).get())
+      .toEqual({ state: inbox ? 'retired' : 'assigned', assigned_inbox_id: inbox ? null : 'new-owner', upstream_active: 0 });
+  });
+
   it('takes a deactivated alias back as retired, not as a usable address', async () => {
     seed('acc-inactive');
 
@@ -223,15 +337,17 @@ describe('reconciliation and deactivated aliases', () => {
 
     expect(result.adopted).toEqual([]);
     const row = getDb().prepare(
-      `SELECT state FROM icloud_addresses WHERE hme = 'dead@icloud.com'`,
-    ).get() as { state: string };
+      `SELECT state, upstream_active FROM icloud_addresses WHERE hme = 'dead@icloud.com'`,
+    ).get() as { state: string; upstream_active: number };
     expect(row.state).toBe('retired');
+    expect(row.upstream_active).toBe(0);
   });
 
   it('does not split one Apple slot into two local addresses', async () => {
     seed('acc-dup');
     getDb().prepare(
-      `INSERT INTO icloud_addresses (hme, account_id, anonymous_id) VALUES ('old-name@icloud.com', 'acc-dup', 'anon-same')`,
+      `INSERT INTO icloud_addresses (hme, account_id, anonymous_id, state, assigned_inbox_id, assigned_at, use_count)
+       VALUES ('old-name@icloud.com', 'acc-dup', 'anon-same', 'assigned', 'rename-owner', '2026-01-01', 3)`,
     ).run();
 
     // anonymousId is Apple's identity for the alias; hme is only our primary
@@ -239,7 +355,7 @@ describe('reconciliation and deactivated aliases', () => {
     // free address, so one Apple slot would show up as two local ones.
     const result = await reconcileAccount('acc-dup', {
       listWithForwarding: async () => ({
-        hmeEmails: [{ hme: 'new-name@icloud.com', anonymousId: 'anon-same', label: MAILHUB_HME_LABEL, note: '', isActive: true }],
+        hmeEmails: [{ hme: 'new-name@icloud.com', anonymousId: 'anon-same', label: MAILHUB_HME_LABEL, note: '', isActive: false }],
         selectedForwardTo: 'owner@example.com',
         forwardToEmails: [],
       }),
@@ -250,5 +366,9 @@ describe('reconciliation and deactivated aliases', () => {
       `SELECT COUNT(*) AS c FROM icloud_addresses WHERE account_id = 'acc-dup'`,
     ).get() as { c: number };
     expect(count.c).toBe(1);
+    expect(getDb().prepare(`SELECT hme, state, assigned_inbox_id, assigned_at, use_count, upstream_active
+      FROM icloud_addresses WHERE anonymous_id = 'anon-same'`).get()).toEqual({
+      hme: 'old-name@icloud.com', state: 'assigned', assigned_inbox_id: 'rename-owner', assigned_at: '2026-01-01', use_count: 3, upstream_active: 0,
+    });
   });
 });

@@ -54,6 +54,13 @@ export interface InboxMessageWindow {
   status?: string | null;
 }
 
+/** Expiry ends a lease even when cleanup records its close later. Legacy rows
+ * may have only one usable end; creation time is never evidence of an end. */
+export function parseInboxEndTimestamp(inbox: Pick<InboxMessageWindow, 'closed_at' | 'expires_at'>): number | undefined {
+  const validEnds = [parseTimestamp(inbox.closed_at), parseTimestamp(inbox.expires_at)].filter(Number.isFinite);
+  return validEnds.length > 0 ? Math.min(...validEnds) : undefined;
+}
+
 export function isMessageWithinInboxLifetime(
   receivedAt: string | undefined,
   inbox: number | InboxMessageWindow,
@@ -67,8 +74,7 @@ export function isMessageWithinInboxLifetime(
   }
 
   const start = parseInboxStartTimestamp(inbox.created_at);
-  const validEnds = [parseInboxTimestamp(inbox.closed_at), parseInboxTimestamp(inbox.expires_at)].filter((value) => value > 0);
-  const end = validEnds.length > 0 ? Math.min(...validEnds) : undefined;
+  const end = parseInboxEndTimestamp(inbox);
   const ended = inbox.status === 'closed' || (end !== undefined && end <= Date.now());
   if (inbox.status === 'closed' && end === undefined) return false;
   if (!receivedAt) return !ended;
@@ -86,7 +92,9 @@ export function rowToInboxData(row: { id: string; address: string; auth_data: st
     // YYDS refreshes its per-inbox token by row id; the same address can live on
     // several rows (current + closed history), so the id must ride along in
     // authData or the refresh would match by address and clobber siblings.
-    authData: row.provider === PROVIDER.YYDS
+    // IMAP likewise needs the lease ID to distinguish quarantined history
+    // from a later, non-overlapping reuse of the same address.
+    authData: row.provider === PROVIDER.YYDS || row.provider === PROVIDER.IMAP
       ? { ...storedAuthData, inboxId: row.id }
       : storedAuthData,
     provider: row.provider,

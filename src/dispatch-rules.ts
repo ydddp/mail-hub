@@ -3,7 +3,6 @@ import { registry } from './providers/registry.js';
 import { rateLimiter } from './rate-limiter.js';
 import { toUtcIso } from './time.js';
 import { createLogger } from './logger.js';
-import { errorMessage } from './errors.js';
 
 const log = createLogger('dispatch-rules');
 
@@ -80,7 +79,7 @@ function parseOrder(json: string, service: string): string[] {
     }
     return out;
   } catch (error) {
-    log.warn('unreadable dispatch rule order', { service, error: errorMessage(error) });
+    log.warn('unreadable dispatch rule order', { service, error: error });
     return [];
   }
 }
@@ -277,7 +276,7 @@ function seedCatalog(): SeedEntry[] {
       const cfg = (raw.config ?? raw) as { trustLevel?: unknown };
       if (typeof cfg.trustLevel === 'number' && Number.isFinite(cfg.trustLevel)) trustLevel = cfg.trustLevel;
     } catch (error) {
-      log.warn('unreadable template config during dispatch seed', { name: row.name, error: errorMessage(error) });
+      log.warn('unreadable template config during dispatch seed', { name: row.name, error: error });
     }
     entries.push({ name: row.name, trustLevel });
   }

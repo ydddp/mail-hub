@@ -8,10 +8,12 @@ export async function expectProviderContract(provider: BaseProvider): Promise<vo
   expect(provider.meta.rateLimit.pollPerMinute).toBeGreaterThanOrEqual(0);
 
   const domains = await provider.getDomains();
-  expect(domains.length).toBeGreaterThan(0);
-  expect(domains[0]).toContain('.');
+  // Some upstreams decide the address only when an inbox is explicitly
+  // created. Discovery may therefore be empty without making them unusable.
+  if (provider.getDomainMode() !== 'from_create') expect(domains.length).toBeGreaterThan(0);
+  if (domains.length) expect(domains[0]).toContain('.');
 
-  const inbox = await provider.createInbox({ domain: domains[0], username: 'contract' });
+  const inbox = await provider.createInbox({ ...(domains[0] ? { domain: domains[0] } : {}), username: 'contract' });
   expect(inbox.provider).toBe(provider.meta.name);
   expect(inbox.address).toContain('@');
   expect(inbox.authData).toEqual(expect.any(Object));

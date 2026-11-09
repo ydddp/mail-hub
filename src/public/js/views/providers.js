@@ -297,7 +297,8 @@ async function showDomains(name) {
   try {
     const data = await api(`/providers/${name}/domains`);
     const domains = data.domains || [];
-    el.innerHTML = `<div class="provider-extra"><strong class="text-2">${t('provider.available_domains')}</strong> ${domains.length ? domains.map(d => `<span class="domain-tag">${esc(d)}</span>`).join('') : '<span class="text-3">'+t('provider.none')+'</span>'}</div>`;
+    const emptyHint = data.domainMode === 'from_create' ? t('provider.domains_on_create') : t('provider.none');
+    el.innerHTML = `<div class="provider-extra"><strong class="text-2">${t('provider.available_domains')}</strong> ${domains.length ? domains.map(d => `<span class="domain-tag">${esc(d)}</span>`).join('') : '<span class="text-3">'+emptyHint+'</span>'}</div>`;
   } catch (e) { el.innerHTML = `<div class="provider-extra tone-bad">${esc(e.message)}</div>`; }
 }
 

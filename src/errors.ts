@@ -37,6 +37,61 @@ export class UpstreamHttpError extends Error {
   }
 }
 
+/** A create-path verdict that positively proves no asset was allocated. */
+export class NoAssetCreatedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'NoAssetCreatedError';
+  }
+}
+
+/** This internal recovery ID and cause never belong in ordinary error text. */
+export class TemplateCreationRecoveryError extends Error {
+  readonly recoveryId!: string;
+  readonly status: number;
+  readonly retryAfter?: string;
+  readonly assetMayExist = true;
+
+  constructor(recoveryId: string, cause?: unknown) {
+    super('Template inbox creation requires recovery', { cause });
+    this.name = 'TemplateCreationRecoveryError';
+    Object.defineProperty(this, 'recoveryId', { value: recoveryId });
+    this.status = httpStatus(cause, 500);
+    this.retryAfter = retryAfterHeader(cause);
+  }
+}
+
+/** A missing message and a message outside the caller's scope share one verdict. */
+export class MessageNotFoundError extends Error {
+  constructor() {
+    super('Message not found');
+    this.name = 'MessageNotFoundError';
+  }
+}
+
+export class ImapAddressConflictError extends NoAssetCreatedError {
+  readonly status = 409;
+
+  constructor() {
+    super('IMAP address conflict');
+    this.name = 'ImapAddressConflictError';
+  }
+}
+
+export class InvalidImapUsernameError extends NoAssetCreatedError {
+  readonly status = 400;
+
+  constructor() {
+    super('Invalid IMAP username');
+    this.name = 'InvalidImapUsernameError';
+  }
+}
+
+export function isImapAddressConflict(error: unknown): boolean {
+  return error instanceof ImapAddressConflictError
+    || (errorCode(error) === 'SQLITE_CONSTRAINT_TRIGGER' && errorMessage(error) === 'IMAP active address conflict');
+}
+
 export function httpStatus(error: unknown, fallback = 500): number {
   if (!error || typeof error !== 'object' || !('status' in error)) return fallback;
   const status = (error as { status?: unknown }).status;
@@ -55,6 +110,9 @@ export function isRateLimitError(error: unknown): boolean {
 }
 
 export function isTransientUpstreamError(error: unknown): boolean {
+  // Wrapping asset-sensitive create failures must retain the same dispatch
+  // cooldown/fallback policy as the original network or HTTP failure.
+  if (error instanceof TemplateCreationRecoveryError) return isTransientUpstreamError(error.cause);
   const status = httpStatus(error, 0);
   if (status >= 500 && status < 600) return true;
   if (error instanceof TypeError) return true;
@@ -73,5 +131,7 @@ export function logIgnoredError(
   error: unknown,
   extra: Record<string, unknown> = {},
 ): void {
-  logger.warn(message, { ...extra, error: errorMessage(error) });
+  const fields = Object.getOwnPropertyDescriptors(extra);
+  fields.error = { value: error, enumerable: true };
+  logger.warn(message, Object.create(null, fields));
 }

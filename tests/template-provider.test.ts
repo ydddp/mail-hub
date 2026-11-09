@@ -2,19 +2,154 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BUILTIN_TEMPLATES } from '../src/providers/builtin-templates.js';
 import { getDb, getRow } from '../src/db.js';
 import { registry } from '../src/providers/registry.js';
+import { registerAllProviders } from '../src/providers/index.js';
 import { BaseProvider, type InboxData, type Message, type MessageDetail, type ProviderMeta } from '../src/providers/base.js';
 import { TemplateProvider, type TemplateProviderConfig } from '../src/providers/template-provider.js';
 import { app, authHeaders, jsonHeaders, jsonOf } from './helpers/http.js';
+import { MessageNotFoundError, TemplateCreationRecoveryError, UpstreamHttpError } from '../src/errors.js';
 
-const validConfig = {
+const validConfig: TemplateProviderConfig = {
+  ...structuredClone(BUILTIN_TEMPLATES[0].config),
   name: 'test-tmpl',
   displayName: 'Test Template',
   apiBase: 'https://api.example.com',
-  domains: { mode: 'list' as const, endpoint: '/domains' },
-  create: { method: 'POST' as const, endpoint: '/accounts', body: '{"address":"{{user}}@{{domain}}","password":"{{password}}"}' },
-  messages: { method: 'GET' as const, endpoint: '/accounts/{{id}}/messages' },
-  messageDetail: { method: 'GET' as const, endpoint: '/messages/{{messageId}}' },
 };
+
+// Read failures must reach callers as failures; only a valid success list is empty mail.
+describe('template message read failures', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  function fixture(fromList = false) {
+    const config = structuredClone(validConfig);
+    config.messages.resultPath = '$root';
+    config.messages.itemMapping = { id: 'id', from: 'from', subject: 'subject', excerpt: 'text', receivedAt: 'date', text: 'text', html: 'html' };
+    config.messageDetail.fromList = fromList;
+    config.messageDetail.responseMapping = { id: 'id', from: 'from', subject: 'subject', text: 'text', html: 'html', receivedAt: 'date' };
+    const inbox = { address: 'read@example.test', provider: config.name, authData: { token: 'test' } };
+    return { config, inbox };
+  }
+
+  it.each([401, 403, 429, 503].flatMap(status => ['list', 'detail'].map(operation => ({ status, operation }))))
+    ('preserves $status and Retry-After for $operation without exposing the body', async ({ status, operation }) => {
+    const { config, inbox } = fixture();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('private mail and credentials', { status, headers: { 'Retry-After': '17' } })));
+    const provider = new TemplateProvider(config);
+    const result = await (operation === 'list' ? provider.getMessages(inbox) : provider.getMessage(inbox, 'm1')).catch(e => e);
+    expect(result).toBeInstanceOf(UpstreamHttpError);
+    expect(result).toMatchObject({ status, retryAfter: '17' });
+    expect(String(result)).not.toContain('private mail');
+  });
+
+  it.each(['list', 'detail'])('rejects private malformed JSON for %s with a safe diagnostic', async operation => {
+    const { config, inbox } = fixture();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('private-mail-invalid-json')));
+    const provider = new TemplateProvider(config);
+    const result = await (operation === 'list' ? provider.getMessages(inbox) : provider.getMessage(inbox, 'm1')).catch(e => e);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe('Template message response is invalid');
+  });
+
+  it.each([
+    null, {}, { emails: [] }, 'private body', [null], ['message'], [[]], [{}], [{ id: '' }], [{ id: '  ' }], [{ id: true }], [{ id: {} }],
+    { success: false, messages: [] }, { errors: [{ message: 'private GraphQL error' }], data: { session: { mails: [] } } },
+  ].map(body => ({ body })))('rejects malformed or explicit failure lists %#', async ({ body }) => {
+    const { config, inbox } = fixture();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body))));
+    await expect(new TemplateProvider(config).getMessages(inbox)).rejects.toThrow();
+  });
+
+  it.each([
+    ['$root', []], ['$root', [{ id: 0 }]], ['hydra:member', { 'hydra:member': [{ id: 0 }] }],
+    ['emails', { emails: [{ id: 0 }] }], ['list', { list: [{ id: 0 }] }],
+    ['data.session.mails', { errors: [], data: { session: { mails: [{ id: 0 }] } } }],
+  ])('accepts configured %s successful lists and zero IDs', async (path, body) => {
+    const { config, inbox } = fixture(true);
+    config.messages.resultPath = String(path);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body))));
+    const provider = new TemplateProvider(config);
+    const messages = await provider.getMessages(inbox);
+    if (path === '$root' && Array.isArray(body) && body.length === 0) expect(messages).toEqual([]);
+    else {
+      expect(messages).toEqual([{ id: '0', from: '', subject: '', excerpt: '', receivedAt: '' }]);
+      expect(await provider.getMessage(inbox, '0')).toMatchObject({ id: '0', text: '', html: '' });
+    }
+  });
+
+  it.each([
+    { path: 'emails', body: { success: false, emails: [] } },
+    { path: 'data.session.mails', body: { errors: [{ message: 'private GraphQL error' }], data: { session: { mails: [] } } } },
+  ])('rejects explicit failure even when $path resolves to a valid empty array', async ({ path, body }) => {
+    const { config, inbox } = fixture();
+    config.messages.resultPath = path;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body))));
+    await expect(new TemplateProvider(config).getMessages(inbox)).rejects.toThrow(/reports failure/);
+  });
+
+  it.each([null, [], 'mail', {}, { error: 'private error' }, { success: false, subject: '' }, { errors: [{ message: 'private error' }], subject: '' }].map(body => ({ body })))
+    ('rejects fabricated blank detail %#', async ({ body }) => {
+    const { config, inbox } = fixture();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body))));
+    await expect(new TemplateProvider(config).getMessage(inbox, 'm1')).rejects.toThrow();
+  });
+
+  it.each([{ subject: '' }, { text: '' }, { id: 0 }])('accepts recognized blank detail with requested ID fallback %#', async body => {
+    const { config, inbox } = fixture();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body))));
+    expect(await new TemplateProvider(config).getMessage(inbox, 'm1')).toMatchObject({ id: 'id' in body ? '0' : 'm1', subject: '', receivedAt: '' });
+  });
+
+  it('keeps the validated fromList cache when a later list contains an invalid item', async () => {
+    const { config, inbox } = fixture(true);
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'm1', subject: 'Original' }])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 'm1', subject: 'Invalid cache' }, null]))));
+    const provider = new TemplateProvider(config);
+    await provider.getMessages(inbox);
+    await expect(provider.getMessages(inbox)).rejects.toThrow();
+    expect(await provider.getMessage(inbox, 'm1')).toMatchObject({ subject: 'Original' });
+    await expect(provider.getMessage(inbox, 'missing')).rejects.toBeInstanceOf(MessageNotFoundError);
+  });
+});
+
+// Template operations can write remotely even when their configured method is
+// GET. A lost response must never allocate, authenticate or delete twice.
+describe('template write retry safety', () => {
+  it.each([
+    ['guerrillamail', 'create'], ['guerrillamail', 'delete'],
+    ['runtime-template', 'create'], ['runtime-template', 'postCreate'], ['runtime-template', 'delete'],
+  ])('does not repeat %s %s after a remote write and disconnect', async (name, operation) => {
+    const cfg = structuredClone(BUILTIN_TEMPLATES.find(entry => entry.config.name === 'guerrillamail')!.config);
+    cfg.name = name;
+    if (operation === 'postCreate') {
+      cfg.create.skip = true;
+      cfg.postCreate = { path: '?f=authenticate', method: 'GET', responseMapping: { authData: { token: 'token' } } };
+    }
+    let committedWrites = 0;
+    const disconnected = new TypeError('response lost after remote commit');
+    const fetchMock = vi.fn(async () => { committedWrites++; throw disconnected; });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+    try {
+      const provider = new TemplateProvider(cfg);
+      const operationPromise = operation === 'delete'
+        ? provider.deleteInbox({ address: 'owned@example.test', provider: name, authData: { sid: 's' } })
+        : provider.createInbox();
+      const result = operationPromise.catch(error => error);
+      await vi.runAllTimersAsync();
+      // Creation now wraps failures to keep account/response material out of
+      // ordinary errors. R09 still requires the original cause and one write;
+      // deletion has no creation recovery boundary and keeps its old identity.
+      if (operation === 'delete') expect(await result).toBe(disconnected);
+      else {
+        expect(await result).toBeInstanceOf(TemplateCreationRecoveryError);
+        expect(await result).toMatchObject({ message: 'Template inbox creation requires recovery', cause: disconnected });
+      }
+      expect(committedWrites).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 describe('template message timestamp contract', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -105,22 +240,60 @@ class TestRegisteredProvider extends BaseProvider {
 
 describe('template-provider CRUD', () => {
   describe('POST /api/template-providers', () => {
-    it('creates a new template provider', async () => {
+    it.each([
+      { mode: 'default', enabled: undefined, expected: 1 },
+      { mode: 'enabled', enabled: true, expected: 1 },
+      { mode: 'disabled', enabled: false, expected: 0 },
+    ])('creates a new $mode template provider', async ({ mode, enabled, expected }) => {
+      const config = makeConfig({ name: `test-tmpl-${mode}` });
       const res = await app.request('/api/template-providers', {
         method: 'POST',
         headers: jsonHeaders(),
-        body: JSON.stringify({ config: validConfig }),
+        body: JSON.stringify({ config, enabled }),
       });
       const data = await jsonOf<SuccessResponse>(res);
       expect(res.status).toBe(200);
       expect(data.success).toBe(true);
-      expect(data.name).toBe('test-tmpl');
+      expect(data.name).toBe(config.name);
 
-      const row = getRow<TemplateProviderRow>(getDb(), `SELECT * FROM template_providers WHERE name = ?`, 'test-tmpl');
+      const row = getRow<TemplateProviderRow>(getDb(), `SELECT * FROM template_providers WHERE name = ?`, config.name);
       expect(row).toBeDefined();
-      expect(row?.enabled).toBe(1);
+      expect(row?.enabled).toBe(expected);
 
-      expect(registry.get('test-tmpl')).toBeDefined();
+      expect(Boolean(registry.get(config.name))).toBe(expected === 1);
+      registry.unregister(config.name);
+      registerAllProviders();
+      expect(Boolean(registry.get(config.name))).toBe(expected === 1);
+    });
+
+    it('field-tests a retained disabled config without enrolling it in dispatch', async () => {
+      const config = makeConfig({
+        name: '_test_retained_disabled',
+        domains: { mode: 'static', list: ['local.example.test'] },
+        create: { path: '/accounts', method: 'POST', body: { address: '{{address}}' }, responseMapping: { address: 'address', authData: { token: 'token' } } },
+        postCreate: undefined,
+        messages: { ...validConfig.messages, path: '/messages', resultPath: '$root' },
+      });
+      const fetch = vi.fn(async (url: string | URL | Request, options?: RequestInit) => {
+        expect(options?.method).not.toBe('DELETE');
+        return new Response(String(url).endsWith('/accounts') ? '{"address":"owned@local.example.test","token":"private-token"}' : '[]', { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetch);
+      try {
+        expect((await app.request('/api/template-providers', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ config, enabled: false }) })).status).toBe(200);
+        const response = await app.request(`/api/template-providers/${config.name}/test`, { method: 'POST', headers: jsonHeaders() });
+        const result = await jsonOf<{ success: boolean; recovery: { id: string; phase: string } }>(response);
+        expect(result).toMatchObject({ success: true, recovery: { id: expect.any(String), phase: 'ready' } });
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(getRow<TemplateProviderRow>(getDb(), 'SELECT enabled FROM template_providers WHERE name = ?', config.name)?.enabled).toBe(0);
+        expect(registry.get(config.name)).toBeUndefined();
+        expect(getDb().prepare('SELECT provider FROM provider_config WHERE provider = ?').get(config.name)).toBeUndefined();
+        registerAllProviders();
+        expect(registry.get(config.name)).toBeUndefined();
+      } finally {
+        vi.unstubAllGlobals();
+        registry.unregister(config.name);
+      }
     });
 
     it('rejects duplicate name', async () => {
@@ -322,7 +495,7 @@ describe('template provider account password', () => {
       apiBase: 'https://pw.example.test',
       auth: { type: 'none' },
       domains: { mode: 'static', list: ['pw.example.test'] },
-      create: { path: '/accounts', method: 'POST', body: { address: '{{address}}', password: '{{password}}' }, responseMapping: { address: 'address', authData: {} } },
+      create: { path: '/accounts', method: 'POST', body: { address: '{{address}}', password: '{{password}}' }, responseMapping: { address: 'address', authData: { token: 'token' } } },
       messages: { path: '/messages', authFrom: 'inbox', itemMapping: { id: 'id', from: 'from', subject: 'subject', excerpt: 'excerpt', receivedAt: 'receivedAt' } },
       messageDetail: { path: '/messages/{{messageId}}', authFrom: 'inbox', responseMapping: { id: 'id', from: 'from', subject: 'subject', receivedAt: 'receivedAt' } },
     });
@@ -334,7 +507,7 @@ describe('template provider account password', () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body ?? '{}')) as { address?: string; password?: string };
       if (body.password) sent = body.password;
-      return new Response(JSON.stringify({ address: body.address ?? 'x@pw.example.test' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ address: body.address ?? 'x@pw.example.test', token: 'test-token' }), { status: 200, headers: { 'content-type': 'application/json' } });
     }));
     try {
       await passwordProvider().createInbox({ domain: 'pw.example.test' });
@@ -373,6 +546,59 @@ describe('template provider account password', () => {
 });
 
 describe('template provider domain failure caching', () => {
+  it.each(['tempmail-lol', 'tempmail-ing', 'custom-from-create'])('never creates an inbox to read %s domains', async (name) => {
+    const cfg = structuredClone(BUILTIN_TEMPLATES.find(entry => entry.config.name === (name === 'custom-from-create' ? 'tempmail-lol' : name))!.config);
+    cfg.name = name;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      address: 'allocated@upstream.test', token: 'test-token', email: { address: 'allocated@upstream.test' },
+    })));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const provider = new TemplateProvider(cfg);
+      const create = vi.spyOn(provider, 'createInbox');
+      const domains = [await provider.getDomains(), await provider.getDomains()];
+      expect(create).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(domains).toEqual([[], []]);
+
+      // Even a direct create has not been saved by dispatch, so it must not
+      // become a domain-discovery cache entry.
+      await provider.createInbox();
+      await expect(provider.getDomains()).resolves.toEqual([]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('returns configured from-create domains without probing upstream', async () => {
+    const cfg = structuredClone(BUILTIN_TEMPLATES.find(entry => entry.config.name === 'tempmail-lol')!.config);
+    cfg.domains.list = ['known.example.test'];
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ address: 'allocated@upstream.test' })));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(new TemplateProvider(cfg).getDomains()).resolves.toEqual(['known.example.test']);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('preserves successful endpoint domain caching', async () => {
+    const cfg = structuredClone(BUILTIN_TEMPLATES.find(entry => entry.config.name === 'mailtm')!.config);
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ 'hydra:member': [{ domain: 'cached.example.test', isActive: true }] })));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const provider = new TemplateProvider(cfg);
+      await expect(provider.getDomains()).resolves.toEqual(['cached.example.test']);
+      await expect(provider.getDomains()).resolves.toEqual(['cached.example.test']);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('caches a failed domain fetch briefly instead of refetching every call', async () => {
     const provider = new TemplateProvider({
       name: 'negcache-tmpl',

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { assertTestPath } from './helpers/test-storage.js';
 import { dirname } from 'path';
 import { app, authHeaders, jsonHeaders } from './helpers/http.js';
-import { getDb } from '../src/db.js';
+import { getDb, initDb } from '../src/db.js';
 import { hashApiKey } from '../src/crypto.js';
 import { trustTokenPath } from '../src/providers/icloud-auth.js';
 
@@ -23,9 +24,52 @@ vi.mock('icloudjs', () => {
 afterEach(() => {
   srpMockState.rejectPassword = false;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+function recoveryFixture(serviceUrl = 'https://svc.test', state = 'retiring'): void {
+  getDb().prepare(`INSERT INTO icloud_accounts (id, apple_id, cookies, hme_service_url)
+    VALUES ('recovery-account', 'recovery@icloud.com', 'c', ?)`).run(serviceUrl);
+  getDb().prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id, state)
+    VALUES ('recovery@icloud.com', 'recovery-account', 'recovery-alias', ?)`).run(state);
+}
+
+function retireRecovery(): Promise<Response> {
+  return app.request('/api/icloud/addresses/recovery@icloud.com/retire', { method: 'POST', headers: jsonHeaders() });
+}
+
+function recoverySnapshot(active: boolean): Response {
+  return new Response(JSON.stringify({ success: true, result: {
+    hmeEmails: [{ hme: 'renamed@icloud.com', anonymousId: 'recovery-alias', isActive: active }],
+  } }));
+}
+
 describe('iCloud admin routes', () => {
+  it('reports upstream delivery status separately from assigned ownership in the address pool', async () => {
+    const db = getDb();
+    db.prepare(`INSERT INTO icloud_addresses
+      (hme, account_id, anonymous_id, state, assigned_inbox_id, upstream_active, upstream_checked_at)
+      VALUES ('unavailable@icloud.com', 'account', 'unavailable', 'assigned', 'owner', 0, '2026-11-08 00:00:00')`).run();
+    db.prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id)
+      VALUES ('unknown@icloud.com', 'account', 'unknown')`).run();
+    const response = await app.request('/api/icloud/addresses', { headers: authHeaders() });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { addresses: Record<string, unknown>[] };
+    expect(body.addresses.find(row => row.hme === 'unavailable@icloud.com')).toMatchObject({
+      state: 'assigned', assigned_inbox_id: 'owner', upstream_active: 0, upstream_checked_at: '2026-11-08T00:00:00.000Z',
+    });
+    expect(body.addresses.find(row => row.hme === 'unknown@icloud.com')).toMatchObject({
+      upstream_active: null, upstream_checked_at: null,
+    });
+  });
+
   it('refuses a non-admin caller', async () => {
     // A request with no token at all is answered 401 by the global /api/*
     // middleware and never reaches this router, so the caller has to be a real
@@ -197,10 +241,12 @@ describe('iCloud admin routes', () => {
 
     expect(res.status).toBe(200);
     const row = getDb().prepare(
-      `SELECT state, anonymous_id FROM icloud_addresses WHERE hme = 'fresh@icloud.com'`,
-    ).get() as { state: string; anonymous_id: string };
+      `SELECT state, anonymous_id, upstream_active, upstream_checked_at FROM icloud_addresses WHERE hme = 'fresh@icloud.com'`,
+    ).get() as { state: string; anonymous_id: string; upstream_active: number | null; upstream_checked_at: string | null };
     expect(row.state).toBe('free');
     expect(row.anonymous_id).toBe('anon-1');
+    expect(row.upstream_active).toBeNull();
+    expect(row.upstream_checked_at).toBeNull();
     expect(bodies.some((b) => b.label === 'mail-hub')).toBe(true);
   });
 
@@ -400,6 +446,7 @@ describe('iCloud admin routes', () => {
     // alias to the pool would hand a dead address to the next tenant. Stay
     // fail-closed in 'retiring'.
     expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'network timeout' });
     expect(getDb().prepare(`SELECT state FROM icloud_addresses WHERE hme = 'uncertain@icloud.com'`).get()).toEqual({ state: 'retiring' });
     const warnings = output
       .flatMap((chunk) => chunk.trim().split('\n'))
@@ -409,7 +456,8 @@ describe('iCloud admin routes', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({ address: 'uncertain@icloud.com' });
     expect(warnings[0]?.operatorAction).toMatch(/inspect.*retry/i);
-    expect(warnings[0]?.error).toContain('network timeout');
+    expect(warnings[0]?.error).toEqual({ class: 'Error', category: 'error' });
+    expect(output.join('')).not.toContain('network timeout');
   });
 
   it.each([
@@ -457,21 +505,37 @@ describe('iCloud admin routes', () => {
     expect(getDb().prepare(`SELECT state FROM icloud_addresses WHERE hme = 'reject409@icloud.com'`).get()).toEqual({ state: 'free' });
   });
 
+  it.each([false, true])('recovers a legacy retiring address after confirming upstream activity=%s', async (active) => {
+    getDb().prepare(`INSERT INTO icloud_accounts (id, apple_id, cookies, hme_service_url)
+      VALUES ('acc-recover', 'recover@icloud.com', 'c', 'https://svc.test')`).run();
+    getDb().prepare(`INSERT INTO icloud_addresses (hme, account_id, anonymous_id, state)
+      VALUES ('recover@icloud.com', 'acc-recover', 'anon-recover', 'retiring')`).run();
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ success: true, result: String(url).endsWith('/list')
+        ? { hmeEmails: [{ hme: 'renamed@icloud.com', anonymousId: 'anon-recover', isActive: active }] } : {} }));
+    }));
+    const response = await app.request('/api/icloud/addresses/recover@icloud.com/retire', { method: 'POST', headers: jsonHeaders() });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(calls.map(url => url.split('/').pop())).toEqual(active ? ['list', 'deactivate'] : ['list']);
+    expect(getDb().prepare(`SELECT hme, account_id, state, upstream_active FROM icloud_addresses`).get())
+      .toEqual({ hme: 'recover@icloud.com', account_id: 'acc-recover', state: 'retired', upstream_active: 0 });
+  });
+
   it('refuses to retire an address already mid-retirement, so two calls cannot both claim it', async () => {
     getDb().prepare(
       `INSERT INTO icloud_accounts (id, apple_id, cookies, hme_service_url)
        VALUES ('acc-conc', 'me@icloud.com', 'c', 'https://svc.test')`,
     ).run();
-    // The row a first request has already claimed. The claim matches only
-    // free/retired, never 'retiring' — because SQLite counts a no-op
-    // retiring→retiring UPDATE as changes===1, so matching it would let a
-    // second caller "win" and, if the first then rolled back to free, its
-    // success write would target a no-longer-'retiring' row and vanish,
-    // leaving a deactivated alias dispatchable.
+    // A persisted, unexpired operation remains exclusive across restarts.
     getDb().prepare(
-      `INSERT INTO icloud_addresses (hme, account_id, anonymous_id, state)
-       VALUES ('mid2@icloud.com', 'acc-conc', 'anon-mid2', 'retiring')`,
-    ).run();
+      `INSERT INTO icloud_addresses (hme, account_id, anonymous_id, state, retire_op_id, retire_started_at, retire_lease_until)
+       VALUES ('mid2@icloud.com', 'acc-conc', 'anon-mid2', 'retiring', 'persisted-op', ?, ?)`,
+    ).run(Date.now(), Date.now() + 120_000);
+    getDb().close();
+    initDb();
     const fetchSpy = vi.fn();
     vi.stubGlobal('fetch', fetchSpy);
 
@@ -488,6 +552,165 @@ describe('iCloud admin routes', () => {
     expect(row.state).toBe('retiring');
   });
 
+  it.each(['expired', 'exact expiry', 'missing identity', 'missing start', 'missing lease'])('verifies %s operations before recovering a persisted retirement', async (kind) => {
+    const now = 1_800_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    recoveryFixture();
+    getDb().prepare(`UPDATE icloud_addresses SET retire_op_id = ?, retire_started_at = ?, retire_lease_until = ?`)
+      .run(kind === 'missing identity' ? null : 'old-op', kind === 'missing start' ? null : now - 120_000,
+        kind === 'missing lease' ? null : kind === 'expired' ? now - 1 : kind === 'exact expiry' ? now : now + 60_000);
+    const fetchSpy = vi.fn(async () => recoverySnapshot(false));
+    vi.stubGlobal('fetch', fetchSpy);
+    expect((await retireRecovery()).status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('/list');
+    expect(getDb().prepare(`SELECT state, upstream_active FROM icloud_addresses`).get()).toEqual({ state: 'retired', upstream_active: 0 });
+  });
+
+  it.each([
+    ['absent target', () => new Response(JSON.stringify({ success: true, result: { hmeEmails: [] } }))],
+    ['malformed entry', () => new Response(JSON.stringify({ success: true, result: { hmeEmails: [{ anonymousId: 'recovery-alias', hme: 'x', isActive: null }] } }))],
+    ['partial list', () => new Response(JSON.stringify({ success: true, result: { hmeEmails: [], hasMore: true } }))],
+    ['missing positive success', () => new Response(JSON.stringify({ result: { hmeEmails: [] } }))],
+    ['expired authentication', () => new Response('', { status: 401 })],
+    ['network failure', () => { throw new Error('read unavailable'); }],
+  ])('leaves recovery explicitly unresolved after %s without sending deactivate', async (_kind, result) => {
+    recoveryFixture();
+    const fetchSpy = vi.fn(async () => result());
+    vi.stubGlobal('fetch', fetchSpy);
+    const response = await retireRecovery();
+    expect(response.status).toBe(502);
+    expect((await response.json() as { error: string }).error).toMatch(/unresolved/i);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain('/list');
+    expect(getDb().prepare(`SELECT state, upstream_active, upstream_checked_at FROM icloud_addresses`).get())
+      .toEqual({ state: 'retiring', upstream_active: null, upstream_checked_at: null });
+    // This request has ended: a fresh administrator retry can verify immediately.
+    vi.stubGlobal('fetch', vi.fn(async () => recoverySnapshot(false)));
+    expect((await retireRecovery()).status).toBe(200);
+  });
+
+  it('keeps a recovered active alias retiring after a definitive write rejection', async () => {
+    recoveryFixture();
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).endsWith('/list') ? recoverySnapshot(true)
+      : new Response(JSON.stringify({ success: false, error: { errorMessage: 'rejected' } }))));
+    expect((await retireRecovery()).status).toBe(502);
+    expect(getDb().prepare(`SELECT state, upstream_active FROM icloud_addresses`).get())
+      .toEqual({ state: 'retiring', upstream_active: 1 });
+  });
+
+  it('does not roll a first rejection back to free after reconciliation has confirmed inactivity', async () => {
+    recoveryFixture('https://svc.test', 'free');
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      getDb().prepare(`UPDATE icloud_addresses SET upstream_active = 0`).run();
+      return new Response(JSON.stringify({ success: false, error: { errorMessage: 'rejected' } }));
+    }));
+    expect((await retireRecovery()).status).toBe(502);
+    expect(getDb().prepare(`SELECT state, upstream_active FROM icloud_addresses`).get())
+      .toEqual({ state: 'retired', upstream_active: 0 });
+  });
+
+  it('persists one bounded operation before sending and excludes a concurrent administrator', async () => {
+    const now = 1_800_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+    recoveryFixture('https://svc.test', 'free');
+    const entered = deferred<void>();
+    const pendingPost = deferred<Response>();
+    const fetchSpy = vi.fn(async () => { entered.resolve(); return pendingPost.promise; });
+    vi.stubGlobal('fetch', fetchSpy);
+    const first = retireRecovery();
+    await entered.promise;
+    const operation = getDb().prepare(`SELECT state, retire_op_id, retire_started_at, retire_lease_until FROM icloud_addresses`).get() as Record<string, unknown>;
+    expect(operation).toMatchObject({ state: 'retiring', retire_started_at: now, retire_lease_until: now + 120_000 });
+    expect(operation.retire_op_id).toEqual(expect.any(String));
+    expect((await retireRecovery()).status).toBe(409);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    pendingPost.resolve(new Response(JSON.stringify({ success: true, result: {} })));
+    expect((await first).status).toBe(200);
+  });
+
+  it.each(['success', 'rejection', 'body'] as const)('rejects a late old POST %s without overwriting or logging a newer operation', async (outcome) => {
+    const now = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    recoveryFixture('https://svc.test', 'free');
+    const entered = deferred<void>();
+    const oldResponse = deferred<Response>();
+    const oldBody = deferred<string>();
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      entered.resolve();
+      if (outcome === 'body') return { ok: true, status: 200, headers: new Headers(), text: () => oldBody.promise };
+      return oldResponse.promise;
+    }));
+    const first = retireRecovery();
+    await entered.promise;
+    clock.mockReturnValue(now + 120_001);
+    // New process/request acquires and waits on a still-running LIST.
+    const newerEntered = deferred<void>();
+    const newList = deferred<Response>();
+    vi.stubGlobal('fetch', vi.fn(async () => { newerEntered.resolve(); return newList.promise; }));
+    const newer = retireRecovery();
+    await newerEntered.promise;
+    const before = getDb().prepare(`SELECT * FROM icloud_addresses`).get();
+    const envelope = JSON.stringify({ success: outcome !== 'rejection', result: {}, error: { errorMessage: 'old rejected' } });
+    if (outcome === 'body') oldBody.resolve(envelope);
+    else oldResponse.resolve(new Response(envelope));
+    expect((await first).status).toBe(409);
+    expect(getDb().prepare(`SELECT * FROM icloud_addresses`).get()).toEqual(before);
+    expect(getDb().prepare(`SELECT COUNT(*) AS c FROM activity_log WHERE text LIKE 'Retired iCloud address%'`).get()).toEqual({ c: 0 });
+    newList.resolve(recoverySnapshot(false));
+    expect((await newer).status).toBe(200);
+  });
+
+  it.each(['LIST', 'validate', 'recovery validate'] as const)('blocks an expired operation whose delayed %s would otherwise send a stale POST', async (phase) => {
+    const now = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    recoveryFixture(phase.includes('validate') ? '' : 'https://svc.test', phase === 'validate' ? 'free' : 'retiring');
+    const entered = deferred<void>();
+    const delayed = deferred<Response>();
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      calls.push(String(url));
+      entered.resolve();
+      return delayed.promise;
+    }));
+    const old = retireRecovery();
+    await entered.promise;
+    clock.mockReturnValue(now + 120_000);
+    delayed.resolve(phase.includes('validate')
+      ? new Response(JSON.stringify({ webservices: { premiummailsettings: { url: 'https://svc.test' } } }))
+      : recoverySnapshot(true));
+    expect((await old).status).toBe(409);
+    expect(calls).toHaveLength(1);
+    expect(calls.some(url => url.endsWith('/deactivate'))).toBe(false);
+    expect(getDb().prepare(`SELECT state, upstream_active FROM icloud_addresses`).get()).toEqual({ state: 'retiring', upstream_active: null });
+  });
+
+  it('completes the maximum bounded network sequence within the original 120-second lease', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-08T00:00:00.000Z'));
+    const started = Date.now();
+    recoveryFixture('');
+    let lists = 0;
+    const seenLeases: unknown[] = [];
+    const fetchSpy = vi.fn(async (url: string) => {
+      seenLeases.push((getDb().prepare(`SELECT retire_lease_until FROM icloud_addresses`).get() as { retire_lease_until: number }).retire_lease_until);
+      await new Promise(resolve => setTimeout(resolve, 15_000));
+      if (String(url).endsWith('/validate')) return new Response(JSON.stringify({ webservices: { premiummailsettings: { url: 'https://svc.test' } } }));
+      if (String(url).endsWith('/list')) {
+        if (++lists < 3) throw new TypeError('transient read disconnect');
+        return recoverySnapshot(true);
+      }
+      return new Response(JSON.stringify({ success: true, result: {} }));
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+    const request = retireRecovery();
+    await vi.runAllTimersAsync();
+    expect((await request).status).toBe(200);
+    expect(Date.now() - started).toBe(77_400);
+    expect(seenLeases).toEqual(Array(5).fill(started + 120_000));
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/deactivate'))).toHaveLength(1);
+  });
+
   it('erases the on-disk trust token when the account is deleted', async () => {
     getDb().prepare(
       `INSERT INTO icloud_accounts (id, apple_id, auth_mode, trust_token)
@@ -495,7 +718,7 @@ describe('iCloud admin routes', () => {
     ).run();
     // The token file is what the SRP flow writes; it is a 2FA-bypass credential
     // and must not survive the row it belongs to.
-    const path = trustTokenPath('del@icloud.com');
+    const path = assertTestPath(trustTokenPath('del@icloud.com'));
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, 'tok-xyz', 'utf8');
     expect(existsSync(path)).toBe(true);
@@ -517,29 +740,25 @@ describe('iCloud admin routes', () => {
       `INSERT INTO icloud_addresses (hme, account_id, anonymous_id)
        VALUES ('keep-stuck@icloud.com', 'acc-stuck-token', 'anon-stuck')`,
     ).run();
-    const path = trustTokenPath('stuck@icloud.com');
+    const path = assertTestPath(trustTokenPath('stuck@icloud.com'));
     mkdirSync(path, { recursive: true });
     writeFileSync(`${path}/credential`, 'tok-stuck', 'utf8');
 
-    try {
-      const res = await app.request('/api/icloud/accounts/acc-stuck-token', {
-        method: 'DELETE', headers: authHeaders('admin-secret'),
-      });
+    const res = await app.request('/api/icloud/accounts/acc-stuck-token', {
+      method: 'DELETE', headers: authHeaders('admin-secret'),
+    });
 
-      expect(res.status).toBe(500);
-      expect((await res.json() as { error: string }).error).toContain('trust token');
-      expect(existsSync(`${path}/credential`)).toBe(true);
-      const account = getDb().prepare(
-        `SELECT id FROM icloud_accounts WHERE id = 'acc-stuck-token'`,
-      ).get();
-      const address = getDb().prepare(
-        `SELECT hme FROM icloud_addresses WHERE account_id = 'acc-stuck-token'`,
-      ).get();
-      expect(account).toBeDefined();
-      expect(address).toBeDefined();
-    } finally {
-      rmSync(path, { recursive: true, force: true });
-    }
+    expect(res.status).toBe(500);
+    expect((await res.json() as { error: string }).error).toContain('trust token');
+    expect(existsSync(`${path}/credential`)).toBe(true);
+    const account = getDb().prepare(
+      `SELECT id FROM icloud_accounts WHERE id = 'acc-stuck-token'`,
+    ).get();
+    const address = getDb().prepare(
+      `SELECT hme FROM icloud_addresses WHERE account_id = 'acc-stuck-token'`,
+    ).get();
+    expect(account).toBeDefined();
+    expect(address).toBeDefined();
   });
 
   it('refuses to retire an address a live inbox still holds', async () => {

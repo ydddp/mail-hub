@@ -139,7 +139,7 @@ describe('dispatch eligibility reasons', () => {
     ['disabled', (name: string) => { getDb().prepare(`UPDATE provider_config SET enabled = 0 WHERE provider = ?`).run(name); }, {}],
     ['manual_only', (name: string) => { getDb().prepare(`UPDATE provider_config SET auto_dispatch = 0 WHERE provider = ?`).run(name); }, {}],
     ['no_polling', () => {}, { features: { pollInbox: false, customUsername: true, realtime: false, attachments: false } }],
-    ['rate_limited', (name: string) => { rateLimiter.recordCreate(name); }, { rateLimit: { createPerMinute: 1, pollPerMinute: 0 } }],
+    ['rate_limited', (name: string) => { rateLimiter.reserveCreate(name); }, { rateLimit: { createPerMinute: 1, pollPerMinute: 0 } }],
     ['cooldown', (name: string) => { rateLimiter.recordTransientFailure(name); }, {}],
   ] as const)('reports %s', (reason, arrange, metaOverrides) => {
     const cleanup = onlyFakes(new FakeProvider({ name: 'probe', trustLevel: 1, rateLimit: OPEN, ...metaOverrides }));
@@ -192,7 +192,7 @@ describe('dispatch walks the resolved order', () => {
     const ok = new FakeProvider({ name: 'ok', rateLimit: OPEN });
     const cleanup = onlyFakes(limited, off, ok);
     getDb().prepare(`UPDATE provider_config SET enabled = 0 WHERE provider = 'off'`).run();
-    rateLimiter.recordCreate('limited');
+    rateLimiter.reserveCreate('limited');
     await putRule('*', { order: ['limited', 'off', 'ok'] });
 
     await expect(dispatch({})).resolves.toMatchObject({ provider: 'ok' });

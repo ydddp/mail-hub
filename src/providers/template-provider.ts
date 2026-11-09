@@ -2,11 +2,38 @@ import { BaseProvider, type ProviderMeta, type InboxData, type Message, type Mes
 import { fetchWithTimeout, randomString } from '../utils.js';
 import { randomSecret } from '../crypto.js';
 import { createLogger } from '../logger.js';
-import { errorMessage, UpstreamHttpError } from '../errors.js';
+import { httpStatus, MessageNotFoundError, NoAssetCreatedError, UpstreamHttpError } from '../errors.js';
 import { providerTime, type TimestampFormat } from '../time.js';
+import {
+  acquireCreationAuthentication, appendCreationCredentials, appendCreationResponse, beginCreationRecovery,
+  checkpointCreation, CREATION_AUTH_TIMEOUT_MS, creationRecoveryFailure, finishCreationAuthentication,
+  recoveryInboxData, type CreationAuthOperation, type CreationRecoveryRow,
+} from '../creation-recovery.js';
+import { TemplateCreationRecoveryError } from '../errors.js';
 
 type JsonMap = Record<string, unknown>;
 const log = createLogger('template-provider');
+
+function isMessageObject(value: unknown): value is JsonMap {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readMessageId(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+async function readMessageResponse(response: Response): Promise<unknown> {
+  if (!response.ok) throw new UpstreamHttpError('Template message read failed', response.status, response.headers.get('Retry-After'));
+  let data: unknown;
+  try { data = await response.json(); }
+  catch { throw new Error('Template message response is invalid'); }
+  if (isMessageObject(data) && (data.success === false || (Array.isArray(data.errors) && data.errors.length > 0))) {
+    throw new Error('Template message response reports failure');
+  }
+  return data;
+}
 
 export interface TemplateProviderConfig {
   name: string;
@@ -219,14 +246,9 @@ export class TemplateProvider extends BaseProvider {
     if (domains.mode === 'static') return domains.list || [];
 
     if (domains.mode === 'from_create') {
-      try {
-        const inbox = await this.createInbox();
-        const domain = inbox.address.split('@')[1];
-        return domain ? [domain] : [];
-      } catch (error) {
-        log.warn('failed to infer template provider domain from create call', { provider: this.cfg.name, error: errorMessage(error) });
-        return [];
-      }
+      // Discovery must never allocate an upstream inbox. The address is
+      // decided by an explicit create; only configured domains are known here.
+      return domains.list || [];
     }
 
     if (this.domainCache && this.domainCache.expiresAt > Date.now()) {
@@ -242,7 +264,7 @@ export class TemplateProvider extends BaseProvider {
     try {
       res = await fetchWithTimeout(url, { method: domains.method || 'GET', headers, body: serialized?.body });
     } catch (error) {
-      log.warn('template provider domain fetch failed', { provider: this.cfg.name, error: errorMessage(error) });
+      log.warn('template provider domain fetch failed', { provider: this.cfg.name, error: error });
       this.domainCache = { domains: [], expiresAt: Date.now() + TemplateProvider.DOMAIN_FAILURE_CACHE_MS };
       return [];
     }
@@ -266,12 +288,12 @@ export class TemplateProvider extends BaseProvider {
     return resolvedDomains;
   }
 
-  async createInbox(opts?: { domain?: string; username?: string }): Promise<InboxData> {
+  async createInbox(opts?: { domain?: string; username?: string; inboxId?: string; duration?: number }): Promise<InboxData> {
     let domain = opts?.domain;
     if (!domain && this.cfg.domains.mode !== 'from_create') {
       const domains = await this.getDomains();
       domain = domains[Math.floor(Math.random() * domains.length)];
-      if (!domain) throw new Error(`[${this.cfg.name}] No domains available`);
+      if (!domain) throw new NoAssetCreatedError(`[${this.cfg.name}] No domains available`);
     }
     const username = opts?.username || randomString(10);
     // The password is the upstream account's only credential (mailtm/mailgw
@@ -280,71 +302,157 @@ export class TemplateProvider extends BaseProvider {
     const vars: Record<string, string> = { username, domain: domain || '', address: domain ? `${username}@${domain}` : '', password: randomSecret() };
 
     const { create } = this.cfg;
-
-    let data: unknown = {};
-    if (!create.skip) {
-      const url = this.buildUrl(create.path, vars, 'provider');
-      const headers = this.buildGlobalHeaders();
-      const methodAllowsBody = create.method !== 'GET' && create.method !== 'HEAD';
-      const rawBody = create.body ? interpolateBody(create.body, vars) : (methodAllowsBody ? { address: vars.address, password: vars.password } : undefined);
-      const fetchOpts: RequestInit = { method: create.method, headers };
-      if (rawBody) {
-        const serialized = serializeBody(rawBody, create.bodyType);
-        headers['Content-Type'] = serialized.contentType;
-        fetchOpts.body = serialized.body;
-      }
-      const res = await fetchWithTimeout(url, fetchOpts);
-      if (!res.ok) {
-        const body = await res.text().catch(() => '');
-        log.warn('template provider create failed', {
-          provider: this.cfg.name,
-          status: res.status,
-          retryAfter: res.headers.get('Retry-After'),
-          body: body.slice(0, 500),
-        });
-        throw new UpstreamHttpError(
-          `[${this.cfg.name}] Create failed: ${res.status}`,
-          res.status,
-          res.headers.get('Retry-After'),
-          body.slice(0, 500),
-        );
-      }
-      data = await res.json();
-    }
-
-    const mappedAddress = create.skip ? null : resolvePath(data, create.responseMapping.address);
-    const address = (typeof mappedAddress === 'string' && mappedAddress) || vars.address;
+    // Persist the only password and the exact configuration before any create
+    // network I/O. Never recreate an account to recover a lost token response.
+    const recovery = beginCreationRecovery(this.cfg, vars, opts?.inboxId, opts?.duration);
+    let address = vars.address;
     const authData: Record<string, string> = { ...vars };
-    for (const [key, path] of Object.entries(create.responseMapping.authData)) {
-      const val = resolvePath(data, path);
-      if (val != null) authData[key] = String(val);
-    }
-
-    if (this.cfg.postCreate) {
-      const pc = this.cfg.postCreate;
-      const pcVars = { ...authData, address };
-      const pcUrl = this.buildUrl(pc.path, pcVars, 'provider');
-      const pcHeaders = this.buildGlobalHeaders();
-      const pcRawBody = pc.body ? interpolateBody(pc.body, pcVars) : undefined;
-      const pcSerialized = pcRawBody ? serializeBody(pcRawBody, pc.bodyType) : undefined;
-      if (pcSerialized) pcHeaders['Content-Type'] = pcSerialized.contentType;
-      const pcRes = await fetchWithTimeout(pcUrl, { method: pc.method, headers: pcHeaders, body: pcSerialized?.body });
-      if (pcRes.ok) {
-        const pcData = await pcRes.json();
-        for (const [key, path] of Object.entries(pc.responseMapping.authData)) {
-          const val = resolvePath(pcData, path);
-          if (val != null) authData[key] = String(val);
+    try {
+      if (!create.skip) {
+        const url = this.buildUrl(create.path, vars, 'provider');
+        const headers = this.buildGlobalHeaders();
+        const methodAllowsBody = create.method !== 'GET' && create.method !== 'HEAD';
+        const rawBody = create.body ? interpolateBody(create.body, vars) : (methodAllowsBody ? { address: vars.address, password: vars.password } : undefined);
+        const fetchOpts: RequestInit = { method: create.method, headers };
+        if (rawBody) {
+          const serialized = serializeBody(rawBody, create.bodyType);
+          headers['Content-Type'] = serialized.contentType;
+          fetchOpts.body = serialized.body;
         }
+        const res = await fetchWithTimeout(url, { ...fetchOpts, retryMode: 'never' });
+        const body = await res.text();
+        appendCreationResponse(recovery.id, 'create', res, body);
+        // Preserve any issued credentials even when the upstream also reports
+        // failure. Its HTTP status does not prove the create did not commit.
+        let data: unknown;
+        try { data = JSON.parse(body); } catch (cause) {
+          if (!res.ok) throw new UpstreamHttpError('Template create failed', res.status, res.headers.get('Retry-After'));
+          throw cause;
+        }
+        const mappedAddress = resolvePath(data, create.responseMapping.address);
+        if (typeof mappedAddress === 'string' && mappedAddress.trim()) address = mappedAddress;
+        this.mapCredentials(data, create.responseMapping.authData, authData);
+        checkpointCreation(recovery.id, 'attempting', address, authData);
+        if (!res.ok) throw new UpstreamHttpError('Template create failed', res.status, res.headers.get('Retry-After'));
+        if ((create.responseMapping.address && !(typeof mappedAddress === 'string' && mappedAddress.trim())) || !address.trim()) {
+          throw new Error('Template create response has no valid address');
+        }
+        this.validateCredentials(data, create.responseMapping.authData, authData, !this.cfg.postCreate);
       }
+      if (!address.trim()) throw new Error('Template create response has no valid address');
+      // Local templates have no response mapping to validate, but must still
+      // have every credential their actual authenticated requests require.
+      if (!this.cfg.postCreate) this.validateCredentials(undefined, {}, authData, true);
+      checkpointCreation(recovery.id, 'upstream_created', address, authData);
+    } catch (cause) {
+      log.warn('template provider create failed', { provider: this.cfg.name, status: httpStatus(cause), error: cause });
+      throw creationRecoveryFailure(recovery.id, cause, 'outcome_unknown');
     }
 
+    if (this.cfg.postCreate) return this.authenticateRecovery(recovery.id);
+
+    try { checkpointCreation(recovery.id, 'ready', address, authData); } catch (cause) {
+      throw creationRecoveryFailure(recovery.id, cause, this.cfg.postCreate ? 'auth_pending' : 'outcome_unknown');
+    }
     return {
       address,
       authData,
       provider: this.cfg.name,
       apiBase: this.cfg.apiBase,
-      expiresAt: create.expiresIn ? new Date(Date.now() + create.expiresIn * 1000).toISOString() : undefined,
+      expiresAt: recovery.expiresAt,
+      creationRecoveryId: recovery.id,
     };
+  }
+
+  /** The sole authentication entry point for both first creation and retry. */
+  async authenticateRecovery(id: string): Promise<InboxData> {
+    let acquired: ReturnType<typeof acquireCreationAuthentication>;
+    try { acquired = acquireCreationAuthentication(this.cfg.name, id); }
+    catch (cause) { throw new TemplateCreationRecoveryError(id, cause); }
+    const { row, operation } = acquired;
+    if (!operation) return recoveryInboxData(row);
+    // Mutable live template configuration must never influence an old paid
+    // account's credentials, endpoint, mapping, or lifetime.
+    const snapshot = new TemplateProvider(JSON.parse(row.config_snapshot) as TemplateProviderConfig);
+    return snapshot.authenticateOperation(row, operation);
+  }
+
+  private async authenticateOperation(row: CreationRecoveryRow, operation: CreationAuthOperation): Promise<InboxData> {
+    const authData = JSON.parse(row.auth_data) as Record<string, string>;
+    let status: number | undefined;
+    try {
+      const pc = this.cfg.postCreate;
+      if (pc) {
+        const originalVariables = JSON.parse(row.variables_json) as Record<string, string>;
+        const vars = { ...authData, address: row.address, password: originalVariables.password };
+        const headers = this.buildGlobalHeaders();
+        const rawBody = pc.body ? interpolateBody(pc.body, vars) : undefined;
+        const serialized = rawBody ? serializeBody(rawBody, pc.bodyType) : undefined;
+        if (serialized) headers['Content-Type'] = serialized.contentType;
+        // The signal created by fetchWithTimeout also bounds Response.text().
+        // The persistent 45s lease outlives this fixed 15s network budget.
+        const response = await fetchWithTimeout(this.buildUrl(pc.path, vars, 'provider'), {
+          method: pc.method, headers, body: serialized?.body, retryMode: 'never', timeout: CREATION_AUTH_TIMEOUT_MS,
+        });
+        status = response.status;
+        let body: string;
+        try { body = await response.text(); } catch (cause) {
+          if (!response.ok) throw new UpstreamHttpError('Template authentication failed', response.status, response.headers.get('Retry-After'));
+          throw cause;
+        }
+        // Even a stale operation must retain an issued token. These two
+        // append-only writes never change phase/auth_data/status/timestamps.
+        appendCreationResponse(row.id, 'authenticate', response, body, operation);
+        let data: unknown;
+        try { data = JSON.parse(body); } catch (cause) {
+          if (!response.ok) throw new UpstreamHttpError('Template authentication failed', response.status, response.headers.get('Retry-After'));
+          throw cause;
+        }
+        this.mapCredentials(data, pc.responseMapping.authData, authData);
+        appendCreationCredentials(row.id, operation, authData, response.status);
+        if (!response.ok) throw new UpstreamHttpError('Template authentication failed', response.status, response.headers.get('Retry-After'));
+        this.validateCredentials(data, pc.responseMapping.authData, authData, true);
+      } else {
+        this.validateCredentials(undefined, {}, authData, true);
+      }
+      return recoveryInboxData(finishCreationAuthentication(this.cfg.name, row.id, operation, 'ready', authData, status));
+    } catch (cause) {
+      let failure = cause;
+      try { finishCreationAuthentication(this.cfg.name, row.id, operation, 'auth_pending', authData, status); }
+      catch (fenceFailure) { failure = fenceFailure; }
+      log.warn('template provider authentication failed', { provider: this.cfg.name, status: httpStatus(failure), error: failure });
+      throw new TemplateCreationRecoveryError(row.id, failure);
+    }
+  }
+
+  private mapCredentials(data: unknown, mapping: Record<string, string>, authData: Record<string, string>): void {
+    for (const [key, path] of Object.entries(mapping)) {
+      const value = resolvePath(data, path);
+      // Numeric account IDs are common. Booleans/objects must never turn into
+      // plausible-looking bearer tokens such as "true" or "[object Object]".
+      if (typeof value === 'string') authData[key] = value;
+      else if (typeof value === 'number' && Number.isFinite(value)) authData[key] = String(value);
+    }
+  }
+
+  private validateCredentials(data: unknown, mapping: Record<string, string>, authData: Record<string, string>, requireInboxAuth: boolean): void {
+    const credentialFields = new Set<string>();
+    // fromList detail performs no authenticated request of its own. Even when
+    // postCreate will supply missing fields later, any actual credential the
+    // current response maps must already have the correct raw string type.
+    for (const endpoint of [this.cfg.messages, ...(this.cfg.messageDetail.fromList ? [] : [this.cfg.messageDetail]), this.cfg.deleteInbox]) {
+      if (endpoint?.authFrom === 'inbox') credentialFields.add(endpoint.authField || 'token');
+    }
+    const required = new Set([...Object.keys(mapping), ...(requireInboxAuth ? credentialFields : [])]);
+    for (const key of required) {
+      // Validate the raw mapping so a number cannot become a valid token by
+      // String coercion. Other finite numeric metadata remains compatible
+      // regardless of its configured field name (IDs, expiry, quota, etc.).
+      const value = mapping[key] ? resolvePath(data, mapping[key]) : authData[key];
+      if (typeof value === 'string' && value.trim()) continue;
+      if (!credentialFields.has(key) && typeof value === 'number' && Number.isFinite(value)) continue;
+      throw new Error('Template response has no valid credential');
+    }
   }
 
 
@@ -357,18 +465,23 @@ export class TemplateProvider extends BaseProvider {
     const serialized = rawBody ? serializeBody(rawBody, messages.bodyType) : undefined;
     if (serialized) headers['Content-Type'] = serialized.contentType;
     const res = await fetchWithTimeout(url, { method: messages.method || 'GET', headers, body: serialized?.body });
-    if (!res.ok) return [];
-    const data = await res.json();
+    const data = await readMessageResponse(res);
     const items = resolvePath(data, messages.resultPath || '$root');
-    if (!Array.isArray(items)) return [];
+    if (!Array.isArray(items)) throw new Error('Template message list is invalid');
+    const result = items.map((item) => {
+      const id = isMessageObject(item) ? readMessageId(resolvePath(item, messages.itemMapping.id)) : undefined;
+      if (id === undefined) throw new Error('Template message list item is invalid');
+      return {
+        id,
+        from: String(resolvePath(item, messages.itemMapping.from) || ''),
+        subject: String(resolvePath(item, messages.itemMapping.subject) || ''),
+        excerpt: String(resolvePath(item, messages.itemMapping.excerpt) || '').slice(0, 200),
+        receivedAt: this.messageTime(item, messages.itemMapping.receivedAt, messages.timestampFormat),
+      };
+    });
+    // A partial/invalid response must never replace the last validated list.
     this.cacheMessages(inbox.address, items);
-    return items.map((item) => ({
-      id: String(resolvePath(item, messages.itemMapping.id) || ''),
-      from: String(resolvePath(item, messages.itemMapping.from) || ''),
-      subject: String(resolvePath(item, messages.itemMapping.subject) || ''),
-      excerpt: String(resolvePath(item, messages.itemMapping.excerpt) || '').slice(0, 200),
-      receivedAt: this.messageTime(item, messages.itemMapping.receivedAt, messages.timestampFormat),
-    }));
+    return result;
   }
 
   private _lastMessagesByInbox = new Map<string, unknown[]>();
@@ -396,7 +509,7 @@ export class TemplateProvider extends BaseProvider {
         cached = this._lastMessagesByInbox.get(key);
       }
       const item = cached?.find((message) => String(resolvePath(message, messages.itemMapping.id)) === messageId);
-      if (!item) throw new Error(`[${this.cfg.name}] Message not found: ${messageId}`);
+      if (!item) throw new MessageNotFoundError();
       const im = messages.itemMapping;
       return {
         id: messageId,
@@ -416,11 +529,14 @@ export class TemplateProvider extends BaseProvider {
     const serialized = rawBody ? serializeBody(rawBody, messageDetail.bodyType) : undefined;
     if (serialized) headers['Content-Type'] = serialized.contentType;
     const res = await fetchWithTimeout(url, { method: messageDetail.method || 'GET', headers, body: serialized?.body });
-    if (!res.ok) throw new Error(`[${this.cfg.name}] getMessage failed: ${res.status}`);
-    const data = await res.json();
+    const data = await readMessageResponse(res);
     const m = messageDetail.responseMapping;
+    if (!isMessageObject(data) || !Object.values(m).some(path => {
+      const value = resolvePath(data, path);
+      return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value));
+    })) throw new Error('Template message detail is invalid');
     return {
-      id: String(resolvePath(data, m.id) || messageId),
+      id: readMessageId(resolvePath(data, m.id)) ?? messageId,
       from: String(resolvePath(data, m.from) || ''),
       subject: String(resolvePath(data, m.subject) || ''),
       excerpt: String((m.text && resolvePath(data, m.text)) || '').slice(0, 200),
@@ -436,6 +552,6 @@ export class TemplateProvider extends BaseProvider {
     const vars = { ...inbox.authData, address: inbox.address };
     const url = this.buildUrl(del.path, vars, del.authFrom, inbox, del.authField);
     const headers = del.authFrom === 'inbox' ? this.buildInboxHeaders(inbox, del.authField) : this.buildGlobalHeaders();
-    await fetchWithTimeout(url, { method: del.method, headers });
+    await fetchWithTimeout(url, { method: del.method, headers, retryMode: 'never' });
   }
 }

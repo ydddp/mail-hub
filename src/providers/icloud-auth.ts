@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { dirname, format, join } from 'path';
 import iCloudService from 'icloudjs';
+import { isNativeError } from 'node:util/types';
 import { config } from '../config.js';
 import { getDb, getRow } from '../db.js';
 import { createLogger } from '../logger.js';
@@ -136,7 +137,7 @@ function deleteTrustTokenBestEffort(appleId: string): boolean {
   } catch (e) {
     log.warn('could not erase iCloud trust token after account was deleted mid-flight', {
       appleId,
-      error: errorMessage(e),
+      error: e,
     });
     return false;
   }
@@ -210,12 +211,18 @@ function newService(account: SrpAccountRow): InstanceType<typeof IcloudService> 
     logger: (level: number, ...args: unknown[]) => {
       // 2 is the library's Warning level; below that it narrates every state
       // change, which is noise on a path an administrator triggers by hand.
-      const detail = args.map((a) => String(a)).join(' ');
+      const detail = args.flatMap((arg) => {
+        if (typeof arg === 'string') return [arg];
+        // The real library passes the keychain exception as an Error. Inspect
+        // only its own message data; never run third-party conversion hooks.
+        const message = isNativeError(arg) ? Object.getOwnPropertyDescriptor(arg, 'message')?.value : undefined;
+        return typeof message === 'string' ? [message] : [];
+      }).join(' ');
       // Explicit credentials keep authentication independent of the host
       // keychain, which is unavailable on the headless Linux deployment.
       const unavailableKeychain = detail.includes('Unable to save account credentials:')
         && detail.includes('libsecret-1.so.0');
-      if (level >= 2 && !unavailableKeychain) log.warn('icloudjs', { detail });
+      if (level >= 2 && !unavailableKeychain) log.warn('icloudjs', { accountId: account.id, libraryLevel: level });
     },
   });
   absorbFloatingRejections(service);
@@ -481,7 +488,7 @@ export async function listTrustedPhones(sessionId: string): Promise<TrustedPhone
     // only one is, so both shapes have to be accepted.
     return body.trustedPhoneNumbers ?? (body.trustedPhoneNumber ? [body.trustedPhoneNumber] : []);
   } catch (e) {
-    log.warn('could not read trusted phone numbers', { error: errorMessage(e) });
+    log.warn('could not read trusted phone numbers', { error: e });
     return [];
   }
 }

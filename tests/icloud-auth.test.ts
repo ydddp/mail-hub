@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { assertTestPath, removeTestPath } from './helpers/test-storage.js';
 import { getDb } from '../src/db.js';
 
 const authState = vi.hoisted(() => ({
@@ -45,7 +46,8 @@ vi.mock('icloudjs', () => {
   return { default: FakeService };
 });
 
-const { beginSrpLogin, completeSrpLogin, trustTokenPath, markAccountDeleted, deleteTrustToken, __resetDeleteTombstonesForTest } = await import('../src/providers/icloud-auth.js');
+const { beginSrpLogin, completeSrpLogin, trustTokenPath: rawTrustTokenPath, markAccountDeleted, deleteTrustToken, __resetDeleteTombstonesForTest } = await import('../src/providers/icloud-auth.js');
+const trustTokenPath = (appleId: string) => assertTestPath(rawTrustTokenPath(appleId));
 const { runRefillOnce } = await import('../src/providers/icloud-pool.js');
 const { setSetting } = await import('../src/db.js');
 
@@ -185,7 +187,7 @@ describe('SRP login', () => {
     deleteTrustToken('me@icloud.com');
     markAccountDeleted('me@icloud.com');
 
-    const path = trustTokenPath('me@icloud.com');
+    const path = assertTestPath(trustTokenPath('me@icloud.com'));
     const logSpy = obstructErase
       ? vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
       : undefined;
@@ -217,9 +219,11 @@ describe('SRP login', () => {
         // Delete wins: completion must have erased the file the library resurrected.
         expect(existsSync(path)).toBe(false);
       }
+      // Clear only the successful obstruction case so later sign-ins can use
+      // the path; an assertion failure leaves its evidence untouched.
+      if (obstructErase) removeTestPath(path);
     } finally {
       logSpy?.mockRestore();
-      if (obstructErase) rmSync(path, { recursive: true, force: true });
     }
   });
 
@@ -272,8 +276,11 @@ describe('SRP login', () => {
     });
 
     try {
-      libraryLogger?.(2, 'Unable to save account credentials:', 'Error: libsecret-1.so.0: cannot open shared object file');
+      libraryLogger?.(2, 'Unable to save account credentials:', new Error('libsecret-1.so.0: cannot open shared object file'));
       libraryLogger?.(2, 'Authentication failed: upstream network unavailable');
+      const toString = vi.fn(() => 'opaque-library-object-94');
+      libraryLogger?.(3, 'opaque-library-token-93', { toString });
+      expect(toString).not.toHaveBeenCalled();
     } finally {
       logSpy.mockRestore();
     }
@@ -283,8 +290,12 @@ describe('SRP login', () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>)
       .filter((entry) => entry.level === 'warn' && entry.module === 'icloud-auth' && entry.msg === 'icloudjs');
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]?.detail).toContain('Authentication failed');
+    // Library warnings remain visible by account and severity. Arbitrary
+    // upstream text is no longer part of the logging contract.
+    expect(warnings).toHaveLength(2);
+    expect(warnings.map(entry => [entry.accountId, entry.libraryLevel])).toEqual([['acc-s', 2], ['acc-s', 3]]);
+    expect(warnings.every(entry => !('detail' in entry))).toBe(true);
+    expect(output.join('')).not.toContain('opaque-library');
   });
 
   it('asks Apple to remember the session', async () => {

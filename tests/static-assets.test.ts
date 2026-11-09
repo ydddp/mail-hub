@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { mkdirSync, writeFileSync } from 'fs';
+import { assertTestPath, createTestDirectory } from './helpers/test-storage.js';
 import { join } from 'path';
 import { Hono } from 'hono';
 import { loadPublicBundle, registerAssetRoutes } from '../src/static-assets.js';
@@ -14,7 +14,7 @@ import { app as realApp } from './helpers/http.js';
 let dir: string;
 
 function write(path: string, body: string) {
-  const full = join(dir, path);
+  const full = assertTestPath(join(dir, path));
   mkdirSync(join(full, '..'), { recursive: true });
   writeFileSync(full, body);
 }
@@ -30,7 +30,7 @@ function fixtureApp() {
 }
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'mailhub-public-'));
+  dir = createTestDirectory('public-');
   write('index.html', '<link rel="stylesheet" href="/assets/css/base.css"><script src="/assets/js/app.js"></script><div id="v-docs" data-src="/assets/views/docs.html"></div>');
   write('css/base.css', 'body{color:red}');
   write('js/app.js', 'console.log(1)');
@@ -38,8 +38,6 @@ beforeEach(() => {
   write('extensions.js', 'optional script');
   write('logo.png', 'not text');
 });
-
-afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe('loadPublicBundle', () => {
   // A module imported by plain path but loaded by the entry tag under a hashed

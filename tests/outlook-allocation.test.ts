@@ -5,6 +5,41 @@ import { OutlookProvider } from '../src/providers/outlook.js';
 import { app, authHeaders, jsonHeaders } from './helpers/http.js';
 
 describe('Outlook account allocation', () => {
+  it('gives concurrent OAuth workers distinct pending accounts and excludes active manual sessions', async () => {
+    for (const email of ['manual@outlook.test', 'worker-a@outlook.test', 'worker-b@outlook.test']) {
+      getDb().prepare(`INSERT INTO outlook_accounts (email, password, token_status) VALUES (?, 'pw', 'pending_oauth')`).run(email);
+    }
+    const manual = await app.request('/api/outlook/oauth/start', {
+      method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ email: 'manual@outlook.test' }),
+    });
+    expect(manual.status).toBe(200);
+    const claims = await Promise.all(Array.from({ length: 3 }, () => app.request('/api/outlook/oauth/automation/claim', {
+      method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ includeFailed: true }),
+    })));
+    expect(claims.map((res) => res.status).sort()).toEqual([200, 200, 404]);
+    const emails = await Promise.all(claims.filter((res) => res.ok).map(async (res) => (await res.json() as { email: string }).email));
+    expect(emails.sort()).toEqual(['worker-a@outlook.test', 'worker-b@outlook.test']);
+    expect(getRow<{ count: number }>(getDb(), 'SELECT COUNT(*) AS count FROM outlook_oauth_sessions')?.count).toBe(3);
+  });
+
+  it.each(['expired', 'failed'])('allows an OAuth worker to reclaim a %s session without losing its history', async (state) => {
+    getDb().prepare(`INSERT INTO outlook_accounts (email, password, token_status) VALUES ('reclaim@outlook.test', 'pw', 'pending_oauth')`).run();
+    const request = () => app.request('/api/outlook/oauth/automation/claim', {
+      method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ includeFailed: true }),
+    });
+    const first = await request();
+    expect(first.status).toBe(200);
+    const original = await first.json() as { sessionId: string };
+    if (state === 'expired') getDb().prepare(`UPDATE outlook_oauth_sessions SET expires_at = datetime('now', '-1 minute') WHERE id = ?`).run(original.sessionId);
+    else getDb().prepare(`UPDATE outlook_oauth_sessions SET status = 'failed' WHERE id = ?`).run(original.sessionId);
+    const second = await request();
+    expect(second.status).toBe(200);
+    const replacement = await second.json() as { sessionId: string };
+    expect(replacement.sessionId).not.toBe(original.sessionId);
+    expect(getRow(getDb(), 'SELECT oauth_last_session_id FROM outlook_accounts WHERE email = ?', 'reclaim@outlook.test')).toEqual({ oauth_last_session_id: replacement.sessionId });
+    expect(getRow<{ count: number }>(getDb(), 'SELECT COUNT(*) AS count FROM outlook_oauth_sessions')?.count).toBe(2);
+  });
+
   it('ignores a stale release for an account someone else now holds', async () => {
     const db = getDb();
     db.prepare(

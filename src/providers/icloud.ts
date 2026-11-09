@@ -6,9 +6,10 @@ import {
   fetchMessagesAcrossMailboxes,
   type ImapCreds,
 } from './imap-core.js';
-import { MAILHUB_HME_LABEL, type IcloudClient } from './icloud-client.js';
+import { MAILHUB_HME_LABEL, validateHmeSnapshot, type IcloudClient } from './icloud-client.js';
 import { allRows, getDb, getRow } from '../db.js';
 import { createLogger } from '../logger.js';
+import { NoAssetCreatedError } from '../errors.js';
 
 const log = createLogger('icloud');
 
@@ -119,38 +120,44 @@ export async function reconcileAccount(
   accountId: string,
   client: Pick<IcloudClient, 'listWithForwarding'>,
 ): Promise<{ adopted: string[]; unowned: string[] }> {
-  const { hmeEmails } = await client.listWithForwarding();
+  // Validate every entry before any write, even when a caller supplies a client
+  // implementation rather than the HTTP client. Missing aliases prove nothing.
+  const { hmeEmails } = validateHmeSnapshot(await client.listWithForwarding());
   const db = getDb();
-
-  const known = new Set(
-    allRows<{ anonymous_id: string }>(db, `SELECT anonymous_id FROM icloud_addresses`)
-      .map((r) => r.anonymous_id),
-  );
-
-  const adopted: string[] = [];
-  const unowned: string[] = [];
-
-  const insert = db.prepare(
-    `INSERT OR IGNORE INTO icloud_addresses (hme, account_id, anonymous_id, state) VALUES (?, ?, ?, ?)`,
-  );
-
-  for (const entry of hmeEmails) {
-    if (known.has(entry.anonymousId)) continue;
-    if (entry.label !== MAILHUB_HME_LABEL) {
-      unowned.push(entry.hme);
-      continue;
+  return db.transaction(() => {
+    const known = new Set(
+      allRows<{ anonymous_id: string }>(db, `SELECT anonymous_id FROM icloud_addresses`)
+        .map((r) => r.anonymous_id),
+    );
+    const adopted: string[] = [];
+    const unowned: string[] = [];
+    const update = db.prepare(
+      `UPDATE icloud_addresses
+          SET upstream_active = ?, upstream_checked_at = datetime('now'),
+              state = CASE WHEN ? = 0 AND state = 'free' THEN 'retired' ELSE state END
+        WHERE account_id = ? AND anonymous_id = ?`,
+    );
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO icloud_addresses
+        (hme, account_id, anonymous_id, state, upstream_active, upstream_checked_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+    );
+    for (const entry of hmeEmails) {
+      const active = entry.isActive ? 1 : 0;
+      // Identity is scoped to the account; a renamed hme must not move our PK
+      // or assignment. CASE reads the current state after the network await.
+      if (update.run(active, active, accountId, entry.anonymousId).changes) continue;
+      if (known.has(entry.anonymousId)) continue;
+      if (entry.label !== MAILHUB_HME_LABEL) {
+        unowned.push(entry.hme);
+        continue;
+      }
+      const state = active ? 'free' : 'retired';
+      const res = insert.run(entry.hme, accountId, entry.anonymousId, state, active);
+      if (res.changes === 1 && state === 'free') adopted.push(entry.hme);
     }
-    // An alias Apple lists as inactive was deactivated — by the retire path, or
-    // by hand in Apple's own UI. Adopting it into the free pool would hand a
-    // tenant an address that silently receives nothing, and they would sit
-    // waiting for a verification code that can never arrive. Take it back under
-    // management, but as retired.
-    const state = entry.isActive === false ? 'retired' : 'free';
-    const res = insert.run(entry.hme, accountId, entry.anonymousId, state);
-    if (res.changes === 1 && state === 'free') adopted.push(entry.hme);
-  }
-
-  return { adopted, unowned };
+    return { adopted, unowned };
+  })();
 }
 
 /**
@@ -174,7 +181,8 @@ export function reapOrphanedAddresses(): number {
   // row whose age is unknowable, which reaps as before.
   const result = getDb().prepare(
     `UPDATE icloud_addresses
-        SET state = 'free', assigned_inbox_id = NULL, assigned_at = NULL
+        SET state = CASE WHEN upstream_active = 0 THEN 'retired' ELSE 'free' END,
+            assigned_inbox_id = NULL, assigned_at = NULL
       WHERE state = 'assigned'
         AND assigned_inbox_id IS NOT NULL
         AND assigned_inbox_id NOT IN (SELECT id FROM inboxes)
@@ -268,7 +276,8 @@ export class IcloudProvider extends BaseProvider {
         `SELECT DISTINCT substr(a.hme, instr(a.hme, '@') + 1) AS domain
            FROM icloud_addresses a
            JOIN icloud_accounts c ON c.id = a.account_id
-          WHERE a.state = 'free' AND c.status IN ('active', 'degraded')`,
+          WHERE a.state = 'free' AND (a.upstream_active IS NULL OR a.upstream_active = 1)
+            AND c.status IN ('active', 'degraded')`,
       ).map((r) => r.domain);
       return held.length ? held : ICLOUD_DOMAINS;
     }
@@ -317,7 +326,8 @@ export class IcloudProvider extends BaseProvider {
       `SELECT a.hme, a.account_id, a.anonymous_id
          FROM icloud_addresses a
          JOIN icloud_accounts c ON c.id = a.account_id
-        WHERE a.state = 'free' AND c.status IN ('active', 'degraded')${domainFilter}${accountFilter}
+        WHERE a.state = 'free' AND (a.upstream_active IS NULL OR a.upstream_active = 1)
+          AND c.status IN ('active', 'degraded')${domainFilter}${accountFilter}
         ORDER BY a.use_count ASC, a.created_at ASC`,
       ...params,
     );
@@ -329,7 +339,7 @@ export class IcloudProvider extends BaseProvider {
                 assigned_inbox_id = ?,
                 assigned_at = datetime('now'),
                 use_count = use_count + 1
-          WHERE hme = ? AND state = 'free'`,
+          WHERE hme = ? AND state = 'free' AND (upstream_active IS NULL OR upstream_active = 1)`,
       ).run(inboxId, candidate.hme);
 
       if (claimed.changes === 1) {
@@ -346,7 +356,7 @@ export class IcloudProvider extends BaseProvider {
       }
     }
 
-    throw new Error(
+    throw new NoAssetCreatedError(
       opts?.account
         ? `No free iCloud address for account '${opts.account}'; refill it, or omit the account to draw from any`
         : 'No free iCloud address in the pool; refill it before dispatching to this provider',
@@ -394,8 +404,9 @@ export class IcloudProvider extends BaseProvider {
     if (!inboxId) return;
     getDb().prepare(
       `UPDATE icloud_addresses
-          SET state = 'free', assigned_inbox_id = NULL, assigned_at = NULL
-        WHERE assigned_inbox_id = ?`,
+          SET state = CASE WHEN upstream_active = 0 THEN 'retired' ELSE 'free' END,
+              assigned_inbox_id = NULL, assigned_at = NULL
+        WHERE assigned_inbox_id = ? AND state = 'assigned'`,
     ).run(inboxId);
   }
 }

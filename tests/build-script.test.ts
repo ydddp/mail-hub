@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { assertTestPath, createTestDirectory } from './helpers/test-storage.js';
 import { join, resolve } from 'path';
 
 // The server serves every file under dist/public. A deploy rebuilds in place, so a file deleted
@@ -12,13 +12,13 @@ const copyStep = build.match(/node --input-type=commonjs -e "(.+)"$/)?.[1];
 
 let dir: string;
 const write = (path: string, body: string) => {
-  mkdirSync(join(dir, path, '..'), { recursive: true });
-  writeFileSync(join(dir, path), body);
+  const full = assertTestPath(join(dir, path));
+  mkdirSync(join(full, '..'), { recursive: true });
+  writeFileSync(full, body);
 };
 
 describe('build: copying the SPA into dist', () => {
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'mh-build-')); });
-  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+  beforeEach(() => { dir = createTestDirectory('build-'); });
 
   it('leaves dist/public an exact copy of src/public, dropping files the source no longer has', () => {
     expect(copyStep).toBeTruthy();

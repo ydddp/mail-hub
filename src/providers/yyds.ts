@@ -3,7 +3,7 @@ import { BaseProvider, PROVIDER, type InboxData, type Message, type MessageDetai
 import { allRows, getDb, getRow } from '../db.js';
 import { fetchWithTimeout, formatSender, todayDateString } from '../utils.js';
 import { createLogger } from '../logger.js';
-import { errorMessage, logIgnoredError, UpstreamHttpError } from '../errors.js';
+import { logIgnoredError, NoAssetCreatedError, UpstreamHttpError } from '../errors.js';
 import type Database from 'better-sqlite3';
 
 const API_BASE = 'https://maliapi.215.im/v1';
@@ -70,6 +70,27 @@ interface YydsResponse<T> {
   error?: string;
 }
 
+function isMessageObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readMessageId(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+async function readMessageResponse(response: Response, operation: 'message' | 'token' = 'message'): Promise<Record<string, unknown>> {
+  if (!response.ok) throw new UpstreamHttpError(`YYDS ${operation} read failed`, response.status, response.headers.get('Retry-After'));
+  let json: unknown;
+  try { json = await response.json(); }
+  catch { throw new Error(`YYDS ${operation} response is invalid`); }
+  if (!isMessageObject(json) || json.success !== true || !isMessageObject(json.data)) {
+    throw new Error(`YYDS ${operation} response is invalid`);
+  }
+  return json.data;
+}
+
 interface CreateFailure {
   /** HTTP status, or 0 for a 2xx response whose body reported failure. */
   status: number;
@@ -77,8 +98,21 @@ interface CreateFailure {
   retryAfter: string | null;
 }
 
+/** Only these explicit scope refusals establish that another create is safe. */
+function isWildcardScopeRefusal(failure: CreateFailure): boolean {
+  if (failure.status === 403 && isDomainScopeError(failure.errText)) return true;
+  try {
+    const code = (JSON.parse(failure.errText) as { errorCode?: unknown }).errorCode;
+    return (failure.status === 400 && code === 'wildcard_rule_not_enabled_for_domain')
+      || (failure.status === 403 && code === 'permission_denied');
+  } catch {
+    return false;
+  }
+}
+
 function isCreatedAccount(account: YydsAccount | undefined): account is Required<Pick<YydsAccount, 'id' | 'address' | 'token'>> & YydsAccount {
-  return Boolean(account?.id && account.address && account.token);
+  return [account?.id, account?.address, account?.token]
+    .every(value => typeof value === 'string' && value.trim().length > 0);
 }
 
 export class YydsProvider extends BaseProvider {
@@ -178,7 +212,7 @@ export class YydsProvider extends BaseProvider {
       if (domains.length > 0) this.writeCachedDomains(domains);
       return domains.length > 0 ? [...new Set(domains)] : this.fallbackToCachedDomains();
     } catch (error) {
-      log.warn('failed to refresh YYDS domains, using cache', { error: errorMessage(error) });
+      log.warn('failed to refresh YYDS domains, using cache', { error: error });
       return this.fallbackToCachedDomains();
     }
   }
@@ -264,7 +298,7 @@ export class YydsProvider extends BaseProvider {
 
     if (res.ok) {
       const json = await res.json() as YydsResponse<YydsAccount>;
-      if (json.success && isCreatedAccount(json.data)) {
+      if (json.success === true && isCreatedAccount(json.data)) {
         return {
           inbox: {
             address: json.data.address,
@@ -309,16 +343,16 @@ export class YydsProvider extends BaseProvider {
       log.info('YYDS key promoted to own-domain', { address: result.inbox.address });
       return result.inbox;
     }
-    // A domainless refusal is the only proof that this key cannot wildcard —
-    // but only a deterministic one. 429/5xx/network say nothing.
-    const deterministic = result.status >= 400 && result.status < 500 && result.status !== 429;
-    if (mayDemote && deterministic) this.markWildcard(apiKey, false);
+    // An uncertain write must end here. Recovery has no later create path, so
+    // report this probe's failure rather than the earlier public-domain 403.
+    if (!mayDemote || !isWildcardScopeRefusal(result)) throw this.upstreamError(result);
+    this.markWildcard(apiKey, false);
     return null;
   }
 
   async createInbox(opts?: { domain?: string; username?: string; subdomain?: string; inboxId?: string }): Promise<InboxData> {
     const selected = this.pickKey(true);
-    if (!selected) throw new Error('YYDS 账号池中无可用 API Key（可能全部达到日配额或冷却中）');
+    if (!selected) throw new NoAssetCreatedError('YYDS 账号池中无可用 API Key（可能全部达到日配额或冷却中）');
 
     const localPart = opts?.username ?? `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     const body: Record<string, string> = { localPart };
@@ -329,47 +363,31 @@ export class YydsProvider extends BaseProvider {
     const unknownKey = selected.supportsWildcard === null;
 
     if (opts?.subdomain || selected.supportsWildcard !== 0) {
-      let scopeRefusal: CreateFailure | null = null;
-      try {
-        const attempt = await this.createVia('/accounts/wildcard', selected.apiKey, body, opts?.inboxId);
-        if ('inbox' in attempt) {
-          if (unknownKey) this.markWildcard(selected.apiKey, true);
-          this.recordUsage(selected.apiKey);
-          return attempt.inbox;
-        }
-        if (attempt.status === 429) {
-          throw new UpstreamHttpError('YYDS 创建邮箱失败: 429', 429, attempt.retryAfter);
-        }
-
-        if (!body.domain) {
-          // Nothing but the key was in this request, so the refusal is about
-          // the key: it cannot mint on a domain of its own.
-          if (unknownKey) this.markWildcard(selected.apiKey, false);
-        } else if (unknownKey) {
-          // The refusal is about the domain we were handed — 400
-          // wildcard_rule_not_enabled_for_domain, or 403 permission_denied when
-          // that domain's wildcard rule is someone else's. Neither says whether
-          // THIS key owns a domain, so ask the question that does.
-          const inbox = await this.probeOwnDomain(selected.apiKey, body, opts?.inboxId, true);
-          if (inbox) return inbox;
-        }
-
-        // The public endpoint would refuse the same domain for the same reason.
-        if (isDomainScopeError(attempt.errText)) scopeRefusal = attempt;
-      } catch (e) {
-        if (e instanceof UpstreamHttpError) throw e;
-        if (!(e instanceof TypeError)) log.warn('wildcard inbox attempt failed', { error: errorMessage(e) });
+      const attempt = await this.createVia('/accounts/wildcard', selected.apiKey, body, opts?.inboxId);
+      if ('inbox' in attempt) {
+        if (unknownKey) this.markWildcard(selected.apiKey, true);
+        this.recordUsage(selected.apiKey);
+        return attempt.inbox;
       }
-
-      // Report upstream's own words when it gave any, rather than a guess.
-      // Either way the public endpoint is not tried: it would be refused for
-      // exactly the same reason.
-      if (scopeRefusal) throw this.upstreamError(scopeRefusal);
+      // Network, parsing and post-create storage errors propagate as well:
+      // none can prove that the upstream did not already allocate an inbox.
+      if (!isWildcardScopeRefusal(attempt)) throw this.upstreamError(attempt);
       if (selected.supportsWildcard === 1) {
+        if (isDomainScopeError(attempt.errText)) throw this.upstreamError(attempt);
         // Falling through would hand an own-domain key a public domain outside
         // its scope. Fail with a cause the operator can act on.
         throw new Error('YYDS 创建邮箱失败: 自有域名 Key 的 wildcard 接口未返回地址，公共域名不在该 Key 的授权范围内');
       }
+
+      if (!body.domain) {
+        // Only the explicit domainless scope refusal can demote an unknown key.
+        if (unknownKey) this.markWildcard(selected.apiKey, false);
+      } else if (unknownKey) {
+        const inbox = await this.probeOwnDomain(selected.apiKey, body, opts?.inboxId, true);
+        if (inbox) return inbox;
+      }
+      // The public endpoint would refuse the same domain for the same reason.
+      if (isDomainScopeError(attempt.errText)) throw this.upstreamError(attempt);
     }
 
     const fallbackKey = selected.supportsWildcard === 0 ? selected : (this.pickKey(false) ?? selected);
@@ -410,7 +428,7 @@ export class YydsProvider extends BaseProvider {
     );
   }
 
-  private async refreshToken(inbox: InboxData): Promise<string | null> {
+  private async refreshToken(inbox: InboxData): Promise<string> {
     const res = await fetchWithTimeout(`${inbox.apiBase || API_BASE}/token`, {
       method: 'POST',
       headers: {
@@ -419,12 +437,12 @@ export class YydsProvider extends BaseProvider {
       },
       body: JSON.stringify({ address: inbox.authData.address }),
     });
-    if (!res.ok) return null;
-    const json = await res.json() as YydsResponse<{ token?: string }>;
-    if (!json.success || !json.data?.token) return null;
+    const data = await readMessageResponse(res, 'token');
+    if (typeof data.token !== 'string' || !data.token.trim()) throw new Error('YYDS token response is invalid');
+    const token = data.token;
 
     const db = getDb();
-    const newAuthData = { ...inbox.authData, tempToken: json.data.token };
+    const newAuthData = { ...inbox.authData, tempToken: token };
     // Update by inbox id, not address: the same YYDS address can appear on both
     // the current row and closed history rows, and matching on address would
     // overwrite auth_data on all of them — writing this inbox's fresh token onto
@@ -435,7 +453,7 @@ export class YydsProvider extends BaseProvider {
       ).run(JSON.stringify(newAuthData), inbox.authData.inboxId);
     }
 
-    return json.data.token;
+    return token;
   }
 
   private authHeaders(inbox: InboxData): Record<string, string> {
@@ -454,23 +472,25 @@ export class YydsProvider extends BaseProvider {
 
     if (res.status === 401 && !inbox.authData.apiKey && inbox.authData.tempToken) {
       const newToken = await this.refreshToken(inbox);
-      if (!newToken) throw new Error('YYDS token 已过期且刷新失败');
       res = await fetchWithTimeout(`${base}/messages?address=${addr}`, {
         headers: { Authorization: `Bearer ${newToken}` },
       });
     }
 
-    if (!res.ok) return [];
-    const json = await res.json() as YydsResponse<{ messages?: YydsMessage[] }>;
-    if (!json.success || !json.data?.messages) return [];
-
-    return json.data.messages.map((m) => ({
-      id: m.id || '',
-      from: formatSender(m.from || {}),
-      subject: m.subject || '',
-      excerpt: '',
-      receivedAt: providerTime(m.createdAt),
-    }));
+    const data = await readMessageResponse(res);
+    if (!Array.isArray(data.messages)) throw new Error('YYDS message list is invalid');
+    return data.messages.map((item: unknown) => {
+      const id = isMessageObject(item) ? readMessageId(item.id) : undefined;
+      if (id === undefined) throw new Error('YYDS message list item is invalid');
+      const m = item as YydsMessage;
+      return {
+        id,
+        from: formatSender(m.from || {}),
+        subject: m.subject || '',
+        excerpt: '',
+        receivedAt: providerTime(m.createdAt),
+      };
+    });
   }
 
   async getMessage(inbox: InboxData, messageId: string): Promise<MessageDetail> {
@@ -481,14 +501,17 @@ export class YydsProvider extends BaseProvider {
     const res = await fetchWithTimeout(`${base}/messages/${messageId}?address=${addr}`, {
       headers: this.authHeaders(inbox),
     });
-    if (!res.ok) throw new Error(`YYDS 获取邮件失败: ${res.status}`);
-
-    const json = await res.json() as YydsResponse<YydsMessage>;
-    if (!json.success || !json.data) throw new Error('YYDS 获取邮件失败');
-    const m = json.data;
+    const data = await readMessageResponse(res);
+    if (!['id', 'from', 'subject', 'createdAt', 'text', 'html'].some(field => {
+      const value = data[field];
+      return typeof value === 'string' || (typeof value === 'number' && Number.isFinite(value))
+        || (field === 'from' && isMessageObject(value))
+        || (field === 'html' && Array.isArray(value) && value.every(part => typeof part === 'string'));
+    })) throw new Error('YYDS message detail is invalid');
+    const m = data as YydsMessage;
 
     return {
-      id: m.id || messageId,
+      id: readMessageId(m.id) ?? messageId,
       from: formatSender(m.from || {}),
       subject: m.subject || '',
       excerpt: '',

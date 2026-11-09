@@ -1,9 +1,11 @@
 import { parseTimestamp, providerTime } from '../time.js';
 import { ImapFlow, type SearchObject } from 'imapflow';
 import { createHash } from 'crypto';
-import type { Message, MessageDetail } from './base.js';
+import { MESSAGE_RECIPIENTS, type Message, type MessageDetail, type MailboxScanControl, type MailboxScanMeta } from './base.js';
 import { createLogger } from '../logger.js';
-import { errorMessage, logIgnoredError } from '../errors.js';
+import { errorMessage, logIgnoredError, MessageNotFoundError } from '../errors.js';
+import { foldAsciiCase } from '../mail-address.js';
+import type { HistoryFolder, HistoryReadControl } from '../outlook-history.js';
 
 const log = createLogger('imap-core');
 
@@ -192,33 +194,41 @@ async function acquire(creds: ImapCreds): Promise<{ client: ImapFlow; entry: Poo
   }
 }
 
-/** Case-insensitive exact address match against the envelope recipients. */
+/** Exact address match with ASCII case folding against envelope recipients. */
 function addressedTo(
   envelope: { to?: { address?: string }[]; cc?: { address?: string }[] } | undefined,
   recipient: string,
   strictRecipient = false,
 ): boolean {
   const all = [...(envelope?.to ?? []), ...(envelope?.cc ?? [])];
-  // A catch-all mailbox fails open for Bcc-only mail. Personal forwarding
-  // mailboxes fail closed because an unverifiable message may be private.
+  // Strict tenant reads require verifiable ownership; an empty envelope
+  // cannot establish which recipient owns a Bcc-only or private message.
   if (all.length === 0) return !strictRecipient;
-  const want = recipient.toLowerCase();
-  return all.some((a) => (a.address ?? '').toLowerCase() === want);
+  const want = foldAsciiCase(recipient);
+  return all.some((a) => foldAsciiCase(a.address ?? '') === want);
+}
+
+/** Only an omitted, non-strict scope permits an administrator mailbox read. */
+function assertRecipientScope(opts: { recipient?: string; strictRecipient?: boolean }): void {
+  if ((opts.strictRecipient || opts.recipient !== undefined) && !opts.recipient?.trim()) {
+    throw new MessageNotFoundError();
+  }
 }
 
 /**
  * List the newest messages matching `criteria`.
  *
- * The criteria is a parameter rather than a fixed `{ to }` because two
- * providers sort the same shared mailbox by different recipient evidence:
- * a catch-all domain answers on To, and which header an iCloud alias
- * survives in is settled empirically (see scripts/verify-icloud-imap.ts).
+ * Search criteria follows each provider's delivery path: catch-all and
+ * Outlook aliases search To/Cc, while iCloud forwarding headers are verified
+ * empirically (see scripts/verify-icloud-imap.ts). Exact envelope matching
+ * remains the ownership check after the search.
  */
 export async function fetchMessagesBySearch(
   creds: ImapCreds,
   criteria: SearchObject,
   opts: { limit?: number; recipient?: string; strictRecipient?: boolean; mailbox?: string } = {},
 ): Promise<Message[]> {
+  assertRecipientScope(opts);
   const limit = opts.limit ?? POLL_FETCH_LIMIT;
   const { client, entry } = await acquire(creds);
   try {
@@ -232,8 +242,10 @@ export async function fetchMessagesBySearch(
         // SEARCH narrows; this decides. TO is a substring match on the
         // envelope field, so the search alone would hand one tenant another
         // tenant's mail whenever one address is a prefix of the other.
-        if (opts.recipient && !addressedTo(fetched.envelope, opts.recipient, opts.strictRecipient)) continue;
+        if (opts.recipient !== undefined && !addressedTo(fetched.envelope, opts.recipient, opts.strictRecipient)) continue;
         messages.push({
+          [MESSAGE_RECIPIENTS]: [...(fetched.envelope?.to ?? []), ...(fetched.envelope?.cc ?? [])]
+            .map(recipient => recipient.address ?? '').filter(address => !!address.trim()),
           id: String(fetched.uid),
           from: fetched.envelope?.from?.[0]?.address ?? '',
           subject: fetched.envelope?.subject ?? '',
@@ -256,43 +268,41 @@ export async function fetchMessagesBySearch(
 /**
  * Read one message by UID.
  *
- * `opts.recipient` is not optional in spirit: a UID names a message in the
- * whole shared mailbox, and callers reach this with an id straight off the
- * request path. Without the check, a tenant who guesses a UID — they are small
- * sequential integers — reads a neighbour's body, verification code included,
- * even though the listing correctly hid it.
+ * Tenant-scoped callers supply `opts.recipient`: a UID names a message in the
+ * whole shared mailbox, and a guessed sequential UID must not expose another
+ * tenant's body or verification code. Admin whole-mailbox reads intentionally
+ * omit the recipient check.
  */
 export async function fetchMessageDetail(
   creds: ImapCreds,
   uid: string,
-  opts: { recipient?: string; strictRecipient?: boolean; mailbox?: string } = {},
+  opts: { recipient?: string; strictRecipient?: boolean; mailbox?: string; uidValidity?: string; control?: MailboxScanControl } = {},
 ): Promise<MessageDetail> {
-  const { client, entry } = await acquire(creds);
+  assertRecipientScope(opts);
+  const run = <T>(operation: () => Promise<T>) => opts.control ? opts.control.run(operation) : operation();
+  const { client, entry } = await run(() => acquire(creds));
   try {
-    const lock = await client.getMailboxLock(opts.mailbox ?? 'INBOX', { readOnly: true });
+    const lock = await run(() => client.getMailboxLock(opts.mailbox ?? 'INBOX', { readOnly: true }));
     try {
-      const fetched = await client.fetchOne(uid, {
+      if (opts.uidValidity !== undefined && String(client.mailbox && client.mailbox.uidValidity) !== opts.uidValidity) {
+        throw new Error('IMAP UIDVALIDITY changed; reload the matching scan');
+      }
+      const fetched = await run(() => client.fetchOne(uid, {
         uid: true,
         envelope: true,
         internalDate: true,
         bodyStructure: true,
-      }, { uid: true });
+      }, { uid: true }));
 
-      if (!fetched) throw new Error(`Message ${uid} not found`);
+      if (!fetched) throw new MessageNotFoundError();
 
       // Same error as a genuinely absent UID, deliberately: distinguishing the
       // two would turn this endpoint into an oracle for which UIDs are live.
-      //
-      // `strictRecipient` decides what a message with no envelope recipients at
-      // all means, and the right answer differs by whose mailbox is being read.
-      // A catch-all domain mailbox exists only to serve these addresses, so
-      // failing open there costs at most a stray while failing closed would
-      // silently lose Bcc-only mail. An iCloud forwarding mailbox is the
-      // operator's own personal inbox, where the same leniency hands a tenant
-      // their private mail — so that caller asks to fail closed.
-      if (opts.recipient) {
+      // Strict tenant callers also reject missing To/Cc evidence, including
+      // shared catch-all domains: the mailbox serves multiple tenants.
+      if (opts.recipient !== undefined) {
         if (!addressedTo(fetched.envelope, opts.recipient, opts.strictRecipient)) {
-          throw new Error(`Message ${uid} not found`);
+          throw new MessageNotFoundError();
         }
       }
 
@@ -302,9 +312,14 @@ export async function fetchMessageDetail(
       // quoted-printable soft breaks cannot split a verification code the
       // way a raw toString() left them.
       const readPart = async (part: string): Promise<string> => {
-        const { meta, content } = await client.download(uid, part, { uid: true });
+        const { meta, content } = await run(() => client.download(uid, part, { uid: true }));
         const chunks: Buffer[] = [];
-        for await (const chunk of content) chunks.push(chunk as Buffer);
+        const iterator = content[Symbol.asyncIterator]();
+        while (true) {
+          const chunk = await run(() => iterator.next());
+          if (chunk.done) break;
+          chunks.push(chunk.value as Buffer);
+        }
         return decodeBody(Buffer.concat(chunks), meta?.charset);
       };
 
@@ -312,17 +327,21 @@ export async function fetchMessageDetail(
       let html = '';
       if (parts.text) {
         try { text = await readPart(parts.text); } catch (error) {
-          log.warn('failed to read IMAP text body part', { poolKey: creds.poolKey, uid, part: parts.text, error: errorMessage(error) });
+          if (opts.control) throw error;
+          log.warn('failed to read IMAP text body part', { poolKey: creds.poolKey, uid, part: parts.text, error: error });
         }
       }
       if (parts.html) {
         try { html = await readPart(parts.html); } catch (error) {
-          log.warn('failed to read IMAP html body part', { poolKey: creds.poolKey, uid, part: parts.html, error: errorMessage(error) });
+          if (opts.control) throw error;
+          log.warn('failed to read IMAP html body part', { poolKey: creds.poolKey, uid, part: parts.html, error: error });
         }
       }
 
       return {
         id: uid,
+        [MESSAGE_RECIPIENTS]: [...(fetched.envelope?.to ?? []), ...(fetched.envelope?.cc ?? [])]
+          .map(recipient => recipient.address ?? '').filter(address => !!address.trim()),
         from: fetched.envelope?.from?.[0]?.address ?? '',
         subject: fetched.envelope?.subject ?? '',
         excerpt: text.slice(0, 200),
@@ -380,10 +399,11 @@ export function isImapAuthenticationError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && (error as { authenticationFailed?: unknown }).authenticationFailed === true);
 }
 
-export async function findMailboxBySpecialUse(creds: ImapCreds, specialUse: string): Promise<string | undefined> {
-  const { client, entry } = await acquire(creds);
+export async function findMailboxBySpecialUse(creds: ImapCreds, specialUse: string, control?: Pick<MailboxScanControl, 'run'>): Promise<string | undefined> {
+  const run = <T>(operation: () => Promise<T>) => control ? control.run(operation) : operation();
+  const { client, entry } = await run(() => acquire(creds));
   try {
-    const mailboxes = await client.list();
+    const mailboxes = await run(() => client.list());
     return mailboxes.find((mailbox) => mailbox.specialUse?.toLowerCase() === specialUse.toLowerCase())?.path;
   } catch (e) {
     evictClient(creds.poolKey, entry);
@@ -414,8 +434,8 @@ export const JUNK_SPECIAL_USE = '\\Junk';
  * caller's own retry path, which then spends a second doomed connection
  * before noticing.
  */
-export async function inboxAndJunkMailboxes(creds: ImapCreds): Promise<string[]> {
-  const junk = await findMailboxBySpecialUse(creds, JUNK_SPECIAL_USE);
+export async function inboxAndJunkMailboxes(creds: ImapCreds, control?: Pick<MailboxScanControl, 'run'>): Promise<string[]> {
+  const junk = await findMailboxBySpecialUse(creds, JUNK_SPECIAL_USE, control);
   return ['INBOX', ...(junk && junk.toUpperCase() !== 'INBOX' ? [junk] : [])];
 }
 
@@ -432,8 +452,8 @@ const UID_PATTERN = /^[1-9]\d{0,9}$/;
  * uid 7 and Junk uid 7 are different messages, and a detail read would serve
  * whichever mailbox it happened to open.
  */
-export function encodeMailboxMessageId(mailbox: string, uid: string): string {
-  return `${IMAP_ID_PREFIX}${Buffer.from(JSON.stringify([mailbox, uid])).toString('base64url')}`;
+export function encodeMailboxMessageId(mailbox: string, uid: string, uidValidity?: string): string {
+  return `${IMAP_ID_PREFIX}${Buffer.from(JSON.stringify(uidValidity === undefined ? [mailbox, uid] : [mailbox, uid, uidValidity])).toString('base64url')}`;
 }
 
 /**
@@ -446,8 +466,8 @@ export function encodeMailboxMessageId(mailbox: string, uid: string): string {
  */
 export function decodeMailboxMessageId(
   messageId: string,
-  opts: { allowBareUid?: boolean; invalidMessage?: string } = {},
-): { mailbox: string; uid: string } {
+  opts: { allowBareUid?: boolean; allowUidValidity?: boolean; invalidMessage?: string } = {},
+): { mailbox: string; uid: string; uidValidity?: string } {
   const invalid = (): Error => new Error(opts.invalidMessage ?? 'Invalid IMAP message id');
 
   if (!messageId.startsWith(IMAP_ID_PREFIX)) {
@@ -464,15 +484,129 @@ export function decodeMailboxMessageId(
 
   if (
     !Array.isArray(value)
-    || value.length !== 2
+    || (value.length !== 2 && !(opts.allowUidValidity && value.length === 3))
     || typeof value[0] !== 'string'
     || typeof value[1] !== 'string'
     || !UID_PATTERN.test(value[1])
     || Number(value[1]) > 0xffffffff
+    || (value.length === 3 && (typeof value[2] !== 'string' || !/^\d+$/.test(value[2])))
   ) {
     throw invalid();
   }
-  return { mailbox: value[0], uid: value[1] };
+  return { mailbox: value[0], uid: value[1], ...(value.length === 3 ? { uidValidity: value[2] } : {}) };
+}
+
+/** One backwards admin-history page; the UID ceiling is captured once per folder. */
+export async function fetchImapHistoryPage(creds: ImapCreds, folder: HistoryFolder, limit: number, control: HistoryReadControl): Promise<void> {
+  const { client, entry } = await control.run(() => acquire(creds));
+  try {
+    await control.read(async () => {
+      const lock = await control.run(() => client.getMailboxLock(folder.folder, { readOnly: true }));
+      try {
+        const validity = String(client.mailbox && client.mailbox.uidValidity);
+        if (!/^\d+$/.test(validity)) throw new Error('IMAP UIDVALIDITY unavailable; reload the mailbox');
+        if (folder.uidValidity !== undefined && folder.uidValidity !== validity) throw new Error('IMAP UIDVALIDITY changed; reload the mailbox');
+        folder.uidValidity = validity;
+        const before = folder.beforeUid;
+        const upper = folder.upperUid ?? (client.mailbox && client.mailbox.uidNext ? client.mailbox.uidNext - 1 : undefined);
+        const boundary = before !== undefined ? before - 1 : upper;
+        if (boundary !== undefined && boundary <= 0) { folder.next = null; return; }
+        const uids = ((await control.run(() => client.search(boundary === undefined ? { all: true } : { uid: `1:${boundary}` }, { uid: true }))) || []).slice().sort((a, b) => b - a);
+        folder.upperUid ??= upper ?? uids[0] ?? 0;
+        const page = uids.slice(0, limit);
+        const messages: Message[] = [];
+        if (page.length) {
+          const iterator = client.fetch(page, { envelope: true, internalDate: true }, { uid: true })[Symbol.asyncIterator]();
+          while (true) {
+            const fetched = await control.run(() => iterator.next());
+            if (fetched.done) break;
+            const message = fetched.value;
+            messages.push({ id: encodeMailboxMessageId(folder.folder, String(message.uid), validity),
+              [MESSAGE_RECIPIENTS]: [...(message.envelope?.to ?? []), ...(message.envelope?.cc ?? [])].map(value => value.address ?? '').filter(Boolean),
+              from: message.envelope?.from?.[0]?.address ?? '', subject: message.envelope?.subject ?? '', excerpt: '',
+              receivedAt: message.internalDate ? providerTime(message.internalDate instanceof Date ? message.internalDate.toISOString() : message.internalDate) : message.envelope?.date?.toISOString() ?? '' });
+          }
+          folder.beforeUid = Math.min(...page);
+        }
+        if (String(client.mailbox && client.mailbox.uidValidity) !== validity) throw new Error('IMAP UIDVALIDITY changed; reload the mailbox');
+        folder.buffer = messages.sort((a, b) => (parseTimestamp(b.receivedAt) || 0) - (parseTimestamp(a.receivedAt) || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+        folder.next = uids.length > page.length ? 'imap' : null;
+      } finally { lock.release(); }
+    });
+  } catch (error) { evictClient(creds.poolKey, entry); throw error; }
+}
+
+/** Buffered history must also verify its mailbox generation before being served. */
+export async function checkImapHistoryGenerations(creds: ImapCreds, folders: HistoryFolder[], control: HistoryReadControl): Promise<void> {
+  const known = folders.filter(folder => folder.buffer.length && folder.uidValidity !== undefined);
+  if (!known.length) return;
+  const { client, entry } = await control.run(() => acquire(creds));
+  try {
+    for (const folder of known) await control.read(async () => {
+      const lock = await control.run(() => client.getMailboxLock(folder.folder, { readOnly: true }));
+      try {
+        if (String(client.mailbox && client.mailbox.uidValidity) !== folder.uidValidity) throw new Error('IMAP UIDVALIDITY changed; reload the mailbox');
+      } finally { lock.release(); }
+    });
+  } catch (error) { evictClient(creds.poolKey, entry); throw error; }
+}
+
+/** Outlook matching only: bounded UID metadata pages with mailbox generation checks. */
+export async function scanMessagesAcrossMailboxes(creds: ImapCreds, criteria: SearchObject, control: MailboxScanControl, recipient?: string) {
+  assertRecipientScope({ recipient, strictRecipient: recipient !== undefined });
+  const { client, entry } = await control.run(() => acquire(creds));
+  const folders: { folder: string; complete: boolean; uids?: number[]; uidValidity?: string }[] = [];
+  const messages: Message[] = [];
+  const snapshots = control.budget.imapUidValidity ??= Object.create(null) as Record<string, string>;
+  const meta = (): MailboxScanMeta => ({ scope: 'inbox_and_junk', pages: control.budget.pages, metadata: control.budget.metadata, complete: folders.length > 0 && folders.every(folder => folder.complete),
+    truncated: folders.length === 0 || folders.some(folder => !folder.complete), partial: false, folders: folders.map(({ folder, complete }) => ({ folder, complete })) });
+  try {
+    for (const folder of await control.run(() => inboxAndJunkMailboxes(creds, control))) folders.push({ folder, complete: false });
+    control.progress?.(meta());
+    while (folders.some(folder => !folder.complete) && control.budget.pages < 5 && control.budget.metadata < 100) {
+      for (const folder of folders) {
+        control.checkpoint();
+        if (folder.complete || control.budget.pages >= 5 || control.budget.metadata >= 100) continue;
+        await control.read(async () => {
+          control.budget.pages++;
+          control.progress?.(meta());
+          const lock = await control.run(() => client.getMailboxLock(folder.folder, { readOnly: true }));
+          try {
+            const validity = String(client.mailbox && client.mailbox.uidValidity);
+            if (!/^\d+$/.test(validity)) throw new Error('IMAP UIDVALIDITY unavailable; reload the matching scan');
+            if (snapshots[folder.folder] !== undefined && snapshots[folder.folder] !== validity) throw new Error('IMAP UIDVALIDITY changed; reload the matching scan');
+            snapshots[folder.folder] = validity;
+            if (folder.uidValidity !== undefined && folder.uidValidity !== validity) throw new Error('IMAP UIDVALIDITY changed; reload the matching scan');
+            folder.uidValidity = validity;
+            if (!folder.uids) folder.uids = ((await control.run(() => client.search(criteria, { uid: true }))) || []).slice().sort((a, b) => b - a);
+            const page = folder.uids.splice(0, Math.min(20, 100 - control.budget.metadata));
+            if (page.length) {
+              const iterator = client.fetch(page, { envelope: true, internalDate: true }, { uid: true })[Symbol.asyncIterator]();
+              while (true) {
+                const fetched = await control.run(() => iterator.next());
+                if (fetched.done) break;
+                control.budget.metadata++;
+                const message = fetched.value;
+                if (recipient !== undefined && !addressedTo(message.envelope, recipient, true)) continue;
+                messages.push({ id: encodeMailboxMessageId(folder.folder, String(message.uid), validity),
+                  [MESSAGE_RECIPIENTS]: [...(message.envelope?.to ?? []), ...(message.envelope?.cc ?? [])].map(value => value.address ?? '').filter(Boolean),
+                  from: message.envelope?.from?.[0]?.address ?? '', subject: message.envelope?.subject ?? '', excerpt: '',
+                  receivedAt: message.internalDate ? providerTime(message.internalDate instanceof Date ? message.internalDate.toISOString() : message.internalDate) : message.envelope?.date?.toISOString() ?? '' });
+              }
+            }
+            if (String(client.mailbox && client.mailbox.uidValidity) !== validity) throw new Error('IMAP UIDVALIDITY changed; reload the matching scan');
+            folder.complete = folder.uids.length === 0;
+            control.progress?.(meta());
+          } finally { lock.release(); }
+        });
+      }
+    }
+    return { messages: messages.sort((a, b) => (parseTimestamp(b.receivedAt) || 0) - (parseTimestamp(a.receivedAt) || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), scan: meta() };
+  } catch (error) {
+    evictClient(creds.poolKey, entry);
+    if (error && typeof error === 'object') Object.assign(error, { scan: { ...meta(), complete: false, partial: control.budget.pages > 1 } });
+    throw error;
+  }
 }
 
 /**
@@ -493,6 +627,7 @@ export async function fetchMessagesAcrossMailboxes(
   criteria: SearchObject,
   opts: { limit?: number; recipient?: string; strictRecipient?: boolean } = {},
 ): Promise<Message[]> {
+  assertRecipientScope(opts);
   const limit = opts.limit ?? POLL_FETCH_LIMIT;
   const merged: Message[] = [];
 
@@ -502,7 +637,7 @@ export async function fetchMessagesAcrossMailboxes(
       messages = await fetchMessagesBySearch(creds, criteria, { ...opts, limit, mailbox });
     } catch (error) {
       if (mailbox === 'INBOX') throw error;
-      log.warn('failed to read junk mailbox', { poolKey: creds.poolKey, mailbox, error: errorMessage(error) });
+      log.warn('failed to read junk mailbox', { poolKey: creds.poolKey, mailbox, error: error });
       continue;
     }
     for (const message of messages) {
@@ -531,13 +666,16 @@ export async function fetchMessageDetailAcrossMailboxes(
     strictRecipient?: boolean;
     allowBareUid?: boolean;
     invalidMessage?: string;
+    allowUidValidity?: boolean;
+    control?: MailboxScanControl;
   } = {},
 ): Promise<MessageDetail> {
-  const { mailbox, uid } = decodeMailboxMessageId(messageId, opts);
+  assertRecipientScope(opts);
+  const { mailbox, uid, uidValidity } = decodeMailboxMessageId(messageId, opts);
 
   // INBOX needs no lookup, which keeps the ordinary read at one round trip.
   if (mailbox !== 'INBOX') {
-    const junk = await findMailboxBySpecialUse(creds, JUNK_SPECIAL_USE);
+    const junk = await findMailboxBySpecialUse(creds, JUNK_SPECIAL_USE, opts.control);
     if (!junk || mailbox !== junk) throw new Error(opts.invalidMessage ?? 'Invalid IMAP message id');
   }
 
@@ -545,6 +683,8 @@ export async function fetchMessageDetailAcrossMailboxes(
     mailbox,
     recipient: opts.recipient,
     strictRecipient: opts.strictRecipient,
+    uidValidity,
+    control: opts.control,
   });
   return { ...message, id: messageId };
 }

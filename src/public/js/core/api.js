@@ -12,7 +12,11 @@ async function api(path, opts = {}) {
   if (res.status === 401) { doLogout(); throw new Error('Unauthorized'); }
   let data;
   try { data = await res.json(); } catch { throw new Error(`HTTP ${res.status}`); }
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(data.error || `HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 

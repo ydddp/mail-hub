@@ -120,7 +120,7 @@ imapRoutes.post('/imap/accounts/:id/test', async (c) => {
   if (result.ok) {
     logActivity('green', `IMAP connection test OK for ${row.user}@${row.host}`);
   } else {
-    logActivity('rose', `IMAP connection test FAILED for ${row.user}@${row.host}: ${result.error}`);
+    logActivity('rose', `IMAP connection test FAILED for account ${row.id}`);
   }
 
   return c.json(result);

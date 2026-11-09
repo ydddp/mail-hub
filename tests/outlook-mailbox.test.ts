@@ -21,11 +21,13 @@ interface StubMessage {
   subject: string;
   receivedAt: string;
   folder?: 'inbox' | 'junk';
+  to?: string[];
+  cc?: string[];
 }
 
 const seenUrls: string[] = [];
 
-function stubMailbox(messages: StubMessage[]): void {
+function stubMailbox(messages: StubMessage[], transport: 'graph' | 'outlook' = 'graph'): void {
   seenUrls.length = 0;
   const toGraph = (m: StubMessage) => ({
     id: m.id,
@@ -34,7 +36,14 @@ function stubMailbox(messages: StubMessage[]): void {
     from: { emailAddress: { name: 'Sender', address: 'sender@x.test' } },
     bodyPreview: '',
     body: { content: `<p>${m.subject}</p>`, contentType: 'html' },
+    toRecipients: m.to?.map(address => ({ emailAddress: { address } })),
+    ccRecipients: m.cc?.map(address => ({ emailAddress: { address } })),
   });
+  const encode = (m: StubMessage) => transport === 'graph' ? toGraph(m) : {
+    Id: m.id, Subject: m.subject, ReceivedDateTime: m.receivedAt,
+    ToRecipients: m.to?.map(Address => ({ EmailAddress: { Address } })),
+    CcRecipients: m.cc?.map(Address => ({ EmailAddress: { Address } })),
+  };
 
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     const u = String(url);
@@ -44,17 +53,17 @@ function stubMailbox(messages: StubMessage[]): void {
       headers: { 'Content-Type': 'application/json' },
     });
     if (u.includes('/oauth2/v2.0/token')) return json({ access_token: 'at-mailbox' });
-    if (u.includes('graph.microsoft.com') && u.includes('/mailFolders/Inbox/')) {
-      return json({ value: messages.filter((m) => m.folder !== 'junk').map(toGraph) });
+    if ((u.includes('graph.microsoft.com') || u.includes('outlook.office.com/api/')) && /\/mailfolders\/inbox\//i.test(u)) {
+      return json({ value: messages.filter((m) => m.folder !== 'junk').map(encode) });
     }
-    if (u.includes('graph.microsoft.com') && u.includes('/mailFolders/junkemail/')) {
-      return json({ value: messages.filter((m) => m.folder === 'junk').map(toGraph) });
+    if ((u.includes('graph.microsoft.com') || u.includes('outlook.office.com/api/')) && /\/mailfolders\/junkemail\//i.test(u)) {
+      return json({ value: messages.filter((m) => m.folder === 'junk').map(encode) });
     }
-    if (u.includes('graph.microsoft.com/v1.0/me/messages/')) {
+    if (u.includes('/me/messages/')) {
       const id = u.split('/me/messages/')[1].split('?')[0];
       const found = messages.find((m) => m.id === id);
       if (!found) return new Response('{}', { status: 404 });
-      return json(toGraph(found));
+      return json(encode(found));
     }
     return new Response('{}', { status: 404 });
   }));
@@ -97,7 +106,7 @@ interface MailboxBody {
   email: string;
   limit: number;
   truncated: boolean;
-  messages: { id: string; leaseId: string | null; leaseState: string }[];
+  messages: { id: string; leaseId: string | null; leaseState: string; recipientAddress?: string; recipientMatch: string }[];
   leases: { id: string; address: string; createdAt: string; endedAt: string | null; status: string; targetService: string | null }[];
 }
 
@@ -112,6 +121,33 @@ afterEach(() => {
 });
 
 describe('Outlook account mailbox view', () => {
+  // Admins must see recipient evidence independently of the arrival window,
+  // including delayed old-tag mail and addresses whose lease was cleaned up.
+  it.each((['graph', 'outlook'] as const).flatMap(transport => [
+    { name: 'delayed old alias', to: ['pool+old@outlook.com'], cc: [], match: 'exact', address: 'pool+old@outlook.com', retained: true },
+    { name: 'cleaned lease', to: ['pool+old@outlook.com'], cc: [], match: 'exact', address: 'pool+old@outlook.com', retained: false },
+    { name: 'main address evidence', to: ['pool@outlook.com'], cc: [], match: 'exact', address: 'pool@outlook.com', retained: true },
+    { name: 'duplicate To/Cc', to: ['pool+old@outlook.com'], cc: ['POOL+OLD@OUTLOOK.COM'], match: 'exact', address: 'pool+old@outlook.com', retained: true },
+    { name: 'multiple aliases', to: ['pool+old@outlook.com'], cc: ['pool+new@outlook.com'], match: 'multiple', address: undefined, retained: true },
+    { name: 'Unicode distinct recipients', to: ['pool+k@outlook.com'], cc: ['pool+K@outlook.com'], match: 'multiple', address: undefined, retained: true },
+    { name: 'no recipient evidence', to: [], cc: [], match: 'unknown', address: undefined, retained: true },
+  ].map(row => ({ transport, ...row }))))('keeps $transport $name separate from the arrival lease in list and detail', async ({ transport, to, cc, match, address, retained }) => {
+    const email = 'pool@outlook.com';
+    insertAccount(email);
+    getDb().prepare('UPDATE outlook_accounts SET api_type = ? WHERE email = ?').run(transport, email);
+    if (retained) insertLease('old-lease', email, { address: 'pool+old@outlook.com', createdAt: '2026-07-24 09:00:00', closedAt: '2026-07-24 10:00:00' });
+    insertLease('current-lease', email, { address: 'pool+new@outlook.com', createdAt: '2026-07-27 14:02:00', status: 'active' });
+    stubMailbox([{ id: 'delayed', subject: 'Delayed mail', receivedAt: '2026-07-27T14:03:05.123Z', to, cc }], transport);
+    const list = await getMailbox(email);
+    const detail = await app.request(`/api/outlook/accounts/${email}/mailbox/delayed`, { headers: authHeaders() });
+    expect(detail.status).toBe(200);
+    for (const mail of [list.messages[0], await detail.json()]) {
+      expect(mail).toMatchObject({ leaseId: 'current-lease', leaseState: 'lease', recipientMatch: match });
+      expect(mail.recipientAddress).toBe(address);
+      expect(mail).not.toHaveProperty('recipients');
+    }
+  });
+
   it('returns mail the newest lease clips away, and files each message under its lease', async () => {
     const email = 'pool1@outlook.com';
     insertAccount(email);

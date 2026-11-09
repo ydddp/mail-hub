@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'crypto';
 import { getDb, getRow } from '../src/db.js';
 import { dispatch } from '../src/dispatcher.js';
 import { YydsProvider, isDomainScopeError } from '../src/providers/yyds.js';
 import { app, authHeaders, jsonHeaders, jsonOf } from './helpers/http.js';
+import { UpstreamHttpError } from '../src/errors.js';
 
 interface ImportResponse { imported: number; duplicated: number }
 interface AccountsResponse { accounts: Record<string, unknown>[] }
@@ -16,6 +18,106 @@ function insertAccount(apiKey: string, name = '', status = 'active') {
     `INSERT INTO yyds_accounts (api_key, name, status) VALUES (?, ?, ?)`
   ).run(apiKey, name, status);
 }
+
+// A rejected/malformed read must never masquerade as a successfully empty mailbox.
+describe('YYDS message read failures', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const inbox = { address: 'read@yyds.test', provider: 'yyds', authData: { apiKey: 'read-key' } };
+
+  it.each([401, 403, 429, 503].flatMap(status => ['list', 'detail'].map(operation => ({ status, operation }))))
+    ('preserves $status and Retry-After for $operation without exposing a private body', async ({ status, operation }) => {
+    const fetchMock = vi.fn(async () => new Response('private mail and credentials', { status, headers: { 'Retry-After': '19' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new YydsProvider();
+    const result = await (operation === 'list' ? provider.getMessages(inbox) : provider.getMessage(inbox, 'm1')).catch(e => e);
+    expect(result).toBeInstanceOf(UpstreamHttpError);
+    expect(result).toMatchObject({ status, retryAfter: '19' });
+    expect(String(result)).not.toContain('private mail');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['list', 'detail'])('rejects private malformed JSON for %s with a safe diagnostic', async operation => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('private-mail-invalid-json')));
+    const provider = new YydsProvider();
+    const result = await (operation === 'list' ? provider.getMessages(inbox) : provider.getMessage(inbox, 'm1')).catch(e => e);
+    expect(result).toBeInstanceOf(Error);
+    expect(result.message).toBe('YYDS message response is invalid');
+  });
+
+  it.each([
+    null, [], {}, { success: false, data: { messages: [] } }, { success: 1, data: { messages: [] } },
+    { success: true }, { success: true, data: [] }, { success: true, data: { messages: {} } },
+    ...[null, 'mail', [], {}, { id: '' }, { id: ' ' }, { id: true }, { id: {} }].map(item => ({ success: true, data: { messages: [item] } })),
+  ].map(body => ({ body })))('rejects invalid success list envelopes %#', async ({ body }) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body))));
+    await expect(new YydsProvider().getMessages(inbox)).rejects.toThrow();
+  });
+
+  it.each([null, [], 'mail', {}, { error: 'private error' }].map(data => ({ data })))('rejects fabricated blank detail data %#', async ({ data }) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, data }))));
+    await expect(new YydsProvider().getMessage(inbox, 'm1')).rejects.toThrow();
+  });
+
+  it.each([{ messages: [] }, { messages: [{ id: 0, subject: '', createdAt: 'unknown' }] }])('accepts valid success lists and finite zero IDs %#', async ({ messages }) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, data: { messages } }))));
+    const result = await new YydsProvider().getMessages(inbox);
+    expect(result).toEqual(messages.length ? [{ id: '0', from: '', subject: '', excerpt: '', receivedAt: '' }] : []);
+  });
+
+  it.each([{ subject: '', html: ['', '<p>123456</p>'] }, { id: 0, html: '' }])('accepts recognized detail fields and requested ID fallback %#', async data => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, data }))));
+    expect(await new YydsProvider().getMessage(inbox, 'm1')).toMatchObject({ id: 'id' in data ? '0' : 'm1', subject: '', html: Array.isArray(data.html) ? data.html.join('') : data.html });
+  });
+
+  it.each([401, 403, 429, 503].flatMap(status => ['refresh', 'second-list'].map(stage => ({ status, stage }))))
+    ('keeps the true $stage failure $status after one legacy refresh', async ({ status, stage }) => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('', { status: 401 }));
+    if (stage === 'second-list') fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: { token: 'new-token' } })));
+    fetchMock.mockResolvedValueOnce(new Response('private refresh body', { status, headers: { 'Retry-After': '23' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new YydsProvider().getMessages({ ...inbox, authData: { tempToken: 'old-token' } }).catch(e => e);
+    expect(result).toBeInstanceOf(UpstreamHttpError);
+    expect(result).toMatchObject({ status, retryAfter: '23' });
+    expect(String(result)).not.toContain('private refresh');
+    expect(fetchMock).toHaveBeenCalledTimes(stage === 'refresh' ? 2 : 3);
+  });
+
+  it.each([undefined, null, '', ' ', 123, true, {}, []].map(token => ({ token })))('rejects invalid refreshed credentials %# before retrying a read', async ({ token }) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: { token } })));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(new YydsProvider().getMessages({ ...inbox, authData: { tempToken: 'old' } })).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    'private invalid JSON', JSON.stringify({ success: false, data: { token: 'unusable' } }),
+    JSON.stringify({ data: { token: 'unusable' } }), JSON.stringify({ success: true, data: [] }),
+  ])('rejects malformed refresh envelopes without exposing their content %#', async body => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(new Response(body));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(new YydsProvider().getMessages({ ...inbox, authData: { tempToken: 'old' } }))
+      .rejects.toThrow('YYDS token response is invalid');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves refreshed token bytes and does not add detail refresh', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: { token: ' raw-token ' } })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, data: { messages: [] } })))
+      .mockResolvedValueOnce(new Response('', { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const legacy = { ...inbox, authData: { tempToken: 'old' } };
+    await expect(new YydsProvider().getMessages(legacy)).resolves.toEqual([]);
+    expect(fetchMock.mock.calls[2][1]).toMatchObject({ headers: { Authorization: 'Bearer  raw-token ' } });
+    await expect(new YydsProvider().getMessage(legacy, 'm1')).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+});
 
 describe('YYDS account management', () => {
   afterEach(() => {
@@ -475,7 +577,7 @@ describe('YYDS own-domain (wildcard) keys', () => {
     expect(paths(fetchMock)).toEqual(['/v1/accounts/wildcard', '/v1/accounts/wildcard', '/v1/accounts']);
   });
 
-  it('does not demote a key on a transient domainless failure', async () => {
+  it('stops after a transient domainless failure without creating a public inbox', async () => {
     insertKey('flaky-key', { wildcard: null });
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(WILDCARD_RULE_400, { status: 400 }))
@@ -483,9 +585,101 @@ describe('YYDS own-domain (wildcard) keys', () => {
       .mockResolvedValueOnce(created('u1@public.test'));
     vi.stubGlobal('fetch', fetchMock);
 
-    await new YydsProvider().createInbox({ domain: PUBLIC_DOMAIN });
+    // A 503 does not establish that the domainless write failed. Continuing to
+    // public create could allocate a second inbox after a lost success.
+    await expect(new YydsProvider().createInbox({ domain: PUBLIC_DOMAIN })).rejects.toMatchObject({ status: 503 });
 
     expect(wildcardFlag('flaky-key')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  describe.each(['unknown initial', 'operator initial', 'named-domain probe', 'public-scope recovery'])('%s uncertainty', (stage) => {
+    const failures = [
+      { name: 'disconnect after create', response: () => Promise.reject(new TypeError('remote committed then disconnected')) },
+      { name: 'timeout', response: () => Promise.reject(new DOMException('response timed out', 'TimeoutError')) },
+      { name: 'malformed JSON', response: () => Promise.resolve(new Response('{', { status: 201 })) },
+      ...['id', 'address', 'token'].map(field => ({
+        name: `created response missing ${field}`,
+        response: () => Promise.resolve(new Response(JSON.stringify({ success: true, data: { id: 'a', address: OWN_DOMAIN_ADDRESS, token: 't', [field]: undefined } }), { status: 201 })),
+      })),
+      ...['id', 'address', 'token'].flatMap(field => [123, {}, true, '', ' \t\n '].map(value => ({
+        name: `created response ${field}=${JSON.stringify(value)}`,
+        response: () => Promise.resolve(new Response(JSON.stringify({ success: true, data: { id: 'a', address: OWN_DOMAIN_ADDRESS, token: 't', [field]: value } }), { status: 201 })),
+      }))),
+      ...['false', 'true', 1, {}].map(success => ({
+        name: `created response success=${JSON.stringify(success)}`,
+        response: () => Promise.resolve(new Response(JSON.stringify({ success, data: { id: 'a', address: OWN_DOMAIN_ADDRESS, token: 't' } }), { status: 201 })),
+      })),
+      { name: 'body-level failure', response: () => Promise.resolve(new Response(JSON.stringify({ success: false, error: 'unknown result' }), { status: 200 })) },
+      ...[429, 503].map(status => ({ name: `HTTP ${status}`, status, response: () => Promise.resolve(new Response('uncertain create', { status, headers: { 'Retry-After': '17' } })) })),
+    ];
+
+    it.each(failures)('stops on $name and preserves the key flag', async (failure) => {
+      const initialFlag = stage === 'operator initial' ? 1 : stage === 'public-scope recovery' ? 0 : null;
+      insertKey('uncertain-key', { wildcard: initialFlag });
+      const fetchMock = vi.fn();
+      if (stage === 'named-domain probe') fetchMock.mockResolvedValueOnce(new Response(WILDCARD_RULE_400, { status: 400 }));
+      if (stage === 'public-scope recovery') fetchMock.mockResolvedValueOnce(new Response(SCOPE_403, { status: 403 }));
+      fetchMock.mockImplementation(failure.response);
+      vi.stubGlobal('fetch', fetchMock);
+      vi.useFakeTimers();
+      try {
+        const pending = new YydsProvider().createInbox({ domain: PUBLIC_DOMAIN }).then(inbox => ({ inbox }), error => ({ error }));
+        await vi.runAllTimersAsync();
+        const result = await pending;
+        expect(result).toHaveProperty('error');
+        if ('status' in failure && failure.status) expect(result).toMatchObject({ error: { status: failure.status, retryAfter: '17' } });
+        expect(fetchMock).toHaveBeenCalledTimes(stage.includes('initial') ? 1 : 2);
+        expect(wildcardFlag('uncertain-key')).toBe(initialFlag);
+        expect(getRow<{ inbox_count: number; daily_calls: number; last_used_at: string | null }>(getDb(),
+          `SELECT inbox_count, daily_calls, last_used_at FROM yyds_accounts WHERE api_key = ?`, 'uncertain-key'))
+          .toEqual({ inbox_count: 0, daily_calls: 0, last_used_at: null });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it('preserves valid opaque credentials exactly while checking they are nonblank strings', async () => {
+    insertKey('opaque-key');
+    const account = { id: '  opaque-id  ', address: OWN_DOMAIN_ADDRESS, token: '  opaque-token  ' };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ success: true, data: account }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const inbox = await new YydsProvider().createInbox({ domain: PUBLIC_DOMAIN });
+
+    expect(inbox.authData.accountId).toBe(account.id);
+    expect(inbox.authData.tempToken).toBe(account.token);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getRow<{ inbox_count: number; daily_calls: number }>(getDb(),
+      `SELECT inbox_count, daily_calls FROM yyds_accounts WHERE api_key = ?`, 'opaque-key'))
+      .toEqual({ inbox_count: 1, daily_calls: 1 });
+  });
+
+  it.each([
+    [400, DOMAIN_UNAVAILABLE_400], [401, 'unauthorized'], [403, 'API key revoked'], [404, 'missing endpoint'],
+  ])('does not reinterpret unrelated HTTP %s as permission to create again', async (status, body) => {
+    insertKey('refused-key');
+    const fetchMock = vi.fn(async () => new Response(body, { status }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(new YydsProvider().createInbox({ domain: PUBLIC_DOMAIN })).rejects.toMatchObject({ status });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(wildcardFlag('refused-key')).toBeNull();
+  });
+
+  it.each(['markWildcard', 'recordUsage'] as const)('does not create again when %s fails after upstream success', async (step) => {
+    insertKey('storage-failure-key');
+    const provider = new YydsProvider();
+    const databaseError = new Error(`${step}: database unavailable after remote create`);
+    const spy = vi.spyOn(provider as unknown as Record<typeof step, (...args: unknown[]) => void>, step).mockImplementation(() => { throw databaseError; });
+    const fetchMock = vi.fn(async () => created());
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(provider.createInbox({ domain: PUBLIC_DOMAIN })).rejects.toBe(databaseError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('reports from_create only while an own-domain key is usable', () => {
@@ -526,6 +720,24 @@ describe('YYDS own-domain (wildcard) keys', () => {
 describe('POST /api/yyds/check', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('identifies a failed key check by SHA256 fingerprint while retaining the key only in the admin response', async () => {
+    const key = 'opaque-yyds-key-91';
+    const failure = 'opaque-yyds-error-92';
+    insertKey(key);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error(failure); }));
+    const output: string[] = [];
+    const spies = [process.stdout, process.stderr].map(stream => vi.spyOn(stream, 'write').mockImplementation(chunk => { output.push(String(chunk)); return true; }));
+    try {
+      const response = await app.request('/api/yyds/check', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ keys: [key] }) });
+      expect(await response.json()).toMatchObject({ unknown: 1, results: [{ key, valid: null }] });
+      const logs = output.join('');
+      expect(logs).not.toContain(key);
+      expect(logs).not.toContain(failure);
+      expect(logs).toContain(createHash('sha256').update(key).digest('hex').slice(0, 12));
+      expect(JSON.stringify(getDb().prepare('SELECT text FROM activity_log').all())).not.toContain(key);
+    } finally { spies.forEach(spy => spy.mockRestore()); }
   });
 
   it('keeps a scope-limited key active when the probe domain is refused', async () => {

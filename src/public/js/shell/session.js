@@ -2,11 +2,15 @@
 import { api, stopPoolJobPolling } from '../core/api.js';
 import { applyLang, t } from '../core/i18n.js';
 import { API } from '../core/util.js';
+import { clearCodeSession } from '../views/inboxes.js';
 import { closeMobileMore, refreshMobileMoreChrome, refreshNavLabels } from './navigation.js';
 import { loadDashboard } from '../views/dashboard.js';
 // ─── Login / Logout ───
 // Whether the token is the admin secret; set by enterApp() and logout, read across the app.
 let _isAdmin = false;
+window.addEventListener('storage', event => {
+  if (event.key === 'token' || event.key === null) clearCodeSession();
+});
 async function doLogin(event) {
   if (event?.preventDefault) event.preventDefault();
   const token = document.getElementById('login-token').value.trim();
@@ -29,6 +33,7 @@ async function doLogin(event) {
 }
 
 function doLogout() {
+  clearCodeSession();
   stopPoolJobPolling();
   localStorage.removeItem('token');
   _isAdmin = false;
@@ -39,6 +44,7 @@ function doLogout() {
 }
 
 async function enterApp() {
+  clearCodeSession();
   // Idempotent on reload (the head script already set it); the load-bearing
   // case is a fresh sign-in, where no token existed when the page opened.
   document.documentElement.classList.add('authed');

@@ -240,6 +240,8 @@
                     <tr><td class="param-name">wait</td><td class="param-type">boolean</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.get_code_param_wait">设为 <code>true</code> 会轮询等待邮件到达</td></tr>
                     <tr><td class="param-name">timeout</td><td class="param-type">number</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n="docs.get_code_param_timeout">等待超时（秒），默认 60，最大 120</td></tr>
                     <tr><td class="param-name">type</td><td class="param-type">string</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.get_code_param_type">按类型过滤：<code>numeric</code>、<code>alphanumeric</code>、<code>link</code></td></tr>
+                    <tr><td class="param-name">selection</td><td class="param-type">string</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.get_code_param_selection">latest / matching（仅 Outlook）</td></tr>
+                    <tr><td class="param-name">excludeMessageId</td><td class="param-type">string (repeat)</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.get_code_param_exclude">重复传入排除 ID：最多 20 项，每项 2048 UTF-16 代码单元，总 UTF-8 8192 字节；超限 400</td></tr>
                     <tr><td class="param-name">since</td><td class="param-type">string/number</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n-html="docs.get_code_param_since">只提取此时间之后收到的新邮件，支持 ISO 时间或毫秒时间戳</td></tr>
                   </tbody>
                 </table></div>
@@ -253,7 +255,7 @@
   <span class="ck">"messageId"</span>: <span class="cs">"message-123"</span>,
   <span class="ck">"receivedAt"</span>: <span class="cs">"2025-01-01T00:01:00Z"</span>
 }</pre>
-                <div class="docs-note" data-i18n-html="docs.get_code_note">典型集成方式：先 <code>POST /api/inbox</code> 创建邮箱 → 用邮箱注册目标服务 → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> 等待验证码。需要多次取件时，把上次响应的 <code>receivedAt</code> 作为 <code>since</code> 传入，避免重复返回同一封邮件。</div>
+                <div class="docs-note" data-i18n-html="docs.get_code_note">典型集成方式：先 <code>POST /api/inbox</code> 创建邮箱 → 用邮箱注册目标服务 → <code>GET /api/inbox/:id/code?wait=true&amp;timeout=60</code> 等待验证码。Outlook 多次取件用 selection=matching，并重复传入已返回的 excludeMessageId，保留同秒其他邮件。since 仍是严格时间下界。</div>
               </div>
             </div>
 
@@ -623,12 +625,14 @@
                 <div class="table-wrap fit"><table class="docs-param-table">
                   <thead><tr><th data-i18n="docs.param">参数</th><th data-i18n="docs.type">类型</th><th data-i18n="docs.required">必填</th><th data-i18n="docs.description">说明</th></tr></thead>
                   <tbody>
-                    <tr><td class="param-name">limit</td><td class="param-type">number</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n="docs.ol_mailbox_param_limit">取回的邮件条数，默认 50，最大 100</td></tr>
+                    <tr><td class="param-name">limit</td><td class="param-type">number</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n="docs.ol_mailbox_param_limit">每页条数，默认 50，最大 100</td></tr>
+                    <tr><td class="param-name">pageToken</td><td class="param-type">string</td><td><span class="param-req no" data-i18n="docs.no">否</span></td><td data-i18n="docs.ol_mailbox_param_token">返回的 nextPageToken，10 分钟失效</td></tr>
                   </tbody>
                 </table></div>
                 <div class="docs-label" data-i18n="docs.response_200">响应 200</div>
                 <pre class="docs-code">{
   <span class="ck">"email"</span>: <span class="cs">"user@outlook.com"</span>, <span class="ck">"limit"</span>: <span class="cv">50</span>, <span class="ck">"truncated"</span>: <span class="cv">false</span>,
+  <span class="ck">"nextPageToken"</span>: <span class="cv">null</span>,
   <span class="ck">"messages"</span>: [
     { <span class="ck">"id"</span>: <span class="cs">"..."</span>, <span class="ck">"from"</span>: <span class="cs">"..."</span>, <span class="ck">"subject"</span>: <span class="cs">"..."</span>, <span class="ck">"receivedAt"</span>: <span class="cs">"..."</span>,
       <span class="ck">"leaseId"</span>: <span class="cs">"i-abc123"</span>, <span class="ck">"leaseState"</span>: <span class="cs">"lease"</span> }
@@ -638,7 +642,7 @@
       <span class="ck">"createdAt"</span>: <span class="cs">"..."</span>, <span class="ck">"endedAt"</span>: <span class="cv">null</span>, <span class="ck">"status"</span>: <span class="cs">"active"</span> }
   ]
 }</pre>
-                <div class="docs-note" data-i18n-html="docs.ol_mailbox_note">管理员专用。<code>/api/inbox/:id/messages</code> 只返回该邮箱在这一次租期内收到的邮件，这条接口返回整个账号邮箱。每封邮件带 <code>leaseState</code>：<code>lease</code>（属于 <code>leaseId</code> 那次租期）、<code>gap</code>（两次租期之间，账号空闲）、<code>before</code>（第一次租期之前）、<code>undated</code>（没有可解析的时间）。<code>limit</code> 是硬上限而不是分页：更早的邮件取不回来，取满时 <code>truncated</code> 为 <code>true</code>。</div>
+                <div class="docs-note" data-i18n-html="docs.ol_mailbox_note">管理员专用。<code>/api/inbox/:id/messages</code> 只返回该邮箱在这一次租期内收到的邮件，这条接口返回整个账号邮箱。每封邮件带 <code>leaseState</code>：<code>lease</code>（属于 <code>leaseId</code> 那次租期）、<code>gap</code>（两次租期之间，账号空闲）、<code>before</code>（第一次租期之前）、<code>undated</code>（没有可解析的时间）。<code>limit</code> 是每页条数，使用返回的 <code>nextPageToken</code> 作为 <code>pageToken</code> 加载更早邮件。状态 10 分钟失效；刷新获取新邮件。</div>
               </div>
             </div>
 

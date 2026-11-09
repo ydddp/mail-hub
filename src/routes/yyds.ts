@@ -1,11 +1,11 @@
 import { utcFields } from '../time.js';
+import { createHash } from 'crypto';
 import { Hono } from 'hono';
 import { allRows, getDb, getRow, getSetting, logActivity } from '../db.js';
 import { requireAdmin, type AdminEnv } from './admin.js';
 import { importDelimited } from '../import-utils.js';
 import { fetchWithTimeout, todayDateString } from '../utils.js';
 import { createLogger } from '../logger.js';
-import { errorMessage } from '../errors.js';
 import { startBatchJob, runSynchronousBatch } from '../batch-jobs.js';
 import { isDomainScopeError } from '../providers/yyds.js';
 
@@ -88,7 +88,11 @@ yydsRoutes.post('/yyds/check', async (c) => {
       return { key: row.api_key, valid };
     } catch (error) {
       // Network failure says nothing about the key — leave stored status untouched.
-      log.warn('YYDS key check request failed', { key: row.api_key, error: errorMessage(error) });
+      log.warn('YYDS key check request failed', {
+        provider: 'yyds', operation: 'check',
+        fingerprint: createHash('sha256').update(row.api_key).digest('hex').slice(0, 12),
+        error,
+      });
       return { key: row.api_key, valid: null };
     }
   };

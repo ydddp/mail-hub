@@ -1,15 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getDb } from '../src/db.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import Database from 'better-sqlite3';
+import { canonicalImapAddress, getDb, initDb, IMAP_ADDRESS_KEY_SQL } from '../src/db.js';
+import { config } from '../src/config.js';
+import { hashApiKey } from '../src/crypto.js';
+import { assertTestPath } from './helpers/test-storage.js';
+import * as usernames from '../src/username-generator.js';
+import * as utils from '../src/utils.js';
 import { ImapProvider, generateUniqueUsername } from '../src/providers/imap.js';
+import * as imapProvider from '../src/providers/imap.js';
+import { MessageNotFoundError } from '../src/errors.js';
 import {
   decodeBody,
   decodeMailboxMessageId,
   describeImapError,
   encodeMailboxMessageId,
+  fetchMessageDetail,
+  fetchMessageDetailAcrossMailboxes,
+  fetchMessagesAcrossMailboxes,
+  fetchMessagesBySearch,
   selectBodyParts,
 } from '../src/providers/imap-core.js';
 import { randomUsername } from '../src/username-generator.js';
 import type { InboxData } from '../src/providers/base.js';
+import { app, authHeaders, jsonHeaders } from './helpers/http.js';
 
 const JUNK_PATH = '垃圾邮件';
 
@@ -21,9 +34,12 @@ const imapMockState = vi.hoisted(() => ({
   junkSearchResult: [] as number[],
   lockPaths: [] as string[],
   fetchRanges: [] as number[][],
-  // Recipients the fake reports on every fetched message. Defaults to
-  // undefined, which the provider must treat as "cannot verify, keep".
+  searches: [] as Record<string, unknown>[],
+  // Ordinary fixtures belong to x; isolation cases override these explicitly.
   envelopeTo: undefined as { address: string }[] | undefined,
+  envelopeCc: undefined as { address: string }[] | undefined,
+  omitEnvelope: false,
+  missingUids: [] as string[],
   // getMessage fixtures
   bodyStructure: undefined as unknown,
   partContents: {} as Record<string, { content: Buffer; charset?: string }>,
@@ -52,37 +68,40 @@ vi.mock('imapflow', () => {
       imapMockState.lockPaths.push(path);
       return { release() {} };
     }
-    async search(): Promise<number[]> {
+    async search(criteria: Record<string, unknown>): Promise<number[]> {
+      imapMockState.searches.push(criteria);
       return this.selected === '垃圾邮件'
         ? [...imapMockState.junkSearchResult]
         : [...imapMockState.searchResult];
     }
-    async *fetch(range: number[]): AsyncGenerator<{ uid: number; internalDate: Date; envelope: { from: { address: string }[]; to?: { address: string }[]; subject: string; date: Date } }> {
+    async *fetch(range: number[]): AsyncGenerator<unknown> {
       imapMockState.fetchRanges.push(range);
       for (const uid of range) {
         yield {
           uid,
           internalDate: new Date(imapMockState.internalDate),
-          envelope: {
+          envelope: imapMockState.omitEnvelope ? undefined : {
             from: [{ address: 'sender@example.test' }],
             to: imapMockState.envelopeTo,
+            cc: imapMockState.envelopeCc,
             subject: `mail-${uid}`,
             date: new Date(imapMockState.envelopeDate),
           },
         };
       }
     }
-    async fetchOne(_id: string, query: Record<string, unknown>): Promise<unknown> {
+    async fetchOne(id: string, query: Record<string, unknown>): Promise<unknown> {
       // Requesting fixed body parts is the defect this suite locks out: a part
       // that does not exist fails the entire FETCH, not just that part.
       if (query?.bodyParts) throw new Error('Command failed');
-      if (imapMockState.bodyStructure === undefined) return undefined;
+      if (imapMockState.bodyStructure === undefined || imapMockState.missingUids.includes(id)) return undefined;
       return {
         uid: 1,
         internalDate: new Date(imapMockState.internalDate),
-        envelope: {
+        envelope: imapMockState.omitEnvelope ? undefined : {
           from: [{ address: 'sender@example.test' }],
           to: imapMockState.envelopeTo,
+          cc: imapMockState.envelopeCc,
           subject: 'probe',
           date: new Date(imapMockState.envelopeDate),
         },
@@ -107,11 +126,34 @@ function imapInbox(accountId: string, address: string): InboxData {
   return { address, authData: { imapAccountId: accountId, username: 'x', domain: 'example.com' }, provider: 'imap', apiBase: '' };
 }
 
+it('keeps IMAP connection errors out of activity and process logs while returning the admin diagnostic', async () => {
+  const marker = 'opaque-imap-password-95';
+  getDb().prepare(`INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('log-safe-imap', 'imap.test', 993, 'user', ?, 'example.test')`).run(marker);
+  const testSpy = vi.spyOn(imapProvider, 'testImapConnection').mockResolvedValue({ ok: false, error: marker });
+  const output: string[] = [];
+  const spies = [process.stdout, process.stderr].map(stream => vi.spyOn(stream, 'write').mockImplementation(chunk => { output.push(String(chunk)); return true; }));
+  try {
+    const response = await app.request('/api/imap/accounts/log-safe-imap/test', { method: 'POST', headers: jsonHeaders(), body: '{}' });
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data).toMatchObject({ ok: false });
+    expect(data.error).toContain(marker);
+    const activity = getDb().prepare('SELECT text FROM activity_log').all() as { text: string }[];
+    expect(activity).toEqual([{ text: 'IMAP connection test FAILED for account log-safe-imap' }]);
+    expect(output.join('') + JSON.stringify(activity)).not.toContain(marker);
+  } finally { spies.forEach(spy => spy.mockRestore()); testSpy.mockRestore(); }
+});
+
 // envelopeTo is module-level mock state. Resetting it inside a test body only
 // runs when that test's assertions pass, so one real failure would pin the
 // recipient for every later test and bury the cause in a cascade.
 beforeEach(() => {
-  imapMockState.envelopeTo = undefined;
+  imapMockState.envelopeTo = [{ address: 'x@example.com' }];
+  imapMockState.envelopeCc = undefined;
+  imapMockState.omitEnvelope = false;
+  imapMockState.missingUids = [];
+  imapMockState.searches = [];
+  imapMockState.downloadCalls = [];
   imapMockState.envelopeDate = '2020-01-01T00:00:00.000Z';
   imapMockState.internalDate = '2026-07-26T21:03:47.000Z';
   imapMockState.searchResult = [];
@@ -119,7 +161,84 @@ beforeEach(() => {
   imapMockState.lockPaths = [];
 });
 
+const RECIPIENT_CASES = [
+  { name: 'exact To', to: ['bob.smith4@example.com'], allowed: true },
+  { name: 'case-insensitive To', to: ['BOB.SMITH4@EXAMPLE.COM'], allowed: true },
+  { name: 'exact Cc', to: ['other@example.com'], cc: ['bob.smith4@example.com'], allowed: true },
+  { name: 'case-insensitive Cc', cc: ['BOB.SMITH4@EXAMPLE.COM'], allowed: true },
+  { name: 'another tenant in To', to: ['bob.smith42@example.com'], allowed: false },
+  { name: 'another tenant in Cc', cc: ['bob.smith42@example.com'], allowed: false },
+  { name: 'missing recipients', allowed: false },
+  { name: 'empty recipients', to: [], cc: [], allowed: false },
+  { name: 'missing envelope', omitEnvelope: true, allowed: false },
+] satisfies { name: string; to?: string[]; cc?: string[]; omitEnvelope?: boolean; allowed: boolean }[];
+
+function setRecipients(c: { to?: string[]; cc?: string[]; omitEnvelope?: boolean }): void {
+  imapMockState.envelopeTo = c.to?.map((address) => ({ address }));
+  imapMockState.envelopeCc = c.cc?.map((address) => ({ address }));
+  imapMockState.omitEnvelope = c.omitEnvelope ?? false;
+}
+
 describe('ImapProvider polling', () => {
+  // A supplied scope is never an administrator whole-mailbox request. These
+  // entries also cover direct helpers and junk discovery before connection.
+  it.each([
+    { label: 'strict missing', recipient: undefined, strictRecipient: true },
+    { label: 'strict empty', recipient: '', strictRecipient: true },
+    { label: 'strict whitespace', recipient: ' \t\n', strictRecipient: true },
+    { label: 'explicit empty', recipient: '', strictRecipient: false },
+    { label: 'explicit whitespace', recipient: ' \t\n', strictRecipient: false },
+  ].flatMap(scope => ['list direct', 'detail direct', 'list across', 'detail INBOX', 'detail Junk'].map(entry => ({ ...scope, entry }))))
+  ('rejects invalid recipient scope before transport: $label / $entry', async ({ recipient, strictRecipient, entry }) => {
+    imapMockState.searchResult = [1];
+    imapMockState.bodyStructure = { type: 'text/plain' };
+    imapMockState.partContents = { '1': { content: Buffer.from('private Code: 654321') } };
+    const creds = { poolKey: `invalid-scope:${strictRecipient}:${recipient}:${entry}`, host: 'mock.invalid', port: 993, user: 'local', password: 'local', tls: true };
+    const opts = { recipient, strictRecipient };
+    const before = imapMockState.connectCount;
+    const result = entry === 'list direct' ? fetchMessagesBySearch(creds, { all: true }, opts)
+      : entry === 'detail direct' ? fetchMessageDetail(creds, '1', opts)
+      : entry === 'list across' ? fetchMessagesAcrossMailboxes(creds, { all: true }, opts)
+      : fetchMessageDetailAcrossMailboxes(creds, encodeMailboxMessageId(entry === 'detail Junk' ? JUNK_PATH : 'INBOX', '1'), opts);
+    await expect(result).rejects.toThrow(MessageNotFoundError);
+    expect(imapMockState.connectCount).toBe(before);
+    expect(imapMockState.lockPaths).toEqual([]);
+    expect(imapMockState.searches).toEqual([]);
+    expect(imapMockState.downloadCalls).toEqual([]);
+  });
+
+  it('keeps omitted recipient scope available for administrator whole-mailbox helpers', async () => {
+    imapMockState.searchResult = [1];
+    imapMockState.bodyStructure = { type: 'text/plain' };
+    imapMockState.partContents = { '1': { content: Buffer.from('private Code: 654321') } };
+    const creds = { poolKey: 'omitted-scope-admin', host: 'mock.invalid', port: 993, user: 'local', password: 'local', tls: true };
+    expect(await fetchMessagesBySearch(creds, { all: true })).toHaveLength(1);
+    expect((await fetchMessageDetail(creds, '1')).text).toBe('private Code: 654321');
+    expect(await fetchMessagesAcrossMailboxes(creds, { all: true })).toHaveLength(1);
+    expect((await fetchMessageDetailAcrossMailboxes(creds, encodeMailboxMessageId(JUNK_PATH, '1'))).text).toBe('private Code: 654321');
+  });
+
+  it.each(['', ' \t\n'].flatMap(address => ['messages', 'messages/1', 'code'].map(path => ({ address, path }))))
+  ('rejects a blank legacy catch-all scope through the tenant $path route: $address', async ({ address, path }) => {
+    const owner = 'empty-scope-owner';
+    getDb().prepare(`INSERT INTO api_keys (key, name) VALUES (?, 'scope owner')`).run(hashApiKey(owner));
+    getDb().prepare(`INSERT INTO imap_accounts (id, host, port, user, password, domain)
+      VALUES ('blank-scope-account', 'mock.invalid', 993, 'local', 'local', 'example.com')`).run();
+    getDb().prepare(`INSERT INTO inboxes (id, provider, address, auth_data, owner_key, created_at)
+      VALUES ('blank-scope-inbox', 'imap', ?, ?, ?, datetime('now', '-1 minute'))`)
+      .run(address, JSON.stringify({ imapAccountId: 'blank-scope-account' }), hashApiKey(owner));
+    imapMockState.internalDate = new Date().toISOString();
+    imapMockState.searchResult = [1];
+    imapMockState.bodyStructure = { type: 'text/plain' };
+    imapMockState.partContents = { '1': { content: Buffer.from('private Code: 654321') } };
+    const before = imapMockState.connectCount;
+    const response = await app.request(`/api/inbox/blank-scope-inbox/${path}`, { headers: authHeaders(owner) });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'Message not found' });
+    expect(imapMockState.connectCount).toBe(before);
+    expect(imapMockState.downloadCalls).toEqual([]);
+  });
+
   it('uses IMAP internalDate instead of a conflicting envelope date for list and detail', async () => {
     getDb().prepare(
       `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('internal-date', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
@@ -162,6 +281,7 @@ describe('ImapProvider polling', () => {
       `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('pool-share', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
     ).run();
     imapMockState.searchResult = [1];
+    imapMockState.envelopeTo = [{ address: 'y@example.com' }];
     const before = imapMockState.connectCount;
 
     const p = new ImapProvider();
@@ -171,70 +291,47 @@ describe('ImapProvider polling', () => {
     expect(imapMockState.connectCount - before).toBe(1);
   });
 
-  it('drops a message the substring search matched but is addressed to someone else', async () => {
+  it.each(RECIPIENT_CASES)('lists only verifiably addressed catch-all mail: $name', async (c) => {
     getDb().prepare(
       `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('substr', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
     ).run();
     imapMockState.searchResult = [1];
-    // IMAP SEARCH TO is a substring match, so a search for bob.smith4@ returns
-    // mail addressed to bob.smith42@. Both usernames can be live at once —
-    // generateUniqueUsername only rules out exact duplicates.
-    imapMockState.envelopeTo = [{ address: 'bob.smith42@example.com' }];
+    imapMockState.junkSearchResult = [2];
+    setRecipients(c);
 
     const p = new ImapProvider();
     const messages = await p.getMessages(imapInbox('substr', 'bob.smith4@example.com'));
 
-    expect(messages).toHaveLength(0);
+    // SEARCH is a substring prefilter, while To/Cc prove tenant ownership.
+    // The old sparse-envelope assertion exposed private mail to every tenant
+    // sharing the catch-all, so missing evidence must now exclude the mail.
+    expect(messages.map((message) => message.id)).toEqual(c.allowed ? [
+      encodeMailboxMessageId('INBOX', '1'), encodeMailboxMessageId(JUNK_PATH, '2'),
+    ] : []);
+    expect(imapMockState.searches).toEqual([
+      { or: [{ to: 'bob.smith4@example.com' }, { cc: 'bob.smith4@example.com' }] },
+      { or: [{ to: 'bob.smith4@example.com' }, { cc: 'bob.smith4@example.com' }] },
+    ]);
   });
 
-  it('keeps a message when the server reports no recipients to check', async () => {
-    getDb().prepare(
-      `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('norcpt', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
-    ).run();
-    imapMockState.searchResult = [1];
-    imapMockState.envelopeTo = undefined;
-
-    const p = new ImapProvider();
-    const messages = await p.getMessages(imapInbox('norcpt', 'someone@example.com'));
-
-    // Losing real mail to a sparse envelope is worse than a rare stray, the
-    // same call isMessageWithinInboxLifetime already makes for timestamps.
-    expect(messages).toHaveLength(1);
-  });
-
-  it('refuses to read a UID addressed to another tenant', async () => {
+  it.each(RECIPIENT_CASES)('independently verifies guessed catch-all detail ids: $name', async (c) => {
     getDb().prepare(
       `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('detail-leak', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
     ).run();
     imapMockState.bodyStructure = { type: 'text/plain' };
     imapMockState.partContents = { '1': { content: Buffer.from('code 123456') } };
-    imapMockState.envelopeTo = [{ address: 'bob.smith42@example.com' }];
+    setRecipients(c);
 
     // Filtering the listing is not enough: a UID names a message in the whole
-    // catch-all mailbox and arrives straight off the request path, so a tenant
-    // who walks small sequential integers would otherwise read a neighbour's
-    // body and verification code.
+    // catch-all mailbox. Bcc-only or sparse envelopes cannot identify which
+    // tenant owns the body; the old fail-open assertion leaked that body.
     const p = new ImapProvider();
-    await expect(
-      p.getMessage(imapInbox('detail-leak', 'bob.smith4@example.com'), '1'),
-    ).rejects.toThrow(/not found/);
-  });
-
-  it('keeps reading a message with no envelope recipients for a catch-all mailbox', async () => {
-    getDb().prepare(
-      `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('bcc-ok', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
-    ).run();
-    imapMockState.bodyStructure = { type: 'text/plain' };
-    imapMockState.partContents = { '1': { content: Buffer.from('bcc body') } };
-    imapMockState.envelopeTo = undefined;
-
-    // A catch-all domain mailbox exists only to serve these addresses, so
-    // refusing everything unverifiable would silently lose Bcc-only mail while
-    // buying nothing — there is no third party's private mail in there to
-    // protect. IcloudProvider passes strictRecipient because its shared mailbox
-    // is the operator's own inbox, where the trade runs the other way.
-    const msg = await new ImapProvider().getMessage(imapInbox('bcc-ok', 'someone@example.com'), '1');
-    expect(msg.text).toBe('bcc body');
+    for (const id of ['1', encodeMailboxMessageId('INBOX', '1'), encodeMailboxMessageId(JUNK_PATH, '1')]) {
+      const result = p.getMessage(imapInbox('detail-leak', 'bob.smith4@example.com'), id);
+      if (c.allowed) await expect(result).resolves.toMatchObject({ id, text: 'code 123456' });
+      else await expect(result).rejects.toThrow(MessageNotFoundError);
+    }
+    expect(imapMockState.downloadCalls).toHaveLength(c.allowed ? 3 : 0);
   });
 
   // Production, 2026-08-23: four aliases received verification codes with the
@@ -296,25 +393,33 @@ describe('ImapProvider polling', () => {
     expect(imapMockState.lockPaths).toEqual([]);
   });
 
-  it('reports a wrong-tenant UID exactly like an absent one', async () => {
+  it.each([
+    ['bare UID', '1', '999'],
+    ['INBOX-qualified UID', encodeMailboxMessageId('INBOX', '1'), encodeMailboxMessageId('INBOX', '999')],
+    ['junk-qualified UID', encodeMailboxMessageId(JUNK_PATH, '1'), encodeMailboxMessageId(JUNK_PATH, '999')],
+  ])('reports unverifiable recipients exactly like an unknown UID: %s', async (_name, id, unknownId) => {
     getDb().prepare(
       `INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('detail-oracle', 'imap.test.com', 993, 'u', 'p', 'example.com')`,
     ).run();
-    imapMockState.partContents = {};
+    imapMockState.partContents = { '1': { content: Buffer.from('private code 654321') } };
+    imapMockState.bodyStructure = { type: 'text/plain' };
+    imapMockState.missingUids = ['999'];
 
     const p = new ImapProvider();
     const inbox = imapInbox('detail-oracle', 'bob.smith4@example.com');
 
-    imapMockState.bodyStructure = undefined; // UID does not exist at all
-    const absent = await p.getMessage(inbox, '1').catch((e: Error) => e.message);
-
-    imapMockState.bodyStructure = { type: 'text/plain' };
-    imapMockState.envelopeTo = [{ address: 'bob.smith42@example.com' }];
-    const forbidden = await p.getMessage(inbox, '1').catch((e: Error) => e.message);
+    const absent: unknown = await p.getMessage(inbox, unknownId).catch((error: unknown) => error);
+    expect(absent).toBeInstanceOf(MessageNotFoundError);
 
     // Distinguishing the two would turn the endpoint into an oracle for which
     // UIDs are live in the shared mailbox.
-    expect(forbidden).toBe(absent);
+    for (const c of RECIPIENT_CASES.filter((entry) => !entry.allowed)) {
+      setRecipients(c);
+      const forbidden: unknown = await p.getMessage(inbox, id).catch((error: unknown) => error);
+      expect(forbidden).toBeInstanceOf(MessageNotFoundError);
+      expect(forbidden).toMatchObject({ name: 'MessageNotFoundError', message: (absent as Error).message });
+    }
+    expect(imapMockState.downloadCalls).toEqual([]);
   });
 });
 
@@ -518,6 +623,7 @@ describe('decodeMailboxMessageId', () => {
     ['the UID wildcard', encodeMailboxMessageId('INBOX', '*')],
     ['a zero UID', encodeMailboxMessageId('INBOX', '0')],
     ['a UID past the 32-bit ceiling', encodeMailboxMessageId('INBOX', '4294967296')],
+    ['a generation-qualified scan id without opt-in', encodeMailboxMessageId('INBOX', '7', '11')],
     ['a payload that is not JSON', 'imap:bm90LWpzb24'],
     ['a JSON payload of the wrong shape', `imap:${Buffer.from('{"mailbox":"INBOX"}').toString('base64url')}`],
     ['a bare non-numeric id', 'INBOX'],
@@ -604,6 +710,7 @@ describe('randomUsername', () => {
 });
 
 describe('generateUniqueUsername', () => {
+  afterEach(() => vi.restoreAllMocks());
   const holdAddress = (id: string, address: string, status: string): void => {
     getDb().prepare(
       `INSERT INTO inboxes (id, provider, address, auth_data, status) VALUES (?, 'imap', ?, '{}', ?)`,
@@ -630,6 +737,175 @@ describe('generateUniqueUsername', () => {
   it('falls back to a random suffix when every draw collides', () => {
     holdAddress('held', 'taken@example.com', 'active');
     expect(generateUniqueUsername('example.com', () => 'taken')).toMatch(/^taken[a-z0-9]{4}$/);
+  });
+
+  it('checks suffix collisions too and stops after a finite number of draws', () => {
+    holdAddress('base', 'taken@example.com', 'active');
+    holdAddress('suffix', 'takenabcd@example.com', 'active');
+    const suffix = vi.spyOn(utils, 'randomString').mockReturnValue('abcd');
+    expect(() => generateUniqueUsername('example.com', () => 'taken')).toThrow(/conflict/i);
+    expect(suffix.mock.calls.length).toBeGreaterThan(0);
+    expect(suffix.mock.calls.length).toBeLessThanOrEqual(8);
+  });
+
+  it('compares canonical IMAP addresses and ignores other providers', () => {
+    holdAddress('mixed', '  Taken@EXAMPLE.COM\t', 'active');
+    getDb().prepare(`INSERT INTO inboxes (id, provider, address, auth_data) VALUES ('other-provider', 'fake', 'free@example.com', '{}')`).run();
+    const draws = ['TAKEN', 'FREE'];
+    expect(generateUniqueUsername(' Example.COM ', () => draws.shift()!)).toBe('free');
+  });
+});
+
+describe('IMAP canonical active address claims', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const account = (): void => {
+    getDb().prepare(`INSERT INTO imap_accounts (id, host, port, user, password, domain) VALUES ('claim-account', 'imap.test', 993, 'physical-user', 'physical-password', ' Example.COM ')`).run();
+  };
+  const hold = (id: string, provider: string, address: string, status = 'active'): void => {
+    getDb().prepare(`INSERT INTO inboxes (id, provider, address, auth_data, status) VALUES (?, ?, ?, '{}', ?)`).run(id, provider, address, status);
+  };
+
+  it('canonicalizes specified and generated usernames and operator domains without changing credentials', async () => {
+    account();
+    const provider = new ImapProvider();
+    expect(await provider.getDomains()).toEqual(['example.com']);
+    const specified = await provider.createInbox({ username: '  Alice  ', domain: ' EXAMPLE.COM ' });
+    expect(specified).toMatchObject({ address: 'alice@example.com', authData: { username: 'alice', domain: 'example.com', imapAccountId: 'claim-account' } });
+    vi.spyOn(usernames, 'randomUsername').mockReturnValue('  BoB  ');
+    expect((await provider.createInbox()).address).toBe('bob@example.com');
+    expect(getDb().prepare(`SELECT user, password, domain FROM imap_accounts`).get()).toEqual({ user: 'physical-user', password: 'physical-password', domain: ' Example.COM ' });
+  });
+
+  it.each(['', '  ', 'a@b', 'a b', 'a\tb', 'a\nb', 'a\u0000b', 'a\u001fb', 'a\u007fb', null, false, 0, {}, [], undefined].map((username) => ({ username })))('rejects invalid provided username $username', async ({ username }) => {
+    account();
+    await expect(new ImapProvider().createInbox({ username } as { username: string })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('rejects canonical INSERT and address/provider/status UPDATE collisions only for active IMAP rows', () => {
+    hold('first', 'imap', '  Alice@EXAMPLE.COM\t');
+    expect(() => hold('second', 'imap', 'alice@example.com')).toThrow(/IMAP.*conflict/i);
+    hold('other', 'fake', 'alice@example.com');
+    hold('closed', 'imap', 'alice@example.com', 'closed');
+    hold('rename', 'imap', 'free@example.com');
+    for (const sql of [
+      `UPDATE inboxes SET provider = 'imap' WHERE id = 'other'`,
+      `UPDATE inboxes SET status = 'active' WHERE id = 'closed'`,
+      `UPDATE inboxes SET address = 'ALICE@EXAMPLE.COM' WHERE id = 'rename'`,
+    ]) expect(() => getDb().exec(sql)).toThrow(/IMAP.*conflict/i);
+    getDb().exec(`UPDATE inboxes SET status = 'closed' WHERE id = 'first'`);
+    getDb().exec(`UPDATE inboxes SET status = 'active' WHERE id = 'closed'`);
+    expect(getDb().prepare(`SELECT status FROM inboxes WHERE id = 'closed'`).get()).toEqual({ status: 'active' });
+    hold('non-imap-duplicate', 'fake', 'alice@example.com');
+  });
+
+  it.each([' ', '\t\n', '\u00a0', '\u2000\u200a', '\u2028\u2029', '\u202f', '\u3000', '\ufeff'])('compares legacy domain padding %j identically in JS and SQLite', (padding) => {
+    const address = `${padding}ALICE${padding}@${padding}Example.COM${padding}`;
+    expect(canonicalImapAddress(address)).toBe('alice@example.com');
+    hold('legacy-padded', 'imap', address);
+    expect(getDb().prepare(`SELECT ${IMAP_ADDRESS_KEY_SQL} AS address FROM inboxes WHERE id = 'legacy-padded'`).get()).toEqual({ address: 'alice@example.com' });
+    expect(() => hold('canonical', 'imap', 'alice@example.com')).toThrow(/conflict/i);
+  });
+
+  it('reads a single legacy address with domain padding using the canonical recipient', async () => {
+    account();
+    hold('padded-single', 'imap', ' Alice@ Example.COM ');
+    imapMockState.searchResult = [1];
+    imapMockState.envelopeTo = [{ address: 'alice@example.com' }];
+    imapMockState.bodyStructure = { type: 'text/plain' };
+    imapMockState.partContents = { '1': { content: Buffer.from('body') } };
+    const inbox = imapInbox('claim-account', ' Alice@ Example.COM ');
+    const provider = new ImapProvider();
+    expect(await provider.getMessages(inbox)).toHaveLength(1);
+    expect((await provider.getMessage(inbox, '1')).text).toBe('body');
+  });
+
+  // Two legitimate owners may claim these distinct SQLite identities. Each
+  // owner's list, guessed detail and code must use that same identity rule.
+  it.each([
+    ['ASCII To', ['K@EXAMPLE.COM'], undefined, 'ascii'],
+    ['Unicode To', ['\u212A@EXAMPLE.COM'], undefined, 'unicode'],
+    ['ASCII Cc', ['other@example.com'], ['K@EXAMPLE.COM'], 'ascii'],
+    ['Unicode Cc', ['other@example.com'], ['\u212A@EXAMPLE.COM'], 'unicode'],
+  ] as const)('keeps two owners with distinct Unicode claims isolated: %s', async (_name, to, cc, recipientOwner) => {
+    account();
+    const claims = [] as Array<{ id: string; address: string; owner: string }>;
+    for (const [owner, username] of [['ascii', 'k'], ['unicode', '\u212A']]) {
+      const key = `fold-owner-${owner}`;
+      getDb().prepare('INSERT INTO api_keys (key, name) VALUES (?, ?)').run(hashApiKey(key), owner);
+      const response = await app.request('/api/inbox', {
+        method: 'POST', headers: jsonHeaders(key),
+        body: JSON.stringify({ for: 'target.test', provider: 'imap', username }),
+      });
+      expect(response.status).toBe(201);
+      claims.push({ ...await response.json() as { id: string; address: string }, owner });
+    }
+    expect(claims.map((claim) => claim.address)).toEqual(['k@example.com', '\u212A@example.com']);
+    expect(getDb().prepare(`SELECT ${IMAP_ADDRESS_KEY_SQL} AS address FROM inboxes ORDER BY address`).all())
+      .toEqual([{ address: 'k@example.com' }, { address: '\u212A@example.com' }]);
+    getDb().exec(`UPDATE inboxes SET created_at = datetime('now', '-1 minute')`);
+    imapMockState.internalDate = new Date().toISOString();
+    imapMockState.searchResult = [1];
+    imapMockState.bodyStructure = { type: 'text/plain' };
+    imapMockState.partContents = { '1': { content: Buffer.from('Code: 123456') } };
+    setRecipients({ to: [...to], cc: cc ? [...cc] : undefined });
+
+    for (const claim of claims) {
+      const allowed = claim.owner === recipientOwner;
+      const headers = jsonHeaders(`fold-owner-${claim.owner}`);
+      const downloadsBefore = imapMockState.downloadCalls.length;
+      const list = await app.request(`/api/inbox/${claim.id}/messages`, { headers });
+      expect(list.status).toBe(200);
+      expect((await list.json() as { messages: unknown[] }).messages).toHaveLength(allowed ? 1 : 0);
+      const detail = await app.request(`/api/inbox/${claim.id}/messages/1`, { headers });
+      expect(detail.status).toBe(allowed ? 200 : 404);
+      const code = await app.request(`/api/inbox/${claim.id}/code`, { headers });
+      expect(code.status).toBe(200);
+      expect(await code.json()).toMatchObject(allowed
+        ? { codes: expect.arrayContaining([expect.objectContaining({ value: '123456' })]) }
+        : { codes: [], email: null, messageId: null });
+      if (!allowed) expect(imapMockState.downloadCalls).toHaveLength(downloadsBefore);
+    }
+  });
+
+  it.each(['active', 'closed', 'restart'])('preserves legacy duplicate lease isolation when %s before upstream access', async stage => {
+    account();
+    getDb().close();
+    // Only this suite's isolated DB is opened before initDb installs guards.
+    const legacy = new Database(assertTestPath(config.dbPath));
+    legacy.exec(`DROP TRIGGER IF EXISTS imap_active_address_insert; DROP TRIGGER IF EXISTS imap_active_address_update;`);
+    const insert = legacy.prepare(`INSERT INTO inboxes (id, provider, address, auth_data) VALUES (?, 'imap', ?, '{}')`);
+    insert.run('legacy-a', ' Alice@ Example.COM ');
+    insert.run('legacy-b', 'alice@example.com');
+    legacy.exec("UPDATE inboxes SET created_at = '2026-07-26 14:00:00' WHERE id = 'legacy-a'; UPDATE inboxes SET created_at = '2026-07-26 14:01:00' WHERE id = 'legacy-b';");
+    legacy.close();
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { output.push(String(chunk)); return true; });
+    initDb();
+    spy.mockRestore();
+    const warning = output.map((line) => JSON.parse(line)).find((entry) => entry.msg === 'ambiguous active IMAP addresses');
+    expect(warning).toMatchObject({ groupCount: 1, inboxCount: 2, groups: [{ address: 'alice@example.com', count: 2, inboxIds: ['legacy-a', 'legacy-b'] }] });
+    expect(getDb().prepare(`SELECT COUNT(*) AS count FROM inboxes`).get()).toEqual({ count: 2 });
+    getDb().exec(`UPDATE inboxes SET owner_key = 'changed', target_service = 'updated' WHERE id = 'legacy-a'`);
+    const before = imapMockState.connectCount;
+    const provider = new ImapProvider();
+    const inbox = imapInbox('claim-account', 'alice@example.com');
+    await expect(provider.getMessages(inbox)).rejects.toThrow('Message not found');
+    await expect(provider.getMessage(inbox, '1')).rejects.toThrow('Message not found');
+    if (stage !== 'active') {
+      getDb().prepare("UPDATE inboxes SET status = 'closed', closed_at = '2026-07-26 14:02:00' WHERE id = 'legacy-a'").run();
+      if (stage === 'restart') { getDb().close(); initDb(); }
+      for (const id of ['legacy-a', 'legacy-b']) {
+        const lease = { ...inbox, authData: { ...inbox.authData, inboxId: id } };
+        await expect(provider.getMessages(lease)).rejects.toThrow('Message not found');
+        await expect(provider.getMessage(lease, '1')).rejects.toThrow('Message not found');
+      }
+    }
+    expect(imapMockState.connectCount).toBe(before);
+    expect(() => hold('third', 'imap', 'alice@example.com')).toThrow(/conflict/i);
+    getDb().exec(`UPDATE inboxes SET status = 'closed' WHERE id = 'legacy-a'`);
+    getDb().exec(`UPDATE inboxes SET status = 'closed' WHERE id = 'legacy-b'`);
+    hold('new-claim', 'imap', 'alice@example.com');
   });
 });
 

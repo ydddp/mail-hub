@@ -398,13 +398,15 @@ icloudRoutes.post('/icloud/accounts/:id/srp/complete', async (c) => {
 
 icloudRoutes.get('/icloud/addresses', (c) => {
   const rows = getDb().prepare(
-    `SELECT hme, account_id, anonymous_id, state, assigned_inbox_id, assigned_at, use_count, created_at
+    `SELECT hme, account_id, anonymous_id, state, assigned_inbox_id, assigned_at, use_count, created_at,
+            upstream_active, upstream_checked_at
        FROM icloud_addresses ORDER BY created_at DESC`,
   ).all();
-  return c.json({ addresses: rows.map((row) => utcFields(row, 'created_at', 'assigned_at')) });
+  return c.json({ addresses: rows.map((row) => utcFields(row, 'created_at', 'assigned_at', 'upstream_checked_at')) });
 });
 
 interface RetireRow {
+  account_id: string;
   anonymous_id: string;
   state: string;
   region: string;
@@ -412,20 +414,27 @@ interface RetireRow {
   hme_service_url: string;
 }
 
+// validate (15s), LIST (3 x 15s + 2.4s backoff), deactivate (15s): 77.4s.
+// One fixed deadline leaves overhead without extending a paused operation.
+const RETIRE_LEASE_MS = 120_000;
+class RetirementLost extends Error {
+  constructor() { super('Retirement operation expired or was superseded. Retry to verify its outcome.'); }
+}
+
 /**
  * Deactivate a burned address at Apple and take it out of rotation for good.
  *
  * This is the only place Apple-side deactivation belongs. Release and expiry
- * deliberately return an address to `free` and never call Apple, because
+ * recycle eligible addresses locally and never call Apple, because
  * recycling is the entire premise of the pool — an Apple ID only ever gets 750
  * addresses. Once a target has blocked one, though, the slot is spent either
  * way, and handing it to the next tenant only burns their registration too.
  *
- * Apple is called BEFORE the local write, and a failure leaves the row exactly
- * as it was. The other order is worse than a failed request: a row marked
- * `retired` while the alias is still forwarding is a lie nothing will ever
- * retry, so the address would keep delivering a burned target's mail forever
- * with no record that it should not.
+ * Retirement first persists a leased claim, removing the alias from dispatch.
+ * Uncertain results remain `retiring`; an administrator retry verifies a stale
+ * operation against Apple's complete list before finishing or writing again.
+ * Only the current unexpired operation can send deactivation or record its
+ * outcome, so late responses cannot free or finalize a newer claim.
  */
 /**
  * Read an address's mail directly, without an inbox.
@@ -479,7 +488,7 @@ icloudRoutes.post('/icloud/addresses/:hme/retire', async (c) => {
 
   const row = getRow<RetireRow>(
     db,
-    `SELECT a.anonymous_id, a.state,
+    `SELECT a.account_id, a.anonymous_id, a.state,
             COALESCE(acc.region, 'global') AS region,
             COALESCE(acc.cookies, '') AS cookies,
             COALESCE(acc.hme_service_url, '') AS hme_service_url
@@ -498,30 +507,39 @@ icloudRoutes.post('/icloud/addresses/:hme/retire', async (c) => {
     }, 409);
   }
 
-  // Claim BEFORE calling Apple. Dispatch only takes 'free' rows, so flipping
-  // the state first closes the race where a dispatch grabbed the address while
-  // Apple was deactivating it — the alias ended up dead at Apple but back in
-  // rotation locally, silently receiving nothing.
-  //
-  // The claim matches only the two terminal states, never 'retiring' itself:
-  // a second concurrent retire that saw 'retiring' must fail here rather than
-  // win the same-value UPDATE (SQLite counts a no-op 'retiring'→'retiring' as
-  // changes===1), because if the first request then rolls back to 'free' the
-  // second's success write would target a row that is no longer 'retiring' and
-  // be silently dropped, stranding a dead alias as dispatchable.
-  // A crash between this claim and the final write leaves the row parked in
-  // 'retiring'. That is deliberately left alone: dispatch only draws 'free',
-  // so a stuck row is out of rotation and can never be handed out — at worst
-  // it costs one pool slot, which an operator can inspect. Auto-reclaiming it
-  // would risk freeing an alias Apple had already deactivated.
+  // Claim before Apple; persist authority so restart/retry can distinguish a
+  // running operation from a stale or legacy one. No stale claim returns free.
+  const recovering = row.state === 'retiring';
+  const operation = randomUUID();
+  const started = Date.now();
   const claimed = db.prepare(
-    `UPDATE icloud_addresses SET state = 'retiring' WHERE hme = ? AND state IN ('free', 'retired')`,
-  ).run(hme);
+    `UPDATE icloud_addresses SET state = 'retiring', retire_op_id = ?, retire_started_at = ?, retire_lease_until = ?
+      WHERE hme = ? AND account_id = ? AND anonymous_id = ? AND state = ?
+        AND (state IN ('free', 'retired') OR (state = 'retiring'
+          AND (retire_op_id IS NULL OR retire_started_at IS NULL OR retire_lease_until IS NULL OR retire_lease_until <= ?)))`,
+  ).run(operation, started, started + RETIRE_LEASE_MS, hme, row.account_id, row.anonymous_id, row.state, started);
   if (claimed.changes === 0) {
     return c.json({
       error: 'This address is being retired or has been claimed by an inbox. Try again in a moment.',
     }, 409);
   }
+
+  const fence = `hme = ? AND account_id = ? AND anonymous_id = ? AND state = 'retiring'
+    AND retire_op_id = ? AND retire_lease_until > ?`;
+  const authority = () => [hme, row.account_id, row.anonymous_id, operation, Date.now()];
+  const guard = () => {
+    if (!db.prepare(`SELECT 1 FROM icloud_addresses WHERE ${fence}`).get(...authority())) throw new RetirementLost();
+  };
+  const updateOwned = (assignment: string, values: (string | number | null)[] = []) => {
+    if (db.prepare(`UPDATE icloud_addresses SET ${assignment} WHERE ${fence}`).run(...values, ...authority()).changes !== 1) {
+      throw new RetirementLost();
+    }
+  };
+  const complete = db.transaction(() => {
+    updateOwned(`state = 'retired', upstream_active = 0, upstream_checked_at = ?,
+      retire_op_id = NULL, retire_started_at = NULL, retire_lease_until = NULL`, [new Date(Date.now()).toISOString()]);
+    logActivity('rose', `Retired iCloud address ${hme}`);
+  });
 
   const client = new IcloudClient({
     cookies: row.cookies,
@@ -530,32 +548,45 @@ icloudRoutes.post('/icloud/addresses/:hme/retire', async (c) => {
   });
 
   try {
-    await client.deactivate(row.anonymous_id);
-  } catch (e) {
-    // Only a completed response that explicitly rejects deactivation proves the
-    // alias still forwards, so only then is it safe to return the row to the
-    // pool. A timeout or malformed/5xx/auth response can land AFTER Apple has
-    // already applied the change; returning the alias to 'free' on those would
-    // hand a dead address back to dispatch, and the tenant would silently
-    // receive nothing. So anything short of a definitive rejection stays
-    // fail-closed in 'retiring' (out of rotation), which an operator can
-    // inspect. Apple's raw message is still surfaced to the caller.
-    if (e instanceof IcloudDefinitiveRejection) {
-      db.prepare(`UPDATE icloud_addresses SET state = ? WHERE hme = ? AND state = 'retiring'`)
-        .run(row.state, hme);
-    } else {
-      log.warn('iCloud address retirement is ambiguous; operator action required', {
-        address: hme,
-        error: errorMessage(e),
-        operatorAction: 'Inspect the address and retry retirement after checking Apple',
-      });
+    if (recovering) {
+      const snapshot = await client.listWithForwarding(guard);
+      guard();
+      // Apple may rename the alias; account + anonymous ID retain identity.
+      // Absence in even a complete list does not establish inactivity.
+      const alias = snapshot.hmeEmails.find(entry => entry.anonymousId === row.anonymous_id);
+      if (!alias) throw new Error('The address is absent from the complete Hide My Email list');
+      if (!alias.isActive) {
+        complete();
+        return c.json({ ok: true });
+      }
+      updateOwned('upstream_active = 1, upstream_checked_at = ?', [new Date(Date.now()).toISOString()]);
     }
-    return c.json({ error: errorMessage(e) }, 502);
+    await client.deactivate(row.anonymous_id, guard);
+    complete();
+  } catch (e) {
+    try {
+      // Every outcome, including releasing a finished attempt's lease, must
+      // still own its unexpired operation. Late bodies/results return 409.
+      guard();
+      if (e instanceof IcloudDefinitiveRejection && !recovering) {
+        updateOwned(`state = CASE WHEN upstream_active = 0 THEN 'retired' ELSE ? END,
+          retire_op_id = NULL, retire_started_at = NULL, retire_lease_until = NULL`, [row.state]);
+      } else {
+        // An ended ambiguous attempt is immediately recoverable by LIST; keep
+        // its identity/start for diagnosis and never restore unknown activity.
+        updateOwned('retire_lease_until = ?', [Date.now()]);
+        log.warn('iCloud address retirement is ambiguous; operator action required', {
+          address: hme,
+          error: e,
+          operatorAction: 'Inspect the address and retry retirement to verify Apple activity',
+        });
+      }
+    } catch (lost) {
+      if (lost instanceof RetirementLost) return c.json({ error: lost.message }, 409);
+      throw lost;
+    }
+    return c.json({ error: recovering ? `Retirement unresolved: ${errorMessage(e)}` : errorMessage(e) }, 502);
   }
-
-  db.prepare(`UPDATE icloud_addresses SET state = 'retired' WHERE hme = ? AND state = 'retiring'`).run(hme);
-
-  logActivity('rose', `Retired iCloud address ${hme}`);
   return c.json({ ok: true });
 });
 
@@ -573,7 +604,9 @@ icloudRoutes.post('/icloud/accounts/:id/generate', async (c) => {
   });
 
   const insert = getDb().prepare(
-    `INSERT INTO icloud_addresses (hme, account_id, anonymous_id) VALUES (?, ?, ?)`,
+    // Reserve success confirms identity, not an activity snapshot.
+    `INSERT INTO icloud_addresses (hme, account_id, anonymous_id, upstream_active, upstream_checked_at)
+     VALUES (?, ?, ?, NULL, NULL)`,
   );
 
   const addresses: string[] = [];

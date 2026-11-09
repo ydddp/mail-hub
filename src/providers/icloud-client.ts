@@ -41,6 +41,62 @@ export class IcloudApiError extends Error {}
 /** A completed Apple response explicitly rejected the requested operation. */
 export class IcloudDefinitiveRejection extends IcloudApiError {}
 
+export interface HmeSnapshot {
+  hmeEmails: HmeEntry[];
+  selectedForwardTo: string;
+  forwardToEmails: string[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A partial page is not evidence of an alias's delivery state. */
+function requireCompleteSnapshot(value: Record<string, unknown>): void {
+  const partial = ['partial', 'isPartial', 'incomplete', 'truncated', 'isTruncated', 'hasMore', 'more'];
+  const continuation = ['continuation', 'continuationToken', 'nextToken', 'nextPageToken', 'nextPage', 'nextCursor'];
+  if (partial.some(key => value[key] !== undefined && value[key] !== null && value[key] !== false && value[key] !== 0)
+      || ['complete', 'isComplete'].some(key => value[key] === false)
+      || continuation.some(key => value[key] !== undefined && value[key] !== null && value[key] !== '' && value[key] !== false)) {
+    throw new IcloudApiError('iCloud returned an incomplete Hide My Email list');
+  }
+  if (isRecord(value.pagination)) requireCompleteSnapshot(value.pagination);
+}
+
+/** Shared with reconciliation so injected clients cannot bypass batch validation. */
+export function validateHmeSnapshot(value: unknown): HmeSnapshot {
+  if (!isRecord(value) || !Array.isArray(value.hmeEmails)) {
+    throw new IcloudApiError('iCloud returned no valid Hide My Email list');
+  }
+  requireCompleteSnapshot(value);
+  const byId = new Map<string, HmeEntry>();
+  const byAddress = new Map<string, string>();
+  for (const entry of value.hmeEmails) {
+    if (!isRecord(entry) || typeof entry.anonymousId !== 'string' || !entry.anonymousId.trim()
+        || typeof entry.hme !== 'string' || !entry.hme.trim() || typeof entry.isActive !== 'boolean') {
+      throw new IcloudApiError('iCloud returned an invalid Hide My Email entry');
+    }
+    const alias: HmeEntry = {
+      hme: entry.hme, anonymousId: entry.anonymousId, isActive: entry.isActive,
+      label: typeof entry.label === 'string' ? entry.label : '',
+      note: typeof entry.note === 'string' ? entry.note : '',
+    };
+    const previous = byId.get(alias.anonymousId);
+    if ((previous && (previous.hme !== alias.hme || previous.isActive !== alias.isActive
+        || previous.label !== alias.label || previous.note !== alias.note))
+        || (byAddress.has(alias.hme) && byAddress.get(alias.hme) !== alias.anonymousId)) {
+      throw new IcloudApiError('iCloud returned conflicting Hide My Email entries');
+    }
+    byId.set(alias.anonymousId, alias);
+    byAddress.set(alias.hme, alias.anonymousId);
+  }
+  return {
+    hmeEmails: [...byId.values()],
+    selectedForwardTo: typeof value.selectedForwardTo === 'string' ? value.selectedForwardTo : '',
+    forwardToEmails: Array.isArray(value.forwardToEmails) ? value.forwardToEmails : [],
+  };
+}
+
 interface Envelope<T> {
   success?: boolean;
   result?: T;
@@ -157,14 +213,26 @@ export class IcloudClient {
     if (!this.resolvedServiceUrl) await this.validate();
   }
 
-  private async call<T>(method: 'GET' | 'POST', path: string, data?: unknown): Promise<T> {
+  private async call<T>(method: 'GET' | 'POST', path: string, data?: unknown, requireCompleteList = false, assertAuthority?: () => void): Promise<T> {
     await this.ensureService();
+    // Service discovery can await a slow validate. Authority must be checked
+    // after it, immediately before the non-retryable upstream write.
+    assertAuthority?.();
     const res = await fetchWithTimeout(`${this.serviceUrl()}${path}`, {
       method,
       headers: this.headers(),
       body: data === undefined ? undefined : JSON.stringify(data),
     });
+    assertAuthority?.();
     const body = await this.readJson<Envelope<T>>(res, `${method} ${path}`);
+    assertAuthority?.();
+    if (requireCompleteList) {
+      const envelope: unknown = body;
+      if (!isRecord(envelope) || envelope.success !== true) {
+        throw new IcloudApiError('iCloud did not confirm a successful Hide My Email list');
+      }
+      requireCompleteSnapshot(envelope);
+    }
     if (body.success === false) {
       throw new IcloudDefinitiveRejection(body.error?.errorMessage || `iCloud rejected ${method} ${path}`);
     }
@@ -199,24 +267,11 @@ export class IcloudClient {
    * other provider's address that destination is usually not an Apple mailbox
    * at all. Reading it off the account beats making the operator guess.
    */
-  async listWithForwarding(): Promise<{
-    hmeEmails: HmeEntry[];
-    selectedForwardTo: string;
-    forwardToEmails: string[];
-  }> {
-    const result = await this.call<{
-      hmeEmails?: HmeEntry[];
-      selectedForwardTo?: string;
-      forwardToEmails?: string[];
-    }>('GET', '/v2/hme/list');
-    return {
-      hmeEmails: result.hmeEmails ?? [],
-      selectedForwardTo: result.selectedForwardTo ?? '',
-      forwardToEmails: result.forwardToEmails ?? [],
-    };
+  async listWithForwarding(assertAuthority?: () => void): Promise<HmeSnapshot> {
+    return validateHmeSnapshot(await this.call<unknown>('GET', '/v2/hme/list', undefined, true, assertAuthority));
   }
 
-  async deactivate(anonymousId: string): Promise<void> {
-    await this.call<unknown>('POST', '/v1/hme/deactivate', { anonymousId });
+  async deactivate(anonymousId: string, assertAuthority?: () => void): Promise<void> {
+    await this.call<unknown>('POST', '/v1/hme/deactivate', { anonymousId }, false, assertAuthority);
   }
 }

@@ -38,16 +38,16 @@ function isSessionError(e: unknown): boolean {
   return e instanceof UpstreamHttpError && [401, 403, 421].includes(e.status);
 }
 
-function degradeAccount(accountId: string, reason: string): void {
+function degradeAccount(accountId: string, error: unknown): void {
   // Only 'active' can degrade: 'error' is the read half, which a dead cookie
   // neither causes nor cures, and its text must survive for the operator.
   const result = getDb().prepare(
     `UPDATE icloud_accounts SET status = 'degraded', last_error = ? WHERE id = ? AND status = 'active'`,
-  ).run(reason, accountId);
+  ).run(errorMessage(error), accountId);
   if (result.changes === 1) {
     log.warn('iCloud account session degraded; operator action required', {
       accountId,
-      error: reason,
+      error: error,
       operatorAction: 'Refresh the cookie or complete an SRP sign-in',
     });
   }
@@ -91,7 +91,7 @@ async function tryRenewSession(account: RefillAccount): Promise<boolean> {
     log.info('iCloud session renewed silently', { accountId: account.id });
     return true;
   } catch (e) {
-    log.warn('iCloud silent renewal failed', { accountId: account.id, error: errorMessage(e) });
+    log.warn('iCloud silent renewal failed', { accountId: account.id, error: e });
     getDb().prepare(
       `UPDATE icloud_accounts SET last_error = ? WHERE id = ? AND status = 'degraded'`,
     ).run(`SRP renewal failed: ${errorMessage(e)}`, account.id);
@@ -144,7 +144,8 @@ async function refillPass(): Promise<{ created: number; skipped: number; errors:
   const errors: string[] = [];
 
   const countFree = db.prepare(
-    `SELECT COUNT(*) AS c FROM icloud_addresses WHERE account_id = ? AND state = 'free'`,
+    `SELECT COUNT(*) AS c FROM icloud_addresses WHERE account_id = ? AND state = 'free'
+      AND (upstream_active IS NULL OR upstream_active = 1)`,
   );
 
   for (const account of accounts) {
@@ -195,15 +196,17 @@ async function refillPass(): Promise<{ created: number; skipped: number; errors:
       // session is a different thing entirely and is marked as such.
       const message = errorMessage(e);
       errors.push(message);
-      if (isSessionError(e)) degradeAccount(account.id, message);
-      else log.info('iCloud reconcile failed; will retry next tick', { accountId: account.id, error: message });
+      if (isSessionError(e)) degradeAccount(account.id, e);
+      else log.info('iCloud reconcile failed; will retry next tick', { accountId: account.id, error: e });
       continue;
     }
 
     const free = countFree.get(account.id) as { c: number };
 
     const insert = db.prepare(
-      `INSERT INTO icloud_addresses (hme, account_id, anonymous_id) VALUES (?, ?, ?)`,
+      // Reserve returns identity only. Activity remains unknown until LIST.
+      `INSERT INTO icloud_addresses (hme, account_id, anonymous_id, upstream_active, upstream_checked_at)
+       VALUES (?, ?, ?, NULL, NULL)`,
     );
 
     const wanted = Math.max(0, target - free.c);
@@ -223,7 +226,7 @@ async function refillPass(): Promise<{ created: number; skipped: number; errors:
         // A dead session is a credential problem: degrade so renewal or the
         // operator fixes it. Anything else is treated as Apple refusing to
         // mint, which is what the long backoff is for.
-        if (isSessionError(e)) degradeAccount(account.id, message);
+        if (isSessionError(e)) degradeAccount(account.id, e);
         else setCooldown(account.id, COOLDOWN_MS, message);
         refused = true;
         break;
@@ -282,7 +285,7 @@ function arm(): void {
   const armedGeneration = generation;
   timer = setTimeout(() => {
     void runRefillOnce()
-      .catch((e: unknown) => log.error('iCloud refill failed', { error: errorMessage(e) }))
+      .catch((e: unknown) => log.error('iCloud refill failed', { error: e }))
       // arm() reads a setting and can throw; letting that escape here would
       // kill the interval permanently with nothing left to restart it.
       .finally(() => {
@@ -291,7 +294,7 @@ function arm(): void {
         // duplicate it.
         if (armedGeneration !== generation) return;
         try { arm(); } catch (e) {
-          log.error('iCloud refill failed to reschedule', { error: errorMessage(e) });
+          log.error('iCloud refill failed to reschedule', { error: e });
         }
       });
   }, intervalMs());
@@ -309,7 +312,7 @@ export function startIcloudPool(): void {
   // to see the pool move. Restart hammering is bounded by the DB-persisted
   // cooldown and the at-target early exit, both of which survive the restart.
   void runRefillOnce()
-    .catch((e: unknown) => log.error('iCloud refill failed', { error: errorMessage(e) }));
+    .catch((e: unknown) => log.error('iCloud refill failed', { error: e }));
   arm();
 }
 

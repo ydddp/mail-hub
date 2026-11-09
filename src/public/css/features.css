@@ -133,6 +133,12 @@
 /* ─── Mailbox (account-level) lease dividers ─── */
 .lease-sep td{background:var(--bg2);padding:7px 12px;font-size:var(--text-base);color:var(--text3)}
 .lease-sep .lease-name{font-weight:var(--fw-semibold);color:var(--text2)}
+/* Exact mail instants remain inspectable with mouse, keyboard and touch. */
+.mail-time{position:relative;display:inline-block;cursor:help;border-radius:var(--radius-sm)}
+.mail-time:focus-visible{outline-offset:3px}
+.mail-time-tip{display:none;position:fixed;inset:auto;margin:0;z-index:30;width:max-content;max-width:min(280px,calc(100vw - 24px));white-space:normal;overflow-wrap:anywhere;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 10px;box-shadow:var(--shadow-overlay);font-family:var(--font-mono);font-size:var(--text-sm);line-height:1.5;color:var(--text)}
+.mail-time-tip:popover-open{display:block}
+.mail-attribution{white-space:normal;overflow-wrap:anywhere}
 
 /* ─── Message body, expanded in place under its own row ─── */
 .msg-expand > td{padding:0;border-top:none}

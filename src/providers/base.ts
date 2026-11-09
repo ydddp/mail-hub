@@ -36,6 +36,8 @@ export interface ProviderMeta {
 }
 
 export interface InboxData {
+  /** Internal recovery marker; never serialize to authData or a public result. */
+  creationRecoveryId?: string;
   address: string;
   authData: Record<string, string>;
   provider: string;
@@ -44,7 +46,11 @@ export interface InboxData {
   expiresAt?: string;
 }
 
+/** Internal To/Cc evidence survives object spreads but is omitted by JSON. */
+export const MESSAGE_RECIPIENTS: unique symbol = Symbol('messageRecipients');
+
 export interface Message {
+  [MESSAGE_RECIPIENTS]?: readonly string[];
   id: string;
   from: string;
   subject: string;
@@ -56,6 +62,34 @@ export interface Message {
 export interface MessageDetail extends Message {
   text?: string;
   html?: string;
+}
+
+/** Internal matching scan; one budget is retained for the entire HTTP request. */
+export interface MailboxScanBudget {
+  pages: number;
+  metadata: number;
+  imapUidValidity?: Record<string, string>;
+}
+
+export interface MailboxScanMeta {
+  scope: 'inbox_and_junk';
+  pages: number;
+  metadata: number;
+  complete: boolean;
+  truncated: boolean;
+  partial: boolean;
+  folders: { folder: string; complete: boolean }[];
+}
+
+export interface MailboxScanControl {
+  budget: MailboxScanBudget;
+  checkpoint(): void;
+  /** Deadline, cancellation and lease checks around each awaited operation. */
+  run<T>(operation: () => Promise<T>): Promise<T>;
+  /** One charge to the existing shared provider-read limiter. */
+  read<T>(operation: () => Promise<T>): Promise<T>;
+  /** Report in-flight folder progress before the next awaited operation. */
+  progress?(scan: MailboxScanMeta): void;
 }
 
 export type ProviderDomainMode = 'endpoint' | 'static' | 'from_create';
@@ -81,9 +115,10 @@ export abstract class BaseProvider {
    * caller say which, and picking silently is wrong when the accounts are not
    * interchangeable.
    */
-  abstract createInbox(opts?: { domain?: string; username?: string; for?: string; subdomain?: string; inboxId?: string; alias?: boolean; account?: string }): Promise<InboxData>;
+  abstract createInbox(opts?: { domain?: string; username?: string; for?: string; subdomain?: string; inboxId?: string; alias?: boolean; account?: string; duration?: number }): Promise<InboxData>;
   abstract getMessages(inbox: InboxData): Promise<Message[]>;
-  abstract getMessage(inbox: InboxData, messageId: string): Promise<MessageDetail>;
+  scanMessages?(inbox: InboxData, control: MailboxScanControl): Promise<{ messages: Message[]; scan: MailboxScanMeta }>;
+  abstract getMessage(inbox: InboxData, messageId: string, control?: MailboxScanControl): Promise<MessageDetail>;
 
   async deleteInbox(_inbox: InboxData): Promise<void> {}
   async releaseInbox(_inbox: InboxData, _inboxId?: string): Promise<void> {}

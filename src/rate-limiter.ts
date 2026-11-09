@@ -1,7 +1,13 @@
+import { nanoid } from 'nanoid';
 import { registry } from './providers/registry.js';
 
 interface Window {
   timestamps: number[];
+}
+
+interface CreateReservation {
+  id: string;
+  timestamp: number;
 }
 
 export interface RateLimitStatus {
@@ -15,7 +21,7 @@ export interface RateLimitStatus {
 }
 
 class RateLimiter {
-  private createWindows = new Map<string, Window>();
+  private createWindows = new Map<string, CreateReservation[]>();
   private pollWindows = new Map<string, Window>();
   private cooldowns = new Map<string, number>();
   private cooldownReasons = new Map<string, string>();
@@ -35,26 +41,26 @@ class RateLimiter {
     w.timestamps = w.timestamps.filter((t) => t > cutoff);
   }
 
-  recordCreate(provider: string): void {
-    const w = this.getWindow(this.createWindows, provider);
-    w.timestamps.push(Date.now());
+  private getCreateReservations(provider: string): CreateReservation[] {
+    const cutoff = Date.now() - 60_000;
+    const reservations = (this.createWindows.get(provider) ?? []).filter((entry) => entry.timestamp > cutoff);
+    this.createWindows.set(provider, reservations);
+    return reservations;
   }
 
-  /**
-   * Return the most recently recorded create slot to the window. Used when a
-   * create attempt fails deterministically (e.g. upstream 4xx that is not a
-   * rate limit), so a failed request that never produced an inbox does not
-   * count against the per-minute budget and cascade into spurious 429s.
-   */
-  refundCreate(provider: string): void {
-    const w = this.createWindows.get(provider);
-    if (w && w.timestamps.length > 0) w.timestamps.pop();
+  /** Refund only the named request after proving it produced no asset. */
+  refundCreate(provider: string, reservationId: string): void {
+    const reservations = this.createWindows.get(provider);
+    if (!reservations) return;
+    this.createWindows.set(provider, reservations.filter((entry) => entry.id !== reservationId));
   }
 
-  tryRecordCreate(provider: string): boolean {
-    if (!this.isCreateAvailable(provider)) return false;
-    this.recordCreate(provider);
-    return true;
+  /** The availability check and reservation are synchronous, before any await. */
+  reserveCreate(provider: string): string | null {
+    if (!this.isCreateAvailable(provider)) return null;
+    const id = nanoid();
+    this.getCreateReservations(provider).push({ id, timestamp: Date.now() });
+    return id;
   }
 
   recordPoll(provider: string): void {
@@ -121,9 +127,7 @@ class RateLimiter {
     const limit = p.meta?.rateLimit?.createPerMinute ?? 0;
     if (limit <= 0) return true;
 
-    const w = this.getWindow(this.createWindows, provider);
-    this.pruneWindow(w, 60_000);
-    return w.timestamps.length < limit;
+    return this.getCreateReservations(provider).length < limit;
   }
 
   isPollAvailable(provider: string): boolean {
@@ -153,8 +157,14 @@ class RateLimiter {
       : (p?.meta?.rateLimit?.pollPerMinute ?? 0);
     const windowMs = 60_000;
 
-    const w = this.getWindow(type === 'create' ? this.createWindows : this.pollWindows, provider);
-    this.pruneWindow(w, windowMs);
+    let timestamps: number[];
+    if (type === 'create') {
+      timestamps = this.getCreateReservations(provider).map((entry) => entry.timestamp);
+    } else {
+      const w = this.getWindow(this.pollWindows, provider);
+      this.pruneWindow(w, windowMs);
+      timestamps = w.timestamps;
+    }
 
     const cooldown = type === 'create' ? this.cooldowns.get(provider) : undefined;
     const inCooldown = cooldown ? Date.now() < cooldown : false;
@@ -166,16 +176,16 @@ class RateLimiter {
     let nextAvailableAt: string | null = null;
     if (inCooldown && cooldown) {
       nextAvailableAt = new Date(cooldown).toISOString();
-    } else if (limit > 0 && w.timestamps.length >= limit) {
-      nextAvailableAt = new Date(w.timestamps[0] + windowMs).toISOString();
+    } else if (limit > 0 && timestamps.length >= limit) {
+      nextAvailableAt = new Date(timestamps[0] + windowMs).toISOString();
     }
 
     return {
       provider,
       maxPerWindow: limit,
       windowSeconds: 60,
-      currentCount: w.timestamps.length,
-      available: !inCooldown && (limit <= 0 || w.timestamps.length < limit),
+      currentCount: timestamps.length,
+      available: !inCooldown && (limit <= 0 || timestamps.length < limit),
       nextAvailableAt,
       cooldownReason: inCooldown ? (this.cooldownReasons.get(provider) ?? 'cooldown') : null,
     };

@@ -31,7 +31,7 @@ providerRoutes.get('/providers/:name', async (c) => {
   try {
     domains = await provider.getDomains();
   } catch (error) {
-    log.warn('failed to fetch provider domains', { provider: name, error: errorMessage(error) });
+    log.warn('failed to fetch provider domains', { provider: name, error: error });
   }
 
   const db = getDb();
@@ -60,6 +60,7 @@ providerRoutes.get('/providers/:name', async (c) => {
   return c.json({
     ...provider.meta,
     ...cfg,
+    domainMode: provider.getDomainMode(),
     domains,
     rateStatus,
     stats: utcFields(stats, 'last_success_at', 'last_error_at'),
@@ -105,7 +106,7 @@ providerRoutes.get('/providers/:name/domains', async (c) => {
 
   try {
     const domains = await provider.getDomains();
-    return c.json({ provider: name, domains });
+    return c.json({ provider: name, domainMode: provider.getDomainMode(), domains });
   } catch (e) {
     return c.json({ error: errorMessage(e) }, 502);
   }

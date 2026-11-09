@@ -22,7 +22,7 @@ import { copyLlmsUrl, loadDocsMarkup, scrollDoc, toggleParentOpen } from './view
 import { copyGmailAliases, renderGmailAliases, toggleGmailRule } from './views/gmail-tool.js';
 import { addIcloudAccount, applyIcloudHostPreset, deleteIcloudAccount, generateIcloud, loadIcloudAccounts, loadIcloudAddresses, readIcloudMessage, refreshIcloudCookies, renderIcloudAccounts, renderIcloudAddresses, retireIcloudAddress, saveIcloudPoolSettings, srpAnswer, srpAnswerFrom, srpIcloudLogin, srpSendSms, suggestIcloudImapHost, testIcloudAccount, viewIcloudMailbox } from './views/icloud.js';
 import { addImapAccount, deleteImapAccount, deleteImapSelected, loadImapAccounts, testImapAccount, toggleAllImap } from './views/imap.js';
-import { batchCloseInbox, batchReportInbox, closeInbox, createInbox, doClose, exitInboxDetail, fitMsgFrame, getCode, loadInboxes, readMailboxMessage, readMessage, reportInbox, toggleAllInbox, viewInbox, viewMailbox } from './views/inboxes.js';
+import { batchCloseInbox, batchReportInbox, closeInbox, createInbox, doClose, exitInboxDetail, fitMsgFrame, getCode, invalidateCodeView, loadEarlierMailbox, loadInboxes, readMailboxMessage, readMessage, reportInbox, resetCodeSession, toggleAllInbox, viewInbox, viewMailbox } from './views/inboxes.js';
 import { copyKeySecret, createKey, deleteKey, doDeleteKey, setKeyQuota, toggleKey, toggleKeySecret } from './views/keys.js';
 import { batchCheckOutlook, batchDeleteOutlook, batchRenewOutlook, checkSingleOl, copyOutlookOauthPassword, deleteOlAccount, doBatchDeleteOl, doDeleteOl, filterOlAccounts, importOutlook, loadOutlook, loadOutlookAccounts, placeOutlookOauthPanel, renewSingleOl, saveOlSettings, startOutlookOauth, submitOutlookOauthFinalUrl, toggleAllOl } from './views/outlook.js';
 import { addSvcRule, moveDispatch, moveSvcRule, removeSvcRule, resetDispatchOrder, runDispatchPreview, saveDispatchOrder, saveServiceDispatch, setAutoDispatch, setServiceDispatchMode, setSvcRuleOthers, showDomains, showProviderDetail, toggleProvider } from './views/providers.js';
@@ -46,9 +46,9 @@ actions({
   deleteKey, deleteOlAccount, deleteRule, deleteTpl, deleteYdAccount, doBatchDeleteOl,
   doBatchDeleteYd, doClose, doDeleteBlock, doDeleteKey, doDeleteOl, doDeleteYd, doLogin, doLogout,
   editTpl, exitInboxDetail, filterDashTableDebounced: window.filterDashTableDebounced,
-  filterOlAccounts, filterServices, fitMsgFrame, generateIcloud, getCode, hideDialog,
+  filterOlAccounts, filterServices, fitMsgFrame, generateIcloud, getCode, resetCodeSession, hideDialog,
   hideTplEditor, importOutlook, importYyds, loadBlocksDebounced: window.loadBlocksDebounced,
-  loadDocsMarkup, loadIcloudAccounts, loadIcloudAddresses, loadImapAccounts, loadInboxes,
+  loadEarlierMailbox, loadDocsMarkup, loadIcloudAccounts, loadIcloudAddresses, loadImapAccounts, loadInboxes,
   loadOutlook, loadOutlookAccounts, loadServiceDetail, loadYyds, moveDispatch, moveSvcRule,
   openConfigTab, readIcloudMessage, readMailboxMessage, readMessage, refreshCurrentView,
   refreshIcloudCookies, removeSvcRule, renderGmailAliases, renderIcloudAccounts,
@@ -103,6 +103,7 @@ document.addEventListener('click', e => {
 }, true);
 document.querySelectorAll('.nav-icon[data-view]').forEach(btn => {
   btn.addEventListener('click', () => {
+    invalidateCodeView();
     const from = document.querySelector('.nav-icon[data-view].active');
     switchViewWithTransition(from, btn, () => {
       document.querySelectorAll('.nav-icon').forEach(b => b.classList.remove('active'));

@@ -1,7 +1,6 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { createLogger } from './logger.js';
-import { errorMessage } from './errors.js';
 
 const log = createLogger('version');
 
@@ -10,7 +9,7 @@ function readAppVersion(): string {
     const pkg = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf-8')) as { version?: unknown };
     return typeof pkg.version === 'string' && pkg.version ? pkg.version : '0.0.0';
   } catch (error) {
-    log.warn('failed to read package version', { error: errorMessage(error) });
+    log.warn('failed to read package version', { error: error });
     return '0.0.0';
   }
 }

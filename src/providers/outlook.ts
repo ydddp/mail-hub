@@ -1,15 +1,26 @@
 import { parseTimestamp, providerTime } from '../time.js';
 import { createHash, randomUUID } from 'crypto';
-import { BaseProvider, PROVIDER, type InboxData, type Message, type MessageDetail, type ProviderMeta } from './base.js';
+import { BaseProvider, MESSAGE_RECIPIENTS, PROVIDER, type InboxData, type Message, type MessageDetail, type ProviderMeta, type MailboxScanControl, type MailboxScanMeta } from './base.js';
 import { allRows, getDb, getRow, getSetting } from '../db.js';
 import { fetchWithTimeout, formatSender, randomString } from '../utils.js';
-import { errorMessage, UpstreamHttpError } from '../errors.js';
+import { MessageNotFoundError, NoAssetCreatedError, UpstreamHttpError } from '../errors.js';
 import { config } from '../config.js';
+import { foldAsciiCase } from '../mail-address.js';
+import { readOutlookHistory, type HistoryReadControl, type HistoryFolder, type OutlookHistoryState } from '../outlook-history.js';
 import { isImapAuthenticationError } from './imap-core.js';
+import {
+  assertCurrentCredentials, beginCredentialRequest, checkpointCredentialResponse,
+  currentCredentialContext, credentialsCurrent, OutlookCredentialStorageError, StaleOutlookCredentialsError,
+  updateCredentialAccount, type OutlookCredentialContext,
+} from '../outlook-credentials.js';
 import {
   checkOutlookImap,
   fetchOutlookImapMessage,
   fetchOutlookImapMessages,
+  scanOutlookImapMessages,
+  initializeOutlookImapHistory,
+  fetchOutlookImapHistoryPage,
+  checkOutlookImapHistoryGenerations,
   outlookImapCreds,
 } from './outlook-imap.js';
 
@@ -20,6 +31,11 @@ const OUTLOOK_INBOX_URL = 'https://outlook.office.com/api/v2.0/me/mailfolders/in
 const OUTLOOK_JUNK_URL = 'https://outlook.office.com/api/v2.0/me/mailfolders/junkemail/messages';
 const TOKEN_TTL = 55 * 60 * 1000;
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+const MESSAGE_FIELDS = 'id,subject,from,receivedDateTime,body,bodyPreview,toRecipients,ccRecipients';
+
+interface GraphRecipient {
+  emailAddress?: { name?: string; address?: string };
+}
 
 interface GraphMessage {
   id: string;
@@ -28,6 +44,8 @@ interface GraphMessage {
   receivedDateTime?: string;
   body?: { content?: string; contentType?: string };
   bodyPreview?: string;
+  toRecipients?: GraphRecipient[];
+  ccRecipients?: GraphRecipient[];
 }
 
 interface OAuthResponse {
@@ -161,10 +179,12 @@ export function resetTokenCache(): void {
   tokenCache.clear();
 }
 
-async function fetchOAuthToken(clientId: string, refreshToken: string): Promise<{ accessToken: string; newRefreshToken?: string; expiresIn?: number }> {
+async function fetchOAuthToken(context: OutlookCredentialContext): Promise<{ accessToken: string; newRefreshToken?: string; expiresIn?: number }> {
+  assertCurrentCredentials(context);
+  beginCredentialRequest(context);
   const body = new URLSearchParams({
-    client_id: clientId,
-    refresh_token: refreshToken,
+    client_id: context.clientId,
+    refresh_token: context.refreshToken,
     grant_type: 'refresh_token',
   });
   const res = await fetchWithTimeout(OAUTH2_URL, {
@@ -173,41 +193,43 @@ async function fetchOAuthToken(clientId: string, refreshToken: string): Promise<
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
   });
-  const data = await res.json().catch(() => ({})) as OAuthResponse;
+  const data = checkpointCredentialResponse(context, res.status, await res.text()) as OAuthResponse;
   if (!res.ok) {
-    const detail = [data.error, data.error_description].filter(Boolean).join(': ') || `HTTP ${res.status}`;
     // 400/401/403 carry an OAuth error verdict; anything else (429/5xx) is infrastructure.
     if (res.status === 400 || res.status === 401 || res.status === 403) {
-      throw new OAuthRejectedError(`OAuth refresh rejected: ${detail}`);
+      throw new OAuthRejectedError('OAuth refresh rejected');
     }
-    throw new UpstreamHttpError(`OAuth token endpoint error: ${detail}`, res.status, res.headers.get('Retry-After'));
+    throw new UpstreamHttpError('OAuth token endpoint unavailable', res.status, res.headers.get('Retry-After'));
   }
-  if (!data.access_token) throw new Error('OAuth response missing access_token');
-  return { accessToken: data.access_token, newRefreshToken: data.refresh_token, expiresIn: data.expires_in };
+  if (typeof data.access_token !== 'string' || !data.access_token || data.error) throw new Error('OAuth response missing usable access_token');
+  return { accessToken: data.access_token, newRefreshToken: typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : undefined, expiresIn: data.expires_in };
 }
 
-async function obtainAccessToken(email: string, clientId: string, refreshToken: string): Promise<string> {
-  const cached = getCachedToken(clientId, refreshToken);
-  if (cached) return cached;
-  const result = await fetchOAuthToken(clientId, refreshToken);
-  const effectiveRefreshToken = result.newRefreshToken || refreshToken;
+function commitRefreshedToken(context: OutlookCredentialContext, result: { accessToken: string; newRefreshToken?: string; expiresIn?: number }): string {
+  assertCurrentCredentials(context);
   if (result.newRefreshToken) {
-    getDb().prepare(
-      `UPDATE outlook_accounts
-       SET refresh_token = ?, token_renewed_at = datetime('now')
-       WHERE email = ? AND refresh_token = ?`,
-    ).run(result.newRefreshToken, email, refreshToken);
-    evictCachedToken(clientId, refreshToken);
+    if (!updateCredentialAccount(context, "refresh_token = ?, token_renewed_at = datetime('now')", [result.newRefreshToken])) {
+      throw new StaleOutlookCredentialsError();
+    }
+    evictCachedToken(context.clientId, context.refreshToken);
+    context.refreshToken = result.newRefreshToken;
   }
-  setCachedToken(clientId, effectiveRefreshToken, result.accessToken, result.expiresIn);
+  setCachedToken(context.clientId, context.refreshToken, result.accessToken, result.expiresIn);
   return result.accessToken;
+}
+
+async function obtainAccessToken(context: OutlookCredentialContext): Promise<string> {
+  assertCurrentCredentials(context);
+  const cached = getCachedToken(context.clientId, context.refreshToken);
+  if (cached) return cached;
+  return commitRefreshedToken(context, await fetchOAuthToken(context));
 }
 
 async function fetchMailsGraph(accessToken: string, folderUrl: string, count = 20): Promise<GraphMessage[]> {
   const params = new URLSearchParams({
     $top: String(count),
     $orderby: 'receivedDateTime desc',
-    $select: 'id,subject,from,receivedDateTime,body,bodyPreview',
+    $select: MESSAGE_FIELDS,
   });
   const res = await fetchWithTimeout(`${folderUrl}?${params}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -257,24 +279,36 @@ function mergeMessages(inboxMsgs: GraphMessage[], junkMsgs: GraphMessage[], limi
     .slice(0, limit);
 }
 
-async function fetchSingleMessage(accessToken: string, messageId: string, apiType: OutlookApiType | ''): Promise<GraphMessage> {
+async function fetchSingleMessage(accessToken: string, messageId: string, apiType: OutlookApiType | '', control?: MailboxScanControl): Promise<GraphMessage> {
+  const run = <T>(operation: () => Promise<T>) => control ? control.run(operation) : operation();
   const urls = apiType === 'outlook'
-    ? [`https://outlook.office.com/api/v2.0/me/messages/${messageId}?$select=id,subject,from,receivedDateTime,body,bodyPreview`]
+    ? [`https://outlook.office.com/api/v2.0/me/messages/${messageId}?$select=${MESSAGE_FIELDS}`]
     : [
-        `https://graph.microsoft.com/v1.0/me/messages/${messageId}?$select=id,subject,from,receivedDateTime,body,bodyPreview`,
-        `https://outlook.office.com/api/v2.0/me/messages/${messageId}?$select=id,subject,from,receivedDateTime,body,bodyPreview`,
+        `https://graph.microsoft.com/v1.0/me/messages/${messageId}?$select=${MESSAGE_FIELDS}`,
+        `https://outlook.office.com/api/v2.0/me/messages/${messageId}?$select=${MESSAGE_FIELDS}`,
       ];
+  let allNotFound = true;
   for (const url of urls) {
-    const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const res = await run(() => fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` }, ...(control ? { retries: 0, retryMode: 'never' as const, redirect: 'error' as const } : {}) }));
     if (res.status === 401 || res.status === 403) {
       throw new MailApiRejectedError(url.startsWith('https://graph.microsoft.com') ? 'graph' : 'outlook', res.status);
     }
-    if (res.ok) return normalizeMessage(await res.json());
+    if (res.ok) return normalizeMessage(await run(() => res.json()));
+    if (res.status !== 404) allNotFound = false;
     if (res.status === 429 || res.status >= 500) {
       throw new UpstreamHttpError('mail detail API error', res.status, res.headers.get('Retry-After'));
     }
   }
+  if (allNotFound) throw new MessageNotFoundError();
   throw new Error('无法获取邮件详情');
+}
+
+function normalizeRecipients(recipients: any): GraphRecipient[] {
+  if (!Array.isArray(recipients)) return [];
+  return recipients.map((recipient) => {
+    const address = recipient?.emailAddress || recipient?.EmailAddress;
+    return { emailAddress: { name: address?.name || address?.Name || '', address: address?.address || address?.Address || '' } };
+  });
 }
 
 function normalizeMessage(msg: any): GraphMessage {
@@ -293,11 +327,21 @@ function normalizeMessage(msg: any): GraphMessage {
       contentType: ((msg.body || msg.Body)?.contentType || (msg.body || msg.Body)?.ContentType || '').toLowerCase(),
     } : undefined,
     bodyPreview: msg.bodyPreview || msg.BodyPreview || '',
+    toRecipients: normalizeRecipients(msg.toRecipients || msg.ToRecipients),
+    ccRecipients: normalizeRecipients(msg.ccRecipients || msg.CcRecipients),
   };
+}
+
+function hasRecipient(message: GraphMessage, recipient: string): boolean {
+  const want = foldAsciiCase(recipient);
+  return [...(message.toRecipients ?? []), ...(message.ccRecipients ?? [])]
+    .some((entry) => foldAsciiCase(entry.emailAddress?.address ?? '') === want);
 }
 
 function graphMsgToMessage(normalized: GraphMessage): Message {
   return {
+    [MESSAGE_RECIPIENTS]: [...(normalized.toRecipients ?? []), ...(normalized.ccRecipients ?? [])]
+      .map(recipient => recipient.emailAddress?.address ?? '').filter(address => typeof address === 'string' && !!address.trim()),
     id: normalized.id,
     from: formatSender(normalized.from?.emailAddress || {}),
     subject: normalized.subject || '',
@@ -327,85 +371,146 @@ function accountEmailOf(inbox: InboxData): string {
   return inbox.authData.email || stripPlusTag(inbox.address);
 }
 
+/** Only the account's own address permits a whole-mailbox tenant lease. */
+function aliasRecipientOf(inbox: InboxData): string | undefined {
+  if (!inbox.address.trim()) throw new MessageNotFoundError();
+  // Old rows can differ from the account in more than the generated +tag.
+  // Keep every distinct address scoped instead of broadening it to the whole
+  // mailbox when its base/domain does not match. Admin reads bypass this path.
+  return foldAsciiCase(inbox.address) === foldAsciiCase(accountEmailOf(inbox))
+    ? undefined : inbox.address;
+}
+
 /**
  * One access-token attempt with a single retry after a mail API rejection or
  * an IMAP authentication rejection. Both the inbox path and the account-mailbox
  * path funnel through here so token rotation and retry behavior cannot drift.
  */
-async function withAccessToken<T>(email: string, clientId: string, refreshToken: string, run: (token: string) => Promise<T>): Promise<T> {
-  let effectiveRefreshToken = getRow<{ refresh_token: string }>(
-    getDb(),
-    `SELECT refresh_token FROM outlook_accounts WHERE email = ?`,
-    email,
-  )?.refresh_token || refreshToken;
-  const accessToken = await obtainAccessToken(email, clientId, effectiveRefreshToken);
-  effectiveRefreshToken = getRow<{ refresh_token: string }>(
-    getDb(),
-    `SELECT refresh_token FROM outlook_accounts WHERE email = ?`,
-    email,
-  )?.refresh_token || effectiveRefreshToken;
+async function withAccessToken<T>(context: OutlookCredentialContext, run: (token: string) => Promise<T>, control?: Pick<MailboxScanControl, 'run' | 'checkpoint'>): Promise<T> {
+  const awaited = <R>(operation: () => Promise<R>) => control ? control.run(operation) : operation();
+  const accessToken = await awaited(() => obtainAccessToken(context));
   try {
-    return await run(accessToken);
+    assertCurrentCredentials(context);
+    const result = await awaited(() => run(accessToken));
+    assertCurrentCredentials(context);
+    return result;
   } catch (e) {
+    control?.checkpoint();
+    assertCurrentCredentials(context);
     if (!(e instanceof MailApiRejectedError) && !isImapAuthenticationError(e)) throw e;
-    evictCachedToken(clientId, effectiveRefreshToken);
-    effectiveRefreshToken = getRow<{ refresh_token: string }>(
-      getDb(),
-      `SELECT refresh_token FROM outlook_accounts WHERE email = ?`,
-      email,
-    )?.refresh_token || effectiveRefreshToken;
-    return run(await obtainAccessToken(email, clientId, effectiveRefreshToken));
+    evictCachedToken(context.clientId, context.refreshToken);
+    const token = await awaited(() => obtainAccessToken(context));
+    assertCurrentCredentials(context);
+    const result = await awaited(() => run(token));
+    assertCurrentCredentials(context);
+    return result;
   }
 }
 
-async function pollMailbox(email: string, clientId: string, refreshToken: string, limit: number): Promise<Message[]> {
-  const db = getDb();
-  const apiType = normalizeApiType(
-    getRow<{ api_type: string }>(db, `SELECT api_type FROM outlook_accounts WHERE email = ?`, email)?.api_type || '',
-  );
-  return withAccessToken(email, clientId, refreshToken, async (token) => {
+async function pollMailbox(context: OutlookCredentialContext, limit: number, recipient?: string): Promise<Message[]> {
+  const { email } = context;
+  const apiType = normalizeApiType(context.apiType);
+  return withAccessToken(context, async (token) => {
     if (apiType === 'imap') {
-      return fetchOutlookImapMessages(outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl), limit);
+      return fetchOutlookImapMessages(outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl), limit, recipient);
     }
     let result: { messages: GraphMessage[]; apiType: Exclude<OutlookApiType, 'imap'> };
     try {
       result = await fetchMailsBothApis(token, apiType, limit);
     } catch (e) {
+      assertCurrentCredentials(context);
       if (apiType) throw e;
-      return fetchOutlookImapMessages(outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl), limit)
+      return fetchOutlookImapMessages(outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl), limit, recipient)
         .then((messages) => {
-          db.prepare(`UPDATE outlook_accounts SET api_type = 'imap' WHERE email = ?`).run(email);
+          if (!updateCredentialAccount(context, "api_type = 'imap'")) throw new StaleOutlookCredentialsError();
           return messages;
         });
     }
     if (result.apiType && result.apiType !== apiType) {
-      db.prepare(`UPDATE outlook_accounts SET api_type = ? WHERE email = ?`).run(result.apiType, email);
+      if (!updateCredentialAccount(context, 'api_type = ?', [result.apiType])) throw new StaleOutlookCredentialsError();
     }
-    return result.messages.map(graphMsgToMessage);
+    return result.messages.filter((message) => !recipient || hasRecipient(message, recipient)).map(graphMsgToMessage);
   });
 }
 
-async function readMailboxMessage(email: string, clientId: string, refreshToken: string, messageId: string): Promise<MessageDetail> {
-  const apiType = normalizeApiType(
-    getRow<{ api_type: string }>(getDb(), `SELECT api_type FROM outlook_accounts WHERE email = ?`, email)?.api_type || '',
-  );
-  if (apiType === 'imap') {
-    return withAccessToken(email, clientId, refreshToken, async (token) => (
-      fetchOutlookImapMessage(outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl), messageId)
-    ));
+const SCAN_FIELDS = 'id,subject,from,receivedDateTime,bodyPreview,toRecipients,ccRecipients';
+
+/** Continuations carry a bearer token: accept only this API's exact folder path. */
+function validateScanContinuation(value: unknown, folderUrl: string): string {
+  if (typeof value !== 'string') throw new Error('Invalid Outlook scan continuation');
+  const expected = new URL(folderUrl);
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('Invalid Outlook scan continuation'); }
+  if (url.protocol !== 'https:' || url.hostname !== expected.hostname || url.username || url.password
+    || (url.port && url.port !== '443') || url.pathname.toLowerCase() !== expected.pathname.toLowerCase() || url.hash) {
+    throw new Error('Untrusted Outlook scan continuation');
   }
-  return withAccessToken(email, clientId, refreshToken, async (token) => graphMsgToDetail(await fetchSingleMessage(token, messageId, apiType)));
+  return url.href;
 }
 
-function accountCredentials(email: string): { clientId: string; refreshToken: string } {
-  const row = getRow<{ client_id: string; refresh_token: string }>(
-    getDb(),
-    `SELECT client_id, refresh_token FROM outlook_accounts WHERE email = ?`,
-    email,
-  );
-  if (!row) throw new Error(`Outlook 账号不存在: ${email}`);
-  if (!row.client_id || !row.refresh_token) throw new Error(`Outlook 账号 ${email} 缺少令牌凭据`);
-  return { clientId: row.client_id, refreshToken: row.refresh_token };
+async function scanHttpMailbox(token: string, apiType: 'graph' | 'outlook', control: MailboxScanControl, recipient?: string) {
+  const bases = apiType === 'graph' ? [GRAPH_INBOX_URL, GRAPH_JUNK_URL] : [OUTLOOK_INBOX_URL, OUTLOOK_JUNK_URL];
+  const folders = bases.map((base, i) => ({ base, folder: i === 0 ? 'Inbox' : 'Junk', complete: false,
+    next: `${base}?${new URLSearchParams({ $top: '20', $orderby: 'receivedDateTime desc', $select: SCAN_FIELDS })}` }));
+  const messages = new Map<string, Message>();
+  const meta = (): MailboxScanMeta => ({ scope: 'inbox_and_junk', pages: control.budget.pages, metadata: control.budget.metadata,
+    complete: folders.every(folder => folder.complete), truncated: folders.some(folder => !folder.complete),
+    partial: false, folders: folders.map(({ folder, complete }) => ({ folder, complete })) });
+  control.progress?.(meta());
+  try {
+    // Round robin prevents a busy Inbox from consuming Junk's entire budget.
+    while (folders.some(folder => !folder.complete) && control.budget.pages < 5 && control.budget.metadata < 100) {
+      for (const folder of folders) {
+        control.checkpoint();
+        if (folder.complete || control.budget.pages >= 5 || control.budget.metadata >= 100) continue;
+        const page = await control.read(async () => {
+          control.budget.pages++;
+          control.progress?.(meta());
+          const response = await control.run(() => fetchWithTimeout(folder.next, {
+            headers: { Authorization: `Bearer ${token}` }, retries: 0, retryMode: 'never', redirect: 'error',
+          }));
+          if (response.status === 401 || response.status === 403) throw new MailApiRejectedError(apiType, response.status);
+          if (!response.ok) throw new UpstreamHttpError(`${apiType} scan mail API error`, response.status, response.headers.get('Retry-After'));
+          return control.run(() => response.json()) as Promise<{ value?: unknown[]; '@odata.nextLink'?: unknown; 'odata.nextLink'?: unknown }>;
+        });
+        control.checkpoint();
+        const next = page['@odata.nextLink'] ?? page['odata.nextLink'];
+        // Validate even when the current page exhausts the remaining budget.
+        folder.next = next === undefined || next === null ? '' : validateScanContinuation(next, folder.base);
+        if (!Array.isArray(page.value)) throw new Error('Malformed Outlook scan list response');
+        const values = page.value;
+        const available = 100 - control.budget.metadata;
+        for (const raw of values.slice(0, available)) {
+          control.budget.metadata++;
+          const message = normalizeMessage(raw);
+          if (message.id && (!recipient || hasRecipient(message, recipient)) && !messages.has(message.id)) {
+            messages.set(message.id, graphMsgToMessage(message));
+          }
+        }
+        folder.complete = !folder.next && values.length <= available;
+        control.progress?.(meta());
+      }
+    }
+    return { messages: [...messages.values()].sort((a, b) => (parseTimestamp(b.receivedAt) || 0) - (parseTimestamp(a.receivedAt) || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), scan: meta() };
+  } catch (error) {
+    if (error && typeof error === 'object') Object.assign(error, { scan: { ...meta(), complete: false, partial: control.budget.pages > 1 } });
+    throw error;
+  }
+}
+
+async function readMailboxMessage(context: OutlookCredentialContext, messageId: string, recipient?: string, control?: MailboxScanControl): Promise<MessageDetail> {
+  const { email } = context;
+  const apiType = normalizeApiType(context.apiType);
+  if (apiType === 'imap') {
+    return withAccessToken(context, async (token) => (
+      fetchOutlookImapMessage(outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl), messageId, recipient, control)
+    ), control);
+  }
+  return withAccessToken(context, async (token) => {
+    const message = await fetchSingleMessage(token, messageId, apiType, control);
+    if (recipient && !hasRecipient(message, recipient)) throw new MessageNotFoundError();
+    return graphMsgToDetail(message);
+  }, control);
 }
 
 /**
@@ -418,13 +523,82 @@ function accountCredentials(email: string): { clientId: string; refreshToken: st
  * kept finite.
  */
 export async function fetchAccountMailbox(email: string, limit = 50): Promise<Message[]> {
-  const { clientId, refreshToken } = accountCredentials(email);
-  return pollMailbox(email, clientId, refreshToken, limit);
+  return pollMailbox(currentCredentialContext(email, 'admin-mailbox-list'), limit);
+}
+
+/** Admin history keeps only metadata and continuation positions, never access tokens. */
+export async function fetchAccountMailboxPage(email: string, adminKey: string, limit = 50, pageToken?: string, signal?: AbortSignal) {
+  const context = currentCredentialContext(email, 'admin-mailbox-history');
+  const deadline = Date.now() + 30_000;
+  let initialApi = normalizeApiType(context.apiType) || 'graph';
+  const imapCreds = async (control: HistoryReadControl) => {
+    const token = await control.run(() => obtainAccessToken(context));
+    assertCurrentCredentials(context);
+    return outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl);
+  };
+  const fingerprint = () => createHash('sha256').update(JSON.stringify([context.clientId, context.refreshToken, context.oauthSessionId])).digest('hex');
+  const validate = (state: OutlookHistoryState) => {
+    assertCurrentCredentials(context);
+    if (state.credentials.fingerprint !== fingerprint()) throw new Error('Outlook history credentials changed; reload the mailbox');
+  };
+  const retainOwnRotation = async (state: OutlookHistoryState, operation: () => Promise<void>) => {
+    validate(state);
+    try { await operation(); }
+    finally {
+      // A failed mail read does not undo a successfully committed OAuth refresh.
+      // Never bless an external credential replacement or a stale operation.
+      if (credentialsCurrent(context)) state.credentials.fingerprint = fingerprint();
+    }
+  };
+  const initialize = async (control: HistoryReadControl): Promise<OutlookHistoryState> => {
+    const apiType = initialApi;
+    if (apiType === 'imap') {
+      const folders = await initializeOutlookImapHistory(await imapCreds(control), control);
+      return { apiType, limit, emitted: new Set(), credentials: { fingerprint: fingerprint() }, folders };
+    }
+    const bases = apiType === 'graph' ? [GRAPH_INBOX_URL, GRAPH_JUNK_URL] : [OUTLOOK_INBOX_URL, OUTLOOK_JUNK_URL];
+    return { apiType, limit, emitted: new Set(), credentials: { fingerprint: fingerprint() }, folders: bases.map((base, index) => ({ folder: index === 0 ? 'Inbox' : 'Junk', buffer: [], next: `${base}?${new URLSearchParams({ $top: String(limit), $orderby: 'receivedDateTime desc', $select: SCAN_FIELDS })}` })) };
+  };
+  const load = (state: OutlookHistoryState, folder: HistoryFolder, control: HistoryReadControl) => retainOwnRotation(state, async () => {
+    if (state.apiType === 'imap') {
+      await fetchOutlookImapHistoryPage(await imapCreds(control), folder, state.limit, control);
+      return;
+    }
+    const readPage = (token: string) => control.read(async () => {
+      assertCurrentCredentials(context);
+      const response = await control.run(() => fetchWithTimeout(folder.next!, { headers: { Authorization: `Bearer ${token}` }, retries: 0, retryMode: 'never', redirect: 'error' }));
+      assertCurrentCredentials(context);
+      if (response.status === 401 || response.status === 403) throw new MailApiRejectedError(state.apiType as 'graph' | 'outlook', response.status);
+      if (!response.ok) throw new UpstreamHttpError('Outlook history mail API error', response.status, response.headers.get('Retry-After'));
+      const page = await control.run(() => response.json()) as Record<string, unknown>;
+      assertCurrentCredentials(context);
+      if (!page || !Array.isArray(page.value)) throw new Error('Malformed Outlook history list response');
+      const base = state.apiType === 'graph' ? (folder.folder === 'Inbox' ? GRAPH_INBOX_URL : GRAPH_JUNK_URL) : (folder.folder === 'Inbox' ? OUTLOOK_INBOX_URL : OUTLOOK_JUNK_URL);
+      const next = page['@odata.nextLink'] ?? page['odata.nextLink'];
+      folder.next = next === undefined || next === null ? null : validateScanContinuation(next, base);
+      folder.buffer = page.value.map(normalizeMessage).filter(message => !!message.id).map(graphMsgToMessage)
+        .sort((a, b) => (parseTimestamp(b.receivedAt) || 0) - (parseTimestamp(a.receivedAt) || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    });
+    if (context.apiType) await withAccessToken(context, readPage, control);
+    else await readPage(await control.run(() => obtainAccessToken(context)));
+  });
+  const prepare = (state: OutlookHistoryState, control: HistoryReadControl) => retainOwnRotation(state, async () => {
+    if (state.apiType === 'imap') await checkOutlookImapHistoryGenerations(await imapCreds(control), state.folders, control);
+  });
+  const read = () => readOutlookHistory(email, adminKey, pageToken, limit, initialize, load, validate, signal, deadline, prepare);
+  let result;
+  try { result = await read(); }
+  catch (error) {
+    if (pageToken !== undefined || context.apiType || !(error instanceof MailApiRejectedError) || error.apiType !== 'graph') throw error;
+    initialApi = 'outlook';
+    result = await read();
+  }
+  if (!pageToken && initialApi !== context.apiType && !updateCredentialAccount(context, 'api_type = ?', [initialApi])) throw new StaleOutlookCredentialsError();
+  return result;
 }
 
 export async function fetchAccountMessage(email: string, messageId: string): Promise<MessageDetail> {
-  const { clientId, refreshToken } = accountCredentials(email);
-  return readMailboxMessage(email, clientId, refreshToken, messageId);
+  return readMailboxMessage(currentCredentialContext(email, 'admin-mailbox-detail'), messageId);
 }
 
 export class OutlookProvider extends BaseProvider {
@@ -447,11 +621,6 @@ export class OutlookProvider extends BaseProvider {
       alias: true,
     },
   };
-
-  private getFreshRefreshToken(email: string): string | null {
-    const row = getRow<{ refresh_token: string }>(getDb(), `SELECT refresh_token FROM outlook_accounts WHERE email = ?`, email);
-    return row?.refresh_token || null;
-  }
 
   async getDomains(opts?: { for?: string; alias?: boolean }): Promise<string[]> {
     const db = getDb();
@@ -517,19 +686,20 @@ export class OutlookProvider extends BaseProvider {
         if (assigned > 0) parts.push(`${assigned}个已分配`);
         if (valid > 0 && opts?.for) parts.push(`剩余${valid}个均已用于 ${opts.for}`);
         if (valid === 0 && !opts?.for) parts.push(`无空闲账号`);
-        throw new Error(`Outlook 账号池中无可用账号 (${parts.join(', ')})`);
+        throw new NoAssetCreatedError(`Outlook 账号池中无可用账号 (${parts.join(', ')})`);
       }
 
       const { email, password, client_id: clientId, refresh_token: refreshToken } = row;
       if (!clientId || !refreshToken) {
-        throw new Error(`Outlook 账号 ${email} 缺少令牌凭据`);
+        throw new NoAssetCreatedError(`Outlook 账号 ${email} 缺少令牌凭据`);
       }
 
       // Plus addressing is opt-in per request: the caller asks for an alias and
       // the tag is generated here, so no caller has to invent one or can probe
       // for which tags exist. The account still serves exactly one inbox, so the
       // tag buys a distinct address at the target service, not extra pool
-      // capacity — and nothing has to sort shared mail by recipient.
+      // capacity. Reads still scope each alias to its exact To/Cc recipients,
+      // because mail to a previous tag can arrive after account reassignment.
       // `authData.email` stays the ACCOUNT address: every credential lookup
       // (refresh token, api_type, used_services) keys off it, and only
       // `address` carries the tag.
@@ -548,14 +718,39 @@ export class OutlookProvider extends BaseProvider {
 
   async getMessages(inbox: InboxData): Promise<Message[]> {
     const email = accountEmailOf(inbox);
-    const freshToken = this.getFreshRefreshToken(email) || inbox.authData.refreshToken;
-    return pollMailbox(email, inbox.authData.clientId, freshToken, 20);
+    const recipient = aliasRecipientOf(inbox);
+    return pollMailbox(currentCredentialContext(email, 'tenant-mailbox-list'), 20, recipient);
   }
 
-  async getMessage(inbox: InboxData, messageId: string): Promise<MessageDetail> {
+  async scanMessages(inbox: InboxData, control: MailboxScanControl) {
+    const context = currentCredentialContext(accountEmailOf(inbox), 'tenant-mailbox-list');
+    const recipient = aliasRecipientOf(inbox);
+    const apiType = normalizeApiType(context.apiType);
+    return control.run(() => withAccessToken(context, async token => {
+      control.checkpoint();
+      if (apiType === 'imap') return scanOutlookImapMessages(outlookImapCreds(context.email, token, getSetting('proxy_url') || config.proxyUrl), control, recipient);
+      // Never reuse folder continuations after changing APIs or refreshing a token.
+      // An unknown account tries Graph, then REST only on a deterministic rejection.
+      let result;
+      let resolvedType: 'graph' | 'outlook' = apiType || 'graph';
+      try { result = await scanHttpMailbox(token, resolvedType, control, recipient); }
+      catch (error) {
+        control.checkpoint();
+        if (apiType || !(error instanceof MailApiRejectedError)) throw error;
+        resolvedType = 'outlook';
+        result = await scanHttpMailbox(token, resolvedType, control, recipient);
+      }
+      control.checkpoint();
+      if (resolvedType !== apiType && !updateCredentialAccount(context, 'api_type = ?', [resolvedType])) throw new StaleOutlookCredentialsError();
+      return result;
+    }, control));
+  }
+
+  async getMessage(inbox: InboxData, messageId: string, control?: MailboxScanControl): Promise<MessageDetail> {
     const email = accountEmailOf(inbox);
-    const freshToken = this.getFreshRefreshToken(email) || inbox.authData.refreshToken;
-    return readMailboxMessage(email, inbox.authData.clientId, freshToken, messageId);
+    const recipient = aliasRecipientOf(inbox);
+    const read = () => readMailboxMessage(currentCredentialContext(email, 'tenant-mailbox-detail'), messageId, recipient, control);
+    return control ? control.run(read) : read();
   }
 
   /**
@@ -586,11 +781,11 @@ export class OutlookProvider extends BaseProvider {
 }
 
 /**
- * Never throws. 'invalid' only on a deterministic OAuth rejection or definitive
+ * 'invalid' only on a deterministic OAuth rejection or definitive
  * rejection by Graph, Outlook REST, and IMAP; network errors, throttling and 5xx
  * yield 'unknown' so callers never destroy accounts over an infrastructure blip.
  */
-async function checkAccessToken(email: string, token: string): Promise<{ status: TokenCheckStatus; apiType: OutlookApiType | '' }> {
+async function checkAccessToken(email: string, token: string, context?: OutlookCredentialContext): Promise<{ status: TokenCheckStatus; apiType: OutlookApiType | '' }> {
   const storedType = normalizeApiType(
     getRow<{ api_type: string }>(getDb(), `SELECT api_type FROM outlook_accounts WHERE email = ?`, email)?.api_type || '',
   );
@@ -607,45 +802,61 @@ async function checkAccessToken(email: string, token: string): Promise<{ status:
 
   let inconclusive = false;
   for (const probe of probes) {
+    if (context) assertCurrentCredentials(context);
     try {
       if (probe.apiType === 'imap') {
         await checkOutlookImap(outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl));
+        if (context) assertCurrentCredentials(context);
         return { status: 'valid', apiType: 'imap' };
       }
       const res = await fetchWithTimeout(`${probe.url}?$top=1`, {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (context) assertCurrentCredentials(context);
       if (res.ok) return { status: 'valid', apiType: probe.apiType };
       if (res.status !== 401 && res.status !== 403) inconclusive = true;
     } catch (e) {
+      if (context) assertCurrentCredentials(context);
       if (probe.apiType !== 'imap' || !isImapAuthenticationError(e)) inconclusive = true;
     }
   }
   return { status: inconclusive ? 'unknown' : 'invalid', apiType: '' };
 }
 
+/** OAuth owns the final session CAS; its just-issued RT is not in the account yet. */
+export async function probeIssuedAccessToken(email: string, accessToken: string): Promise<{ status: TokenCheckStatus; apiType: OutlookApiType | '' }> {
+  return checkAccessToken(email, accessToken);
+}
+
+export function checkToken(context: OutlookCredentialContext, accessToken?: string): Promise<{ status: TokenCheckStatus; apiType: OutlookApiType | '' }>;
+export function checkToken(email: string, clientId: string, refreshToken: string): Promise<{ status: TokenCheckStatus; apiType: OutlookApiType | '' }>;
 export async function checkToken(
-  email: string,
-  clientId: string,
-  refreshToken: string,
-  accessToken?: string,
+  input: OutlookCredentialContext | string, second?: string, refreshToken?: string,
 ): Promise<{ status: TokenCheckStatus; apiType: OutlookApiType | '' }> {
-  if (accessToken) return checkAccessToken(email, accessToken);
-
-  const cachedToken = getCachedToken(clientId, refreshToken);
-  if (cachedToken) {
-    const cachedCapability = await checkAccessToken(email, cachedToken);
-    if (cachedCapability.status !== 'invalid') return cachedCapability;
-    evictCachedToken(clientId, refreshToken);
-  }
-
-  let token: string;
+  let context: OutlookCredentialContext | undefined;
   try {
-    token = await obtainAccessToken(email, clientId, refreshToken);
+    context = typeof input === 'string' ? currentCredentialContext(input, 'account-check') : input;
+    // Legacy utility callers may supply a pair, but never silently adopt a
+    // different current pair. Production queued jobs pass their frozen context.
+    if (typeof input === 'string' && (context.clientId !== second || context.refreshToken !== refreshToken)) throw new StaleOutlookCredentialsError();
+    assertCurrentCredentials(context);
+    if (typeof input !== 'string' && second) return await checkAccessToken(context.email, second, context);
+    const cachedToken = getCachedToken(context.clientId, context.refreshToken);
+    if (cachedToken) {
+      const capability = await checkAccessToken(context.email, cachedToken, context);
+      if (capability.status !== 'invalid') return capability;
+      evictCachedToken(context.clientId, context.refreshToken);
+    }
+    const token = await obtainAccessToken(context);
+    return await checkAccessToken(context.email, token, context);
   } catch (e) {
-    return { status: e instanceof OAuthRejectedError ? 'invalid' : 'unknown', apiType: '' };
+    if (e instanceof OutlookCredentialStorageError) throw e;
+    let current = false;
+    if (context) {
+      try { assertCurrentCredentials(context); current = true; } catch { /* Stale results carry no verdict. */ }
+    }
+    return { status: current && e instanceof OAuthRejectedError ? 'invalid' : 'unknown', apiType: '' };
   }
-  return checkAccessToken(email, token);
 }
 
 /**
@@ -654,10 +865,8 @@ export async function checkToken(
  * UpstreamHttpError/network errors on infrastructure failure — callers must
  * only mark accounts invalid on OAuthRejectedError.
  */
-export async function renewToken(clientId: string, refreshToken: string): Promise<{ newRefreshToken?: string; accessToken: string }> {
-  const result = await fetchOAuthToken(clientId, refreshToken);
-  const effectiveRefreshToken = result.newRefreshToken || refreshToken;
-  if (result.newRefreshToken) evictCachedToken(clientId, refreshToken);
-  setCachedToken(clientId, effectiveRefreshToken, result.accessToken, result.expiresIn);
+export async function renewToken(context: OutlookCredentialContext): Promise<{ newRefreshToken?: string; accessToken: string }> {
+  const result = await fetchOAuthToken(context);
+  commitRefreshedToken(context, result);
   return { newRefreshToken: result.newRefreshToken, accessToken: result.accessToken };
 }

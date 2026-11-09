@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, beforeEach } from 'vitest';
-import { existsSync, unlinkSync } from 'fs';
-import { resolve } from 'path';
+import { createTestDatabasePath, assertTestPath } from './helpers/test-storage.js';
 import type Database from 'better-sqlite3';
 import type { RateLimitStatus } from '../src/rate-limiter.js';
 
 process.env.API_SECRET = 'admin-secret';
-process.env.DB_PATH = resolve(process.cwd(), 'data/test-mail.db');
+// Setup runs before the suite's static imports. Each suite gets a new file,
+// so a cached SQLite handle can never refer to a file another suite unlinks.
+process.env.DB_PATH = createTestDatabasePath();
 
 let initDb: () => Database.Database;
 let getDb: () => Database.Database;
@@ -21,7 +22,7 @@ beforeAll(async () => {
   ({ resetTokenCache } = await import('../src/providers/outlook.js'));
   ({ resetRenewalAttempts } = await import('../src/providers/icloud-pool.js'));
 
-  if (existsSync(process.env.DB_PATH!)) unlinkSync(process.env.DB_PATH!);
+  assertTestPath(process.env.DB_PATH!);
   initDb();
 });
 
@@ -29,6 +30,8 @@ beforeEach(() => {
   const db = getDb();
   for (const table of [
     'batch_jobs',
+    'creation_recoveries',
+    'imap_ambiguous_leases',
     'inboxes',
     'blocks',
     'provider_stats',
@@ -36,6 +39,7 @@ beforeEach(() => {
     'dispatch_rules',
     'outlook_accounts',
     'outlook_oauth_sessions',
+    'outlook_credential_checkpoints',
     'yyds_accounts',
     'yyds_domain_cache',
     'imap_accounts',
@@ -59,14 +63,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  try { getDb().close(); } catch (error) {
-    console.warn('Failed to close test database', error);
-  }
-  if (process.env.DB_PATH && existsSync(process.env.DB_PATH)) {
-    unlinkSync(process.env.DB_PATH);
-  }
-  for (const suffix of ['-wal', '-shm']) {
-    const path = `${process.env.DB_PATH}${suffix}`;
-    if (existsSync(path)) unlinkSync(path);
-  }
+  getDb().close();
+  // The reporter cleans up only a wholly successful run. A failing test or
+  // hook keeps the DB, WAL, backups and auth files together for inspection.
 });

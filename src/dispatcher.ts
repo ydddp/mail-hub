@@ -2,11 +2,12 @@ import { parseTimestamp } from './time.js';
 import { nanoid } from 'nanoid';
 import { registry } from './providers/registry.js';
 import { rateLimiter } from './rate-limiter.js';
-import { allRows, bumpServiceCreated, getDb } from './db.js';
-import { type BaseProvider, type InboxData } from './providers/base.js';
+import { allRows, bumpServiceCreated, canonicalImapAddress, getDb } from './db.js';
+import { PROVIDER, type BaseProvider, type InboxData } from './providers/base.js';
 import { createLogger } from './logger.js';
-import { errorMessage, httpStatus, isTransientUpstreamError, retryAfterHeader } from './errors.js';
+import { errorMessage, httpStatus, ImapAddressConflictError, InvalidImapUsernameError, isImapAddressConflict, isTransientUpstreamError, NoAssetCreatedError, retryAfterHeader, TemplateCreationRecoveryError } from './errors.js';
 import { EXAMPLE_SERVICE_RE, evaluateDispatch } from './dispatch-rules.js';
+import { claimCreationRecovery } from './creation-recovery.js';
 
 const log = createLogger('dispatcher');
 
@@ -186,19 +187,29 @@ function saveInbox(
   ownerKey?: string
 ): void {
   const db = getDb();
-  db.prepare(
-    `INSERT INTO inboxes (id, provider, address, auth_data, api_base, target_service, owner_key, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-      id,
-      inbox.provider,
-      inbox.address,
-      JSON.stringify(inbox.authData),
-      inbox.apiBase,
-      targetService ?? null,
-      ownerKey ?? null,
-      inbox.expiresAt ?? null
-  );
+  try {
+    db.transaction(() => {
+      if (inbox.creationRecoveryId) claimCreationRecovery(inbox.creationRecoveryId, id, inbox);
+      db.prepare(
+        `INSERT INTO inboxes (id, provider, address, auth_data, api_base, target_service, owner_key, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        id,
+        inbox.provider,
+        inbox.address,
+        JSON.stringify(inbox.authData),
+        inbox.apiBase,
+        targetService ?? null,
+        ownerKey ?? null,
+        inbox.expiresAt ?? null
+      );
+    })();
+  } catch (cause) {
+    if (inbox.creationRecoveryId && !(cause instanceof TemplateCreationRecoveryError)) {
+      throw new TemplateCreationRecoveryError(inbox.creationRecoveryId, cause);
+    }
+    throw cause;
+  }
 }
 
 type ProviderCreateOptions = Parameters<BaseProvider['createInbox']>[0] & {
@@ -218,44 +229,71 @@ async function tryCreateInbox(
     ...(domain ? { domain } : {}),
     ...(opts.for ? { for: opts.for } : {}),
     ...(opts.subdomain ? { subdomain: opts.subdomain } : {}),
-    ...(opts.username ? { username: opts.username } : {}),
+    ...((providerName === PROVIDER.IMAP ? Object.hasOwn(opts, 'username') : !!opts.username) ? { username: opts.username } : {}),
     ...(opts.account ? { account: opts.account } : {}),
     ...(opts.alias ? { alias: true } : {}),
     ...(duration ? { duration } : {}),
     inboxId: id,
   };
-  if (!rateLimiter.tryRecordCreate(providerName)) {
+  const reservationId = rateLimiter.reserveCreate(providerName);
+  if (reservationId === null) {
     throw new Error(`Provider '${providerName}' is rate-limited`);
   }
-  let inbox: InboxData;
-  try {
-    inbox = await provider.createInbox(createOpts);
-  } catch (error) {
-    // A create that failed deterministically produced no inbox, so refund the
-    // slot it reserved: upstream 4xx (other than 429), or a local failure that
-    // never reached the network (status 0, non-transient — e.g. empty pool).
-    // 429 is left consumed: recordProviderFailure sets a cooldown separately.
-    const status = httpStatus(error, 0);
-    const deterministicUpstream = status >= 400 && status < 500 && status !== 429;
-    const localFailure = status === 0 && !isTransientUpstreamError(error);
-    if (deterministicUpstream || localFailure) {
-      rateLimiter.refundCreate(providerName);
+  const refundFailedCreate = (error: unknown): void => {
+    // A status code or generic error cannot establish whether a remote write
+    // committed. Only create sites with positive no-asset proof may refund.
+    if (error instanceof NoAssetCreatedError) {
+      rateLimiter.refundCreate(providerName, reservationId);
     }
-    throw error;
-  }
-  const expiresAt = resolveExpiresAt(inbox.expiresAt, duration);
-  try {
-    saveInbox(id, { ...inbox, expiresAt }, opts.for, opts.ownerKey);
-  } catch (error) {
-    await provider.releaseInbox(inbox, id).catch(() => {});
-    throw error;
+  };
+
+  const randomImap = providerName === PROVIDER.IMAP && !Object.hasOwn(opts, 'username');
+  const attempts = randomImap ? 8 : 1;
+  let imapDomain: string | undefined;
+  let inbox!: InboxData;
+  let expiresAt!: string;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      inbox = await provider.createInbox(createOpts);
+      if (randomImap) {
+        const address = canonicalImapAddress(inbox.address);
+        const actualDomain = address.slice(address.indexOf('@') + 1);
+        if (imapDomain !== undefined && actualDomain !== imapDomain) {
+          await provider.releaseInbox(inbox, id).catch(() => {});
+          throw new ImapAddressConflictError();
+        }
+        // An unknown requested domain may use the provider's initial fallback.
+        // Once resolved, a collision must never escape to another domain.
+        imapDomain = actualDomain;
+        createOpts.domain = imapDomain;
+      }
+    } catch (error) {
+      refundFailedCreate(error);
+      throw error;
+    }
+    expiresAt = resolveExpiresAt(inbox.expiresAt, duration);
+    try {
+      saveInbox(id, { ...inbox, expiresAt }, opts.for, opts.ownerKey);
+      break;
+    } catch (error) {
+      await provider.releaseInbox(inbox, id).catch(() => {});
+      if (providerName === PROVIDER.IMAP && isImapAddressConflict(error)) {
+        // The trigger is authoritative when two prechecks raced. Retry the
+        // entire local create + INSERT under the original reservation.
+        if (randomImap && attempt + 1 < attempts) continue;
+        const conflict = new ImapAddressConflictError();
+        refundFailedCreate(conflict);
+        throw conflict;
+      }
+      throw error;
+    }
   }
   // Durable per-service counters survive inbox retention purges. A stats
   // failure must never undo an already-created inbox, so it stays outside
   // the saveInbox try/catch.
   if (opts.for) {
     try { bumpServiceCreated(opts.for); } catch (error) {
-      log.warn('failed to bump service stats', { service: opts.for, error: errorMessage(error) });
+      log.warn('failed to bump service stats', { service: opts.for, error: error });
     }
   }
   rateLimiter.recordCreateSuccess(providerName);
@@ -327,6 +365,7 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
 
       return await tryCreateInbox(p, p.meta.name, opts, domain);
     } catch (e) {
+      if (e instanceof ImapAddressConflictError || e instanceof InvalidImapUsernameError) throw e;
       errors.push(`${p.meta.name}: ${errorMessage(e)}`);
       recordProviderFailure(p.meta.name, e);
     }
