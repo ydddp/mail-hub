@@ -40,3 +40,15 @@ are retained on hanabi under
 `fixed4-acceptance.json` record the conclusive comparison. Failed/earlier
 verification runs are retained. Local test/build logs are in
 `tmp/outlook-continuation-20261112/`.
+
+Fix commit `931ed56` was pushed and deployed with strict npm ci, build, native
+runtime checks and PM2 restart. A curl directly against loopback origin then
+returned 200 for Graph and REST administrator history, both first and next
+pages (20 messages each). Protected `origin-summary.json` records all four
+requests. Production matching remains validated through the isolated lease
+comparison above because there were no active production Outlook leases.
+
+Predeploy online backup passed integrity_check and is retained at
+`/home/ydddp/mail-hub-predeploy-backups/outlook-continuation-931ed56-20261112.db`.
+The operator subsequently requested a pushed tag; release metadata is v0.12.1.
+Version/lockfile regression checks passed 11/11 after the version bump.
