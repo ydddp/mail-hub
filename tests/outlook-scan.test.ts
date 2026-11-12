@@ -205,11 +205,13 @@ describe('bounded Outlook matching scan', () => {
     expect(await response.json()).toMatchObject({ error: expect.stringMatching(/UIDVALIDITY.*reload/i) });
     expect(imapState.ranges).toHaveLength(1);
   });
-  it.each(['graph', 'outlook'])('finds the 21st mailbox message after 20 other recipients through %s pages', async api => {
+  it.each(['graph', 'outlook'].flatMap(api => [false, true].map(canonical => ({ api, canonical }))))('finds the 21st mailbox message through $api pages (canonical=$canonical)', async ({ api, canonical }) => {
     seed(api);
     const reads: string[] = [];
     const base = api === 'graph' ? graphInbox : 'https://outlook.office.com/api/v2.0/me/mailfolders/inbox/messages';
     const next = `${base}?$skiptoken=page2`;
+    // Microsoft Graph returns a folder ID in OData key syntax, not /Inbox/.
+    const upstreamNext = canonical ? next.replace(/\/mailfolders\/inbox/i, "/mailFolders('opaque-folder-id')") : next;
     vi.stubGlobal('fetch', vi.fn(async (url: string, opts: RequestInit) => {
       const target = String(url);
       if (target.includes('/oauth2/')) return json({ access_token: 'scan-token' });
@@ -217,7 +219,7 @@ describe('bounded Outlook matching scan', () => {
       if (target.includes('/me/messages/target')) return json({ ...mail('target'), body: { content: 'Your verification code: 654321', contentType: 'text' } });
       expect(opts.redirect).toBe('error');
       if (target === next) return json({ value: [mail('target')] });
-      if (/\/inbox\/messages/i.test(target)) return json({ value: Array.from({ length: 20 }, (_, n) => mail(`other-${n}`, 'someone@outlook.com')), '@odata.nextLink': next });
+      if (/\/inbox\/messages/i.test(target)) return json({ value: Array.from({ length: 20 }, (_, n) => mail(`other-${n}`, 'someone@outlook.com')), '@odata.nextLink': upstreamNext });
       return json({ value: [] });
     }));
     const response = await request();
@@ -235,7 +237,7 @@ describe('bounded Outlook matching scan', () => {
       if (target.includes('/oauth2/')) return json({ access_token: 'scan-token' });
       reads.push(target);
       const base = target.includes('junkemail') ? graphJunk : graphInbox;
-      return json({ value: Array.from({ length: 20 }, (_, n) => mail(`${reads.length}-${n}`, 'other@outlook.com')), '@odata.nextLink': `${base}?$skiptoken=${reads.length}` });
+      return json({ value: Array.from({ length: 20 }, (_, n) => mail(`${reads.length}-${n}`, 'other@outlook.com')), '@odata.nextLink': `${base.replace(/\/mailfolders\/[^/]+/i, "/mailFolders('opaque-folder-id')")}?$skip=${reads.length * 20}` });
     }));
     const response = await request();
     expect(await response.json()).toMatchObject({ codes: [], scan: { checked: 0, pages: 5, metadata: 100, complete: false, truncated: true, reason: 'scan_limit' } });

@@ -246,7 +246,7 @@ describe('administrator Outlook history continuation', () => {
     expect((await (await request(`pageToken=${first.nextPageToken}`)).json()).messages.map((value: any) => value.id)).toEqual(['B']);
     expect((await (await request('limit=1')).json()).messages[0].id).toBe('NEW');
   });
-  it.each(['graph', 'outlook'])('merges interleaved %s folders, retains unseen buffers and replays a token idempotently', async api => {
+  it.each(['graph', 'outlook'].flatMap(api => [false, true].map(canonical => ({ api, canonical }))))('merges interleaved $api folders and replays a token (canonical=$canonical)', async ({ api, canonical }) => {
     seed(api); const reads: string[] = [];
     const root = api === 'graph' ? 'https://graph.microsoft.com/v1.0/me/mailFolders/' : 'https://outlook.office.com/api/v2.0/me/mailfolders/';
     vi.stubGlobal('fetch', vi.fn(async (url: string, opts: RequestInit) => {
@@ -255,7 +255,8 @@ describe('administrator Outlook history continuation', () => {
       reads.push(target); expect(opts.redirect).toBe('error');
       if (target.includes('junkemail')) return json({ value: [mail('B', 5), mail('D', 3)] });
       if (target.includes('$skiptoken=older')) return json({ value: [mail('E', 2)] });
-      return json({ value: [mail('A', 6), mail('C', 4)], '@odata.nextLink': `${root}${api === 'graph' ? 'Inbox' : 'inbox'}/messages?$skiptoken=older` });
+      const folder = canonical ? root.replace(/\/mailfolders\/$/i, "/mailFolders('opaque-folder-id')") : `${root}${api === 'graph' ? 'Inbox' : 'inbox'}`;
+      return json({ value: [mail('A', 6), mail('C', 4)], '@odata.nextLink': `${folder}/messages?$skiptoken=older` });
     }));
     const first = await (await request('limit=2')).json();
     expect(first.messages.map((value: any) => value.id)).toEqual(['A', 'B']);

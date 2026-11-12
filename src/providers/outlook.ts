@@ -435,17 +435,24 @@ async function pollMailbox(context: OutlookCredentialContext, limit: number, rec
 
 const SCAN_FIELDS = 'id,subject,from,receivedDateTime,bodyPreview,toRecipients,ccRecipients';
 
-/** Continuations carry a bearer token: accept only this API's exact folder path. */
+/** Microsoft canonicalizes folder names to OData IDs. Keep requests on our own folder path. */
 function validateScanContinuation(value: unknown, folderUrl: string): string {
   if (typeof value !== 'string') throw new Error('Invalid Outlook scan continuation');
   const expected = new URL(folderUrl);
   let url: URL;
   try { url = new URL(value); } catch { throw new Error('Invalid Outlook scan continuation'); }
+  const canonicalFolderPath = /^\/(v1\.0|api\/v2\.0)\/me\/mailFolders\('[a-z0-9_~.%+=-]+'\)\/messages$/i;
+  const canonical = canonicalFolderPath.exec(url.pathname);
+  const sameFolderPath = url.pathname.toLowerCase() === expected.pathname.toLowerCase();
+  const sameApiFolderPath = canonical && expected.pathname.toLowerCase().startsWith(`/${canonical[1].toLowerCase()}/`);
   if (url.protocol !== 'https:' || url.hostname !== expected.hostname || url.username || url.password
-    || (url.port && url.port !== '443') || url.pathname.toLowerCase() !== expected.pathname.toLowerCase() || url.hash) {
+    || (url.port && url.port !== '443') || (!sameFolderPath && !sameApiFolderPath) || url.hash) {
     throw new Error('Untrusted Outlook scan continuation');
   }
-  return url.href;
+  // Preserve the provider's opaque paging query; never send the bearer token
+  // to a returned path, even when it uses a valid-looking folder/account ID.
+  expected.search = url.search;
+  return expected.href;
 }
 
 async function scanHttpMailbox(token: string, apiType: 'graph' | 'outlook', control: MailboxScanControl, recipient?: string) {
