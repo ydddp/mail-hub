@@ -685,7 +685,7 @@ describe('iCloud admin routes', () => {
     expect(getDb().prepare(`SELECT state, upstream_active FROM icloud_addresses`).get()).toEqual({ state: 'retiring', upstream_active: null });
   });
 
-  it('completes the maximum bounded network sequence within the original 120-second lease', async () => {
+  it.each([14_999, 15_000])('keeps the 120-second lease while enforcing a %sms network boundary', async duration => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-11-08T00:00:00.000Z'));
     const started = Date.now();
@@ -694,7 +694,10 @@ describe('iCloud admin routes', () => {
     const seenLeases: unknown[] = [];
     const fetchSpy = vi.fn(async (url: string) => {
       seenLeases.push((getDb().prepare(`SELECT retire_lease_until FROM icloud_addresses`).get() as { retire_lease_until: number }).retire_lease_until);
-      await new Promise(resolve => setTimeout(resolve, 15_000));
+      // The old fixture returned success at exactly the timeout while ignoring
+      // AbortSignal.timeout (not driven by fake timers). At the deadline the
+      // transport now really stops; only a response before it can succeed.
+      await new Promise(resolve => setTimeout(resolve, duration));
       if (String(url).endsWith('/validate')) return new Response(JSON.stringify({ webservices: { premiummailsettings: { url: 'https://svc.test' } } }));
       if (String(url).endsWith('/list')) {
         if (++lists < 3) throw new TypeError('transient read disconnect');
@@ -705,10 +708,11 @@ describe('iCloud admin routes', () => {
     vi.stubGlobal('fetch', fetchSpy);
     const request = retireRecovery();
     await vi.runAllTimersAsync();
-    expect((await request).status).toBe(200);
-    expect(Date.now() - started).toBe(77_400);
-    expect(seenLeases).toEqual(Array(5).fill(started + 120_000));
-    expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/deactivate'))).toHaveLength(1);
+    const completed = duration < 15_000;
+    expect((await request).status).toBe(completed ? 200 : 502);
+    expect(Date.now() - started).toBe(completed ? duration * 5 + 2400 : duration);
+    expect(seenLeases).toEqual(Array(completed ? 5 : 1).fill(started + 120_000));
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/deactivate'))).toHaveLength(completed ? 1 : 0);
   });
 
   it('erases the on-disk trust token when the account is deleted', async () => {

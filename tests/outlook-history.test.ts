@@ -6,6 +6,25 @@ import { rateLimiter } from '../src/rate-limiter.js';
 import { fetchAccountMailboxPage, resetTokenCache } from '../src/providers/outlook.js';
 import { evictClient } from '../src/providers/imap-core.js';
 
+// A browser cancellation must cancel the HTTP read, not only page waiting.
+it('cancels an in-flight history HTTP read and starts no later page', async () => {
+  seed('graph');
+  const controller = new AbortController();
+  let stopped: AbortSignal | undefined;
+  const upstream = vi.fn(async (_url: string, opts: RequestInit) => {
+    stopped = opts.signal!;
+    controller.abort();
+    return new Promise<Response>((_, reject) => {
+      if (stopped!.aborted) reject(stopped!.reason);
+      else stopped!.addEventListener('abort', () => reject(stopped!.reason), { once: true });
+    });
+  });
+  vi.stubGlobal('fetch', upstream);
+  await expect(fetchAccountMailboxPage(account, 'admin', 5, undefined, controller.signal)).rejects.toThrow();
+  expect(stopped?.aborted).toBe(true);
+  expect(upstream).toHaveBeenCalledTimes(1);
+});
+
 const imap = vi.hoisted(() => ({ validity: '71', selected: 'INBOX', fresh: false, searches: [] as any[], fail: false, reverseDates: false }));
 vi.mock('imapflow', () => ({ ImapFlow: class {
   get mailbox() { return { uidValidity: BigInt(imap.validity), uidNext: imap.fresh ? 5 : 4 }; }

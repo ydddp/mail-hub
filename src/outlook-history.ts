@@ -3,6 +3,7 @@ import { parseTimestamp } from './time.js';
 import { rateLimiter } from './rate-limiter.js';
 import { UpstreamHttpError } from './errors.js';
 import type { Message } from './providers/base.js';
+import { runReadOperation, withReadBudget } from './read-budget.js';
 
 export interface HistoryFolder {
   folder: string;
@@ -60,7 +61,11 @@ function order(a: Message, b: Message): number {
 }
 
 /** A token names an immutable page input; only successful reads publish its successor. */
-export async function readOutlookHistory(
+export function readOutlookHistory(...args: Parameters<typeof readHistory>): Promise<HistoryPage> {
+  return withReadBudget({ signal: args[7], deadline: args[8] ?? Date.now() + 30_000 }, () => readHistory(...args));
+}
+
+async function readHistory(
   email: string, adminKey: string, pageToken: string | undefined, limit: number,
   initialize: (control: HistoryReadControl) => Promise<OutlookHistoryState>,
   load: (state: OutlookHistoryState, folder: HistoryFolder, control: HistoryReadControl) => Promise<void>,
@@ -76,17 +81,9 @@ export async function readOutlookHistory(
     },
     async run(operation) {
       control.checkpoint();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let abort: (() => void) | undefined;
-      try {
-        const value = await Promise.race([operation(), new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Outlook history read timed out; retry this page')), Math.max(0, deadline - Date.now()));
-          abort = () => reject(new Error('Outlook history read cancelled; retry this page'));
-          signal?.addEventListener('abort', abort, { once: true });
-        })]);
-        control.checkpoint();
-        return value;
-      } finally { if (timer) clearTimeout(timer); if (abort) signal?.removeEventListener('abort', abort); }
+      const value = await runReadOperation({}, operation);
+      control.checkpoint();
+      return value;
     },
     read(operation) {
       control.checkpoint();

@@ -41,6 +41,25 @@ function mail(id: string, address = recipient, received = '2026-06-05T00:02:00Z'
 function request(query = '') { return app.request(`/api/inbox/scan/code?selection=matching${query}`, { headers: authHeaders() }); }
 
 describe('bounded Outlook matching scan', () => {
+  it.each(['latest', 'matching'].flatMap(selection => ['oauth', 'body'].map(phase => ({ selection, phase }))))('propagates the $selection route deadline into $phase', async ({ selection, phase }) => {
+    seed(); vi.useFakeTimers();
+    let transportSignal: AbortSignal | undefined;
+    const upstream = vi.fn(async (url: string, options: RequestInit) => {
+      if (phase === 'body' && url.includes('/oauth2/')) return json({ access_token: 'scan-token' });
+      if (phase === 'body' && url.includes('junkemail')) return json({ value: [] });
+      transportSignal = options.signal!;
+      if (phase === 'body') return new Response(new ReadableStream({ start() {} }));
+      return new Promise<Response>((_, reject) => transportSignal!.addEventListener('abort', () => reject(transportSignal!.reason), { once: true }));
+    });
+    vi.stubGlobal('fetch', upstream);
+    const pending = app.request(`/api/inbox/scan/code?selection=${selection}&timeout=1`, { headers: authHeaders() });
+    await vi.advanceTimersByTimeAsync(1001);
+    const response = await pending;
+    expect(response.status).toBe(selection === 'matching' ? 200 : 502);
+    expect(transportSignal?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(upstream).toHaveBeenCalledTimes(phase === 'oauth' ? 1 : selection === 'matching' ? 2 : 3);
+  });
   it.each([{}, { value: null }, { value: {} }, { value: 'not a list' }])('does not report no-code for a malformed list payload %#', async payload => {
     seed();
     vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).includes('/oauth2/') ? json({ access_token: 'scan-token' }) : json(payload)));

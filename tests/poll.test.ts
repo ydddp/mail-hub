@@ -305,7 +305,10 @@ describe('long polling lease end', () => {
     insertFakeInbox('sleep-end');
     const controller = new AbortController();
     const pending = app.request('/api/inbox/sleep-end/code?wait=true&timeout=1', { headers: authHeaders(), signal: controller.signal });
-    await vi.waitFor(() => { expect(vi.getTimerCount()).toBeGreaterThan(0); });
+    // A route deadline timer exists before the first list completes now.
+    // Drain that list's microtasks before ending a lease *during sleep*.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(provider.messagesCount).toBe(1);
     await endPolling('sleep-end', end, controller);
     await vi.advanceTimersByTimeAsync(3000);
 

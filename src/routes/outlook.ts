@@ -13,6 +13,8 @@ import { parseInboxStartTimestamp, parseInboxTimestamp } from '../inbox-lifecycl
 import { requireAdmin, type AdminEnv } from './admin.js';
 import { importDelimited } from '../import-utils.js';
 import { fetchWithTimeout } from '../utils.js';
+import { withReadBudget, currentReadBudget } from '../read-budget.js';
+import { createLogger } from '../logger.js';
 import { config } from '../config.js';
 import { errorMessage, httpStatus, retryAfterHeader } from '../errors.js';
 import { startBatchJob, runSynchronousBatch } from '../batch-jobs.js';
@@ -268,6 +270,7 @@ async function exchangeAuthorizationCode(session: OAuthSessionRow, code: string)
     code_verifier: session.code_verifier,
   });
   const res = await fetchWithTimeout(`${MICROSOFT_AUTHORITY}/${encodeURIComponent(session.tenant)}/oauth2/v2.0/token`, {
+    diagnostic: 'oauth',
     timeout: 15000,
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -448,6 +451,10 @@ export function parseCredentials(parts: string[]): { clientId: string; refreshTo
 }
 
 export const outlookRoutes = new Hono<AdminEnv>();
+const readLog = createLogger('outlook-route');
+outlookRoutes.use('/outlook/accounts/:email/mailbox*', (c, next) => withReadBudget({
+  deadline: Date.now() + 30_000, signal: c.req.raw.signal, requestId: c.res.headers.get('X-Request-Id') ?? undefined,
+}, next));
 
 outlookRoutes.use('/outlook/*', async (c, next) => {
   if (c.req.path.endsWith('/outlook/oauth/callback')) return next();
@@ -844,6 +851,7 @@ outlookRoutes.get('/outlook/accounts/:email/mailbox', async (c) => {
     });
   } catch (e) {
     if (e instanceof OutlookHistoryTokenError) return c.json({ error: e.message }, 400);
+    readLog.warn('mailbox history failed', { requestId: currentReadBudget()?.requestId, error: e });
     if (httpStatus(e, 0) === 429) {
       const retryAfter = retryAfterHeader(e);
       if (retryAfter !== undefined) c.header('Retry-After', retryAfter);
@@ -861,6 +869,7 @@ outlookRoutes.get('/outlook/accounts/:email/mailbox/:mid', async (c) => {
     const message = await fetchAccountMessage(email, c.req.param('mid'));
     return c.json({ ...message, ...classifyMessage(message.receivedAt, accountLeases(email)), ...recipientAttribution(message) });
   } catch (e) {
+    readLog.warn('mailbox detail failed', { requestId: currentReadBudget()?.requestId, error: e });
     return c.json({ error: errorMessage(e) }, 502);
   }
 });

@@ -12,6 +12,7 @@ import type { MailboxScanControl, MailboxScanMeta, Message, MessageDetail } from
 import { MESSAGE_RECIPIENTS, PROVIDER } from '../providers/base.js';
 import { stripPlusTag } from '../providers/outlook.js';
 import { foldAsciiCase } from '../mail-address.js';
+import { currentReadBudget, readDelay, runReadOperation, withReadBudget } from '../read-budget.js';
 import type { AdminEnv } from './admin.js';
 import { createLogger } from '../logger.js';
 import { errorMessage, httpStatus, ImapAddressConflictError, InvalidImapUsernameError, MessageNotFoundError, retryAfterHeader } from '../errors.js';
@@ -96,6 +97,9 @@ function checkAutoBlock(db: Database.Database, service: string | undefined, prov
 }
 
 export const inboxRoutes = new Hono<AdminEnv>();
+inboxRoutes.use('/inbox/:id/messages*', async (c, next) => {
+  return withReadBudget({ deadline: Date.now() + 60_000, signal: c.req.raw.signal, requestId: c.res.headers.get('X-Request-Id') ?? undefined }, next);
+});
 
 function addOwnerScope(c: AppContext, sql: string, params: QueryParam[] = []): { sql: string; params: QueryParam[] } {
   if (c.get('isAdmin')) return { sql, params };
@@ -139,7 +143,7 @@ async function readProvider<T>(providerName: string, read: () => Promise<T>): Pr
     throw new PollRateLimitError(providerName, rateLimiter.getPollStatus(providerName).nextAvailableAt);
   }
   rateLimiter.recordPoll(providerName);
-  return read();
+  return runReadOperation({}, read);
 }
 
 function pollRateLimitResponse(c: AppContext, e: PollRateLimitError, scan?: Record<string, unknown>) {
@@ -152,6 +156,7 @@ function pollRateLimitResponse(c: AppContext, e: PollRateLimitError, scan?: Reco
 }
 
 function readFailureResponse(c: AppContext, error: unknown, scan?: Record<string, unknown>) {
+  log.warn('mailbox read failed', { requestId: currentReadBudget()?.requestId, error });
   const extra = scan ? { scan } : {};
   if (error instanceof PollRateLimitError) return pollRateLimitResponse(c, error, scan);
   if (error instanceof MessageNotFoundError) return c.json({ error: 'Message not found', ...extra }, 404);
@@ -387,240 +392,232 @@ inboxRoutes.get('/inbox/:id/code', async (c) => {
   }
 
   const deadline = Date.now() + timeout * 1000;
-  if (selection === 'matching') {
-    const initial = row;
-    const accountEmail = rowToInboxData(initial).authData.email || stripPlusTag(initial.address);
-    const alias = foldAsciiCase(initial.address) !== foldAsciiCase(accountEmail);
-    const checkedIds = new Set<string>();
-    let checked = 0;
-    let complete = false;
-    let scan: MailboxScanMeta | undefined = provider.scanMessages ? {
-      scope: 'inbox_and_junk', pages: 0, metadata: 0, complete: false,
-      truncated: true, partial: false, folders: [],
-    } : undefined;
-    const budget = { pages: 0, metadata: 0 };
-    type ScanReason = 'matched' | 'window_exhausted' | 'scan_limit' | 'timeout';
-    const metadata = (reason: ScanReason | 'error', windowComplete: boolean, interrupted = false) => ({
-      ...scan, ...(scan ? { pages: budget.pages, metadata: budget.metadata, partial: interrupted || scan.partial } : {}),
-      checked, complete: windowComplete, reason,
-    });
-    const empty = (reason: ScanReason, windowComplete = complete, interrupted = false) => c.json({
-      codes: [], email: null, messageId: null, receivedAt: null,
-      scan: metadata(reason, windowComplete, interrupted),
-    });
-    // A request is bound to its original owner/address/lease, even for an admin.
-    // Provider credential freshness and To/Cc checks remain in the provider too.
-    const checkpoint = () => {
-      const current = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
-      if (!current || current.owner_key !== initial.owner_key || current.provider !== initial.provider
-        || current.address !== initial.address || current.auth_data !== initial.auth_data || current.created_at !== initial.created_at) {
-        return { response: c.json({ error: 'Inbox not found' }, 404) };
-      }
-      const account = getRow<{ assigned_inbox_id: string | null }>(getDb(),
-        'SELECT assigned_inbox_id FROM outlook_accounts WHERE email = ?', accountEmail);
-      if (!isInboxPollingOpen(current) || account?.assigned_inbox_id !== id) {
-        return { response: empty('window_exhausted', false, true) };
-      }
-      if (c.req.raw.signal.aborted || Date.now() >= deadline) return { response: empty('timeout', scan ? false : complete, true) };
-      return { row: current };
-    };
-    const ownsRecipient = (message: Message, current: InboxDataRow) => !alias
-      || !!message[MESSAGE_RECIPIENTS]?.some(address => foldAsciiCase(address) === foldAsciiCase(current.address));
-    class ScanStopped extends Error {}
-    const control: MailboxScanControl = {
-      budget,
-      progress(value) { scan = value; },
-      checkpoint() { if (checkpoint().response) throw new ScanStopped(); },
-      async run(operation) {
-        control.checkpoint();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        let onAbort: (() => void) | undefined;
-        try {
-          const result = await Promise.race([
-            operation(),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new ScanStopped()), Math.max(0, deadline - Date.now()));
-              onAbort = () => reject(new ScanStopped());
-              c.req.raw.signal.addEventListener('abort', onAbort, { once: true });
-            }),
-          ]);
+  const initialRow = row;
+  return withReadBudget({ deadline, signal: c.req.raw.signal, requestId: c.res.headers.get('X-Request-Id') ?? undefined }, async () => {
+    let row: InboxDataRow | undefined = initialRow;
+    if (selection === 'matching') {
+      const initial = row;
+      const accountEmail = rowToInboxData(initial).authData.email || stripPlusTag(initial.address);
+      const alias = foldAsciiCase(initial.address) !== foldAsciiCase(accountEmail);
+      const checkedIds = new Set<string>();
+      let checked = 0;
+      let complete = false;
+      let scan: MailboxScanMeta | undefined = provider.scanMessages ? {
+        scope: 'inbox_and_junk', pages: 0, metadata: 0, complete: false,
+        truncated: true, partial: false, folders: [],
+      } : undefined;
+      const budget = { pages: 0, metadata: 0 };
+      type ScanReason = 'matched' | 'window_exhausted' | 'scan_limit' | 'timeout';
+      const metadata = (reason: ScanReason | 'error', windowComplete: boolean, interrupted = false) => ({
+        ...scan, ...(scan ? { pages: budget.pages, metadata: budget.metadata, partial: interrupted || scan.partial } : {}),
+        checked, complete: windowComplete, reason,
+      });
+      const empty = (reason: ScanReason, windowComplete = complete, interrupted = false) => c.json({
+        codes: [], email: null, messageId: null, receivedAt: null,
+        scan: metadata(reason, windowComplete, interrupted),
+      });
+      // A request is bound to its original owner/address/lease, even for an admin.
+      // Provider credential freshness and To/Cc checks remain in the provider too.
+      const checkpoint = () => {
+        const current = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
+        if (!current || current.owner_key !== initial.owner_key || current.provider !== initial.provider
+          || current.address !== initial.address || current.auth_data !== initial.auth_data || current.created_at !== initial.created_at) {
+          return { response: c.json({ error: 'Inbox not found' }, 404) };
+        }
+        const account = getRow<{ assigned_inbox_id: string | null }>(getDb(),
+          'SELECT assigned_inbox_id FROM outlook_accounts WHERE email = ?', accountEmail);
+        if (!isInboxPollingOpen(current) || account?.assigned_inbox_id !== id) {
+          return { response: empty('window_exhausted', false, true) };
+        }
+        if (c.req.raw.signal.aborted || Date.now() >= deadline) return { response: empty('timeout', scan ? false : complete, true) };
+        return { row: current };
+      };
+      const ownsRecipient = (message: Message, current: InboxDataRow) => !alias
+        || !!message[MESSAGE_RECIPIENTS]?.some(address => foldAsciiCase(address) === foldAsciiCase(current.address));
+      class ScanStopped extends Error {}
+      const control: MailboxScanControl = {
+        budget,
+        progress(value) { scan = value; },
+        checkpoint() { if (checkpoint().response) throw new ScanStopped(); },
+        async run(operation) {
+          control.checkpoint();
+          const result = await runReadOperation({}, operation);
           control.checkpoint();
           return result;
-        } finally {
-          if (timer) clearTimeout(timer);
-          if (onAbort) c.req.raw.signal.removeEventListener('abort', onAbort);
-        }
-      },
-      read(operation) { return control.run(() => readProvider(providerName, operation)); },
-    };
-    const startTime = Date.now();
-    while (true) {
-      let state = checkpoint();
-      if (state.response) return state.response;
-      // A new list can introduce candidates, so completeness is unknown until
-      // this awaited read and all of its unvisited details have been checked.
-      complete = false;
-      let listed: Message[];
-      try {
-        if (provider.scanMessages) {
-          const result = await provider.scanMessages(rowToInboxData(state.row!), control);
-          listed = result.messages;
-          scan = result.scan;
-        } else listed = await control.read(() => provider.getMessages(rowToInboxData(state.row!)));
-      } catch (error) {
-        if (error && typeof error === 'object' && 'scan' in error) scan = error.scan as MailboxScanMeta;
-        state = checkpoint();
+        },
+        read(operation) { return control.run(() => readProvider(providerName, operation)); },
+      };
+      const startTime = Date.now();
+      while (true) {
+        let state = checkpoint();
         if (state.response) return state.response;
-        if (error instanceof ScanStopped) return empty('timeout', false, true);
-        return readFailureResponse(c, error, scan ? metadata('error', false, true) : undefined);
-      }
-      state = checkpoint();
-      if (state.response) return state.response;
-      const candidates = [...new Map(filterNew(listed, state.row!).filter(message => ownsRecipient(message, state.row!))
-        .map(message => [message.id, message])).values()].sort((a, b) => {
-        const timeOrder = (parseTimestamp(b.receivedAt) || 0) - (parseTimestamp(a.receivedAt) || 0);
-        return timeOrder || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-      });
-      for (const candidate of candidates) {
-        if (checkedIds.has(candidate.id)) continue;
-        state = checkpoint();
-        if (state.response) return state.response;
-        if (checked >= 5) return empty('scan_limit', false);
-        let detail: MessageDetail;
-        checked++;
+        // A new list can introduce candidates, so completeness is unknown until
+        // this awaited read and all of its unvisited details have been checked.
+        complete = false;
+        let listed: Message[];
         try {
-          detail = await control.read(() => provider.getMessage(rowToInboxData(state.row!), candidate.id, control));
+          if (provider.scanMessages) {
+            const result = await provider.scanMessages(rowToInboxData(state.row!), control);
+            listed = result.messages;
+            scan = result.scan;
+          } else listed = await control.read(() => provider.getMessages(rowToInboxData(state.row!)));
         } catch (error) {
+          if (error && typeof error === 'object' && 'scan' in error) scan = error.scan as MailboxScanMeta;
           state = checkpoint();
           if (state.response) return state.response;
-          // A failed detail has not been checked successfully. Stop here rather
-          // than extracting from its summary or hiding it with an older code.
+          if (error instanceof ScanStopped) return empty('timeout', false, true);
           return readFailureResponse(c, error, scan ? metadata('error', false, true) : undefined);
         }
         state = checkpoint();
         if (state.response) return state.response;
-        checkedIds.add(candidate.id);
-        if (!filterNew([candidate, detail], state.row!).every(message => ownsRecipient(message, state.row!))
-          || filterNew([candidate, detail], state.row!).length !== 2) continue;
-        let codes = extractCodes({ subject: detail.subject, text: detail.text, html: detail.html });
-        if (typeFilter) codes = codes.filter(code => code.type === typeFilter);
-        if (codes.length) {
+        const candidates = [...new Map(filterNew(listed, state.row!).filter(message => ownsRecipient(message, state.row!))
+          .map(message => [message.id, message])).values()].sort((a, b) => {
+          const timeOrder = (parseTimestamp(b.receivedAt) || 0) - (parseTimestamp(a.receivedAt) || 0);
+          return timeOrder || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        });
+        for (const candidate of candidates) {
+          if (checkedIds.has(candidate.id)) continue;
           state = checkpoint();
           if (state.response) return state.response;
-          const recipientAddress = detail[MESSAGE_RECIPIENTS]?.some(address => foldAsciiCase(address) === foldAsciiCase(state.row!.address))
-            ? state.row!.address : null;
-          return c.json({
-            codes,
-            email: { from: detail.from, subject: detail.subject, recipientAddress },
-            messageId: detail.id || candidate.id,
-            receivedAt: toUtcIso(detail.receivedAt) || toUtcIso(candidate.receivedAt),
-            scan: metadata('matched', candidates.every(message => checkedIds.has(message.id)) && (scan?.complete ?? true)),
-          });
+          if (checked >= 5) return empty('scan_limit', false);
+          let detail: MessageDetail;
+          checked++;
+          try {
+            detail = await control.read(() => provider.getMessage(rowToInboxData(state.row!), candidate.id, control));
+          } catch (error) {
+            state = checkpoint();
+            if (state.response) return state.response;
+            // A failed detail has not been checked successfully. Stop here rather
+            // than extracting from its summary or hiding it with an older code.
+            return readFailureResponse(c, error, scan ? metadata('error', false, true) : undefined);
+          }
+          state = checkpoint();
+          if (state.response) return state.response;
+          checkedIds.add(candidate.id);
+          if (!filterNew([candidate, detail], state.row!).every(message => ownsRecipient(message, state.row!))
+            || filterNew([candidate, detail], state.row!).length !== 2) continue;
+          let codes = extractCodes({ subject: detail.subject, text: detail.text, html: detail.html });
+          if (typeFilter) codes = codes.filter(code => code.type === typeFilter);
+          if (codes.length) {
+            state = checkpoint();
+            if (state.response) return state.response;
+            const recipientAddress = detail[MESSAGE_RECIPIENTS]?.some(address => foldAsciiCase(address) === foldAsciiCase(state.row!.address))
+              ? state.row!.address : null;
+            return c.json({
+              codes,
+              email: { from: detail.from, subject: detail.subject, recipientAddress },
+              messageId: detail.id || candidate.id,
+              receivedAt: toUtcIso(detail.receivedAt) || toUtcIso(candidate.receivedAt),
+              scan: metadata('matched', candidates.every(message => checkedIds.has(message.id)) && (scan?.complete ?? true)),
+            });
+          }
         }
+        complete = scan?.complete ?? true;
+        state = checkpoint();
+        if (state.response) return state.response;
+        if (scan?.truncated || (scan && (budget.pages >= 5 || budget.metadata >= 100) && wait)) return empty('scan_limit', false);
+        if (!wait) return empty('window_exhausted');
+        const interval = Date.now() - startTime < 20000 ? 3000 : 5000;
+        try { await control.run(() => readDelay(Math.min(interval, deadline - Date.now()))); }
+        catch { const stopped = checkpoint(); return stopped.response ?? empty('timeout', false); }
+        state = checkpoint();
+        if (state.response) return state.response;
       }
-      complete = scan?.complete ?? true;
-      state = checkpoint();
-      if (state.response) return state.response;
-      if (scan?.truncated || (scan && (budget.pages >= 5 || budget.metadata >= 100) && wait)) return empty('scan_limit', false);
-      if (!wait) return empty('window_exhausted');
-      const interval = Date.now() - startTime < 20000 ? 3000 : 5000;
-      try { await control.run(() => new Promise(resolve => setTimeout(resolve, Math.min(interval, deadline - Date.now())))); }
-      catch { const stopped = checkpoint(); return stopped.response ?? empty('timeout', false); }
-      state = checkpoint();
-      if (state.response) return state.response;
     }
-  }
-  let messages: Message[];
-  try {
-    const inbox = rowToInboxData(row);
-    messages = await readProvider(providerName, () => provider.getMessages(inbox));
-  } catch (e) {
+    let messages: Message[];
+    try {
+      const inbox = rowToInboxData(row);
+      messages = await readProvider(providerName, () => provider.getMessages(inbox));
+    } catch (e) {
+      row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
+      if (!row) return c.json({ error: 'Inbox not found' }, 404);
+      if (c.req.raw.signal.aborted || !isInboxPollingOpen(row)) return emptyCodeResponse(c);
+      return readFailureResponse(c, e);
+    }
+
     row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
     if (!row) return c.json({ error: 'Inbox not found' }, 404);
-    if (c.req.raw.signal.aborted || !isInboxPollingOpen(row)) return emptyCodeResponse(c);
-    return readFailureResponse(c, e);
-  }
+    messages = sortNewest(filterNew(messages, row));
 
-  row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
-  if (!row) return c.json({ error: 'Inbox not found' }, 404);
-  messages = sortNewest(filterNew(messages, row));
-
-  let lastPollFailure: { error: unknown } | undefined;
-  if (wait && messages.length === 0) {
-    const startTime = Date.now();
-    while (Date.now() < deadline) {
-      row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
-      if (!row) return c.json({ error: 'Inbox not found' }, 404);
-      if (c.req.raw.signal.aborted || !isInboxPollingOpen(row)) return emptyCodeResponse(c);
-      const elapsed = Date.now() - startTime;
-      const interval = elapsed < 20000 ? 3000 : 5000;
-      await new Promise((r) => setTimeout(r, interval));
-      row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
-      if (!row) return c.json({ error: 'Inbox not found' }, 404);
-      if (c.req.raw.signal.aborted || !isInboxPollingOpen(row)) return emptyCodeResponse(c);
-      if (Date.now() >= deadline) break;
-      let polled: Message[] | undefined;
-      try {
-        const inbox = rowToInboxData(row);
-        polled = await readProvider(providerName, () => provider.getMessages(inbox));
-        lastPollFailure = undefined;
-      } catch (error) {
-        lastPollFailure = { error };
+    let lastPollFailure: { error: unknown } | undefined;
+    if (wait && messages.length === 0) {
+      const startTime = Date.now();
+      while (Date.now() < deadline) {
+        row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
+        if (!row) return c.json({ error: 'Inbox not found' }, 404);
+        if (c.req.raw.signal.aborted || !isInboxPollingOpen(row)) return emptyCodeResponse(c);
+        const elapsed = Date.now() - startTime;
+        const interval = elapsed < 20000 ? 3000 : 5000;
+        try { await readDelay(Math.min(interval, Math.max(0, deadline - Date.now()))); }
+        catch { /* Recheck ownership/deletion before returning at the deadline. */ }
+        row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
+        if (!row) return c.json({ error: 'Inbox not found' }, 404);
+        if (c.req.raw.signal.aborted || !isInboxPollingOpen(row)) return emptyCodeResponse(c);
+        if (Date.now() >= deadline) break;
+        let polled: Message[] | undefined;
+        try {
+          const inbox = rowToInboxData(row);
+          polled = await readProvider(providerName, () => provider.getMessages(inbox));
+          lastPollFailure = undefined;
+        } catch (error) {
+          lastPollFailure = { error };
+        }
+        row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
+        if (!row) return c.json({ error: 'Inbox not found' }, 404);
+        // A waiting retry must stop as soon as its lease ends, even when it
+        // returns historical mail. Bounded historical reads use the initial poll.
+        if (c.req.raw.signal.aborted || !isInboxPollingOpen(row)) return emptyCodeResponse(c);
+        if (lastPollFailure && (lastPollFailure.error instanceof PollRateLimitError || httpStatus(lastPollFailure.error, 0) === 429)) {
+          return readFailureResponse(c, lastPollFailure.error);
+        }
+        if (polled) messages = sortNewest(filterNew(polled, row));
+        if (messages.length > 0) break;
       }
-      row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
-      if (!row) return c.json({ error: 'Inbox not found' }, 404);
-      // A waiting retry must stop as soon as its lease ends, even when it
-      // returns historical mail. Bounded historical reads use the initial poll.
-      if (c.req.raw.signal.aborted || !isInboxPollingOpen(row)) return emptyCodeResponse(c);
-      if (lastPollFailure && (lastPollFailure.error instanceof PollRateLimitError || httpStatus(lastPollFailure.error, 0) === 429)) {
-        return readFailureResponse(c, lastPollFailure.error);
-      }
-      if (polled) messages = sortNewest(filterNew(polled, row));
-      if (messages.length > 0) break;
     }
-  }
 
-  if (c.req.raw.signal.aborted) return emptyCodeResponse(c);
-  if (lastPollFailure) return readFailureResponse(c, lastPollFailure.error);
-  if (messages.length === 0) return emptyCodeResponse(c);
+    if (c.req.raw.signal.aborted) return emptyCodeResponse(c);
+    if (lastPollFailure) return readFailureResponse(c, lastPollFailure.error);
+    if (messages.length === 0) return emptyCodeResponse(c);
 
-  const latest = messages[0];
-  let detail: MessageDetail;
-  try {
-    const inbox = rowToInboxData(row);
-    detail = await readProvider(providerName, () => provider.getMessage(inbox, latest.id));
-  } catch (error) {
+    const latest = messages[0];
+    let detail: MessageDetail;
+    try {
+      const inbox = rowToInboxData(row);
+      detail = await readProvider(providerName, () => provider.getMessage(inbox, latest.id));
+    } catch (error) {
+      row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
+      if (!row) return c.json({ error: 'Inbox not found' }, 404);
+      if (c.req.raw.signal.aborted || !isMessageWithinInboxLifetime(latest.receivedAt, row)) return emptyCodeResponse(c);
+      if (error instanceof MessageNotFoundError) return emptyCodeResponse(c);
+      if (error instanceof PollRateLimitError || httpStatus(error, 0) === 429) return readFailureResponse(c, error);
+      if (currentReadBudget()?.signal?.aborted) return readFailureResponse(c, error);
+      log.warn('failed to fetch message detail, using summary message', { inboxId: id, messageId: latest.id, error: error });
+      detail = latest;
+    }
+
     row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
     if (!row) return c.json({ error: 'Inbox not found' }, 404);
-    if (c.req.raw.signal.aborted || !isMessageWithinInboxLifetime(latest.receivedAt, row)) return emptyCodeResponse(c);
-    if (error instanceof MessageNotFoundError) return emptyCodeResponse(c);
-    if (error instanceof PollRateLimitError || httpStatus(error, 0) === 429) return readFailureResponse(c, error);
-    log.warn('failed to fetch message detail, using summary message', { inboxId: id, messageId: latest.id, error: error });
-    detail = latest;
-  }
+    if (c.req.raw.signal.aborted) return emptyCodeResponse(c);
+    if (!isMessageWithinInboxLifetime(latest.receivedAt, row) || !isMessageWithinInboxLifetime(detail.receivedAt, row)) {
+      return emptyCodeResponse(c);
+    }
 
-  row = getInboxRow<InboxDataRow>(c, id, INBOX_READ_COLUMNS);
-  if (!row) return c.json({ error: 'Inbox not found' }, 404);
-  if (c.req.raw.signal.aborted) return emptyCodeResponse(c);
-  if (!isMessageWithinInboxLifetime(latest.receivedAt, row) || !isMessageWithinInboxLifetime(detail.receivedAt, row)) {
-    return emptyCodeResponse(c);
-  }
+    let codes = extractCodes({
+      subject: detail.subject,
+      text: detail.text,
+      html: detail.html,
+    });
 
-  let codes = extractCodes({
-    subject: detail.subject,
-    text: detail.text,
-    html: detail.html,
-  });
+    if (typeFilter) {
+      codes = codes.filter((code) => code.type === typeFilter);
+    }
 
-  if (typeFilter) {
-    codes = codes.filter((code) => code.type === typeFilter);
-  }
-
-  return c.json({
-    codes,
-    email: { from: detail.from, subject: detail.subject },
-    messageId: detail.id || latest.id,
-    receivedAt: toUtcIso(detail.receivedAt) || toUtcIso(latest.receivedAt),
+    return c.json({
+      codes,
+      email: { from: detail.from, subject: detail.subject },
+      messageId: detail.id || latest.id,
+      receivedAt: toUtcIso(detail.receivedAt) || toUtcIso(latest.receivedAt),
+    });
   });
 });
 

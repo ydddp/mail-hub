@@ -13,6 +13,20 @@ afterEach(() => {
 // fields; messages must be normalized BEFORE dedup/merge/sort, otherwise every
 // message collapses onto an undefined id and only one survives.
 describe('Outlook REST (PascalCase) message polling', () => {
+  it.each(['graph', 'outlook'])('cancels the sibling folder and preserves failure for API %s', async api => {
+    getDb().prepare(`INSERT INTO outlook_accounts (email,password,client_id,refresh_token,api_type) VALUES ('failure@outlook.com','pw','cid','rt',?)`).run(api);
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, options: RequestInit) => {
+      if (url.includes('/oauth2/')) return new Response(JSON.stringify({ access_token: 'token' }));
+      if (/\/inbox\//i.test(url)) return new Response('{}', { status: 503 });
+      signals.push(options.signal!);
+      return new Promise<Response>((_, reject) => options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true }));
+    }));
+    // Known APIs must fail, never turn the failed folder into an empty mailbox.
+    await expect(new OutlookProvider().getMessages({ address: 'failure@outlook.com', authData: {}, provider: 'outlook', apiBase: '' })).rejects.toThrow();
+    expect(signals.length).toBeGreaterThan(0);
+    expect(signals.every(signal => signal.aborted)).toBe(true);
+  });
   // Recipient evidence must survive both transports internally for admin
   // attribution without becoming part of tenant-visible message JSON.
   it.each(['graph', 'outlook'])('retains internal To/Cc evidence in %s list and detail without serializing it', async (transport) => {
@@ -23,6 +37,11 @@ describe('Outlook REST (PascalCase) message polling', () => {
       : { Id: 'evidence-mail', ReceivedDateTime: '2026-07-01T12:00:05.123Z', ToRecipients: [{ EmailAddress: { Address: email } }], CcRecipients: [{ EmailAddress: { Address: 'other@x.test' } }] };
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       const target = String(url);
+      if (!target.includes('/oauth2/')) {
+        const fields = new URL(target).searchParams.get('$select')!.split(',');
+        expect(fields.includes('body')).toBe(target.includes('/me/messages/'));
+        expect(fields).toContain('toRecipients');
+      }
       const result = target.includes('/oauth2/') ? { access_token: 'evidence-token' }
         : target.includes('/me/messages/') ? mail
         : { value: /\/inbox\//i.test(target) ? [mail] : [] };

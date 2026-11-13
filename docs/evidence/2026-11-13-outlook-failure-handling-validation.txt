@@ -1,0 +1,27 @@
+Mail Hub failure handling validation — 2026-11-13 JST
+Node v24.11.1; undici 7.29.0
+
+Full suite (exit 0)
+ Test Files  68 passed (68)
+      Tests  1946 passed (1946)
+   Start at  16:08:10
+   Duration  132.06s (transform 1.45s, setup 1.15s, import 27.31s, tests 85.28s, environment 5ms)
+
+Real local socket tests (exit 0)
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  16:02:49
+   Duration  2.02s (transform 213ms, setup 35ms, import 262ms, tests 1.53s, environment 0ms)
+
+Compatibility regressions (exit 0)
+ Test Files  2 passed (2)
+      Tests  97 passed (97)
+   Start at  16:07:29
+   Duration  3.72s (transform 471ms, setup 55ms, import 1.48s, tests 1.80s, environment 0ms)
+
+Build (exit 0)
+> mail-hub@0.12.1 build
+> tsc && node --input-type=commonjs -e "const fs=require('fs');fs.rmSync('dist/public',{recursive:true,force:true});fs.cpSync('src/public','dist/public',{recursive:true})"
+
+git diff --check: exit 0.
+No deployment or production mailbox/proxy/registration operations.

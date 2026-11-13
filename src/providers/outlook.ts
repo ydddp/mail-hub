@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'crypto';
 import { BaseProvider, MESSAGE_RECIPIENTS, PROVIDER, type InboxData, type Message, type MessageDetail, type ProviderMeta, type MailboxScanControl, type MailboxScanMeta } from './base.js';
 import { allRows, getDb, getRow, getSetting } from '../db.js';
 import { fetchWithTimeout, formatSender, randomString } from '../utils.js';
+import { currentReadBudget, withReadBudget } from '../read-budget.js';
 import { MessageNotFoundError, NoAssetCreatedError, UpstreamHttpError } from '../errors.js';
 import { config } from '../config.js';
 import { foldAsciiCase } from '../mail-address.js';
@@ -188,6 +189,7 @@ async function fetchOAuthToken(context: OutlookCredentialContext): Promise<{ acc
     grant_type: 'refresh_token',
   });
   const res = await fetchWithTimeout(OAUTH2_URL, {
+    diagnostic: 'oauth',
     timeout: 10000,
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -229,12 +231,14 @@ async function fetchMailsGraph(accessToken: string, folderUrl: string, count = 2
   const params = new URLSearchParams({
     $top: String(count),
     $orderby: 'receivedDateTime desc',
-    $select: MESSAGE_FIELDS,
+    $select: SCAN_FIELDS,
   });
   const res = await fetchWithTimeout(`${folderUrl}?${params}`, {
+    diagnostic: /\/inbox\//i.test(folderUrl) ? 'inbox' : 'junk',
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   const apiType = folderUrl.startsWith('https://graph.microsoft.com') ? 'graph' : 'outlook';
+  if (!res.ok) await res.body?.cancel();
   if (res.status === 401 || res.status === 403) throw new MailApiRejectedError(apiType, res.status);
   if (!res.ok) throw new UpstreamHttpError(`${apiType} mail API error`, res.status, res.headers.get('Retry-After'));
   const data = await res.json() as { value?: GraphMessage[] };
@@ -244,25 +248,29 @@ async function fetchMailsGraph(accessToken: string, folderUrl: string, count = 2
 }
 
 async function fetchMailsBothApis(accessToken: string, apiType: OutlookApiType | '', count = 20): Promise<{ messages: GraphMessage[]; apiType: Exclude<OutlookApiType, 'imap'> }> {
+  const folders = async (inboxUrl: string, junkUrl: string) => {
+    const controller = new AbortController();
+    return withReadBudget({ signal: controller.signal }, async () => {
+      const reads = [fetchMailsGraph(accessToken, inboxUrl, count), fetchMailsGraph(accessToken, junkUrl, count)];
+      try { return await Promise.all(reads); }
+      catch (error) {
+        controller.abort(error);
+        await Promise.allSettled(reads);
+        throw error;
+      }
+    });
+  };
   if (apiType === 'outlook') {
-    const [inboxMsgs, junkMsgs] = await Promise.all([
-      fetchMailsGraph(accessToken, OUTLOOK_INBOX_URL, count),
-      fetchMailsGraph(accessToken, OUTLOOK_JUNK_URL, count),
-    ]);
+    const [inboxMsgs, junkMsgs] = await folders(OUTLOOK_INBOX_URL, OUTLOOK_JUNK_URL);
     return { messages: mergeMessages(inboxMsgs, junkMsgs, count), apiType: 'outlook' };
   }
   try {
-    const [inboxMsgs, junkMsgs] = await Promise.all([
-      fetchMailsGraph(accessToken, GRAPH_INBOX_URL, count),
-      fetchMailsGraph(accessToken, GRAPH_JUNK_URL, count),
-    ]);
+    const [inboxMsgs, junkMsgs] = await folders(GRAPH_INBOX_URL, GRAPH_JUNK_URL);
     return { messages: mergeMessages(inboxMsgs, junkMsgs, count), apiType: 'graph' };
   } catch (e) {
+    currentReadBudget()?.signal?.throwIfAborted();
     if (e instanceof MailApiRejectedError || !apiType) {
-      const [inboxMsgs, junkMsgs] = await Promise.all([
-        fetchMailsGraph(accessToken, OUTLOOK_INBOX_URL, count),
-        fetchMailsGraph(accessToken, OUTLOOK_JUNK_URL, count),
-      ]);
+      const [inboxMsgs, junkMsgs] = await folders(OUTLOOK_INBOX_URL, OUTLOOK_JUNK_URL);
       return { messages: mergeMessages(inboxMsgs, junkMsgs, count), apiType: 'outlook' };
     }
     throw e;
@@ -289,7 +297,8 @@ async function fetchSingleMessage(accessToken: string, messageId: string, apiTyp
       ];
   let allNotFound = true;
   for (const url of urls) {
-    const res = await run(() => fetchWithTimeout(url, { headers: { Authorization: `Bearer ${accessToken}` }, ...(control ? { retries: 0, retryMode: 'never' as const, redirect: 'error' as const } : {}) }));
+    const res = await run(() => fetchWithTimeout(url, { diagnostic: 'detail', headers: { Authorization: `Bearer ${accessToken}` }, ...(control ? { retries: 0, retryMode: 'never' as const, redirect: 'error' as const } : {}) }));
+    if (!res.ok) await res.body?.cancel();
     if (res.status === 401 || res.status === 403) {
       throw new MailApiRejectedError(url.startsWith('https://graph.microsoft.com') ? 'graph' : 'outlook', res.status);
     }
@@ -418,6 +427,7 @@ async function pollMailbox(context: OutlookCredentialContext, limit: number, rec
     try {
       result = await fetchMailsBothApis(token, apiType, limit);
     } catch (e) {
+      currentReadBudget()?.signal?.throwIfAborted();
       assertCurrentCredentials(context);
       if (apiType) throw e;
       return fetchOutlookImapMessages(outlookImapCreds(email, token, getSetting('proxy_url') || config.proxyUrl), limit, recipient)
@@ -474,8 +484,10 @@ async function scanHttpMailbox(token: string, apiType: 'graph' | 'outlook', cont
           control.budget.pages++;
           control.progress?.(meta());
           const response = await control.run(() => fetchWithTimeout(folder.next, {
+            diagnostic: folder.folder === 'Inbox' ? 'inbox' : 'junk',
             headers: { Authorization: `Bearer ${token}` }, retries: 0, retryMode: 'never', redirect: 'error',
           }));
+          if (!response.ok) await response.body?.cancel();
           if (response.status === 401 || response.status === 403) throw new MailApiRejectedError(apiType, response.status);
           if (!response.ok) throw new UpstreamHttpError(`${apiType} scan mail API error`, response.status, response.headers.get('Retry-After'));
           return control.run(() => response.json()) as Promise<{ value?: unknown[]; '@odata.nextLink'?: unknown; 'odata.nextLink'?: unknown }>;
@@ -573,8 +585,9 @@ export async function fetchAccountMailboxPage(email: string, adminKey: string, l
     }
     const readPage = (token: string) => control.read(async () => {
       assertCurrentCredentials(context);
-      const response = await control.run(() => fetchWithTimeout(folder.next!, { headers: { Authorization: `Bearer ${token}` }, retries: 0, retryMode: 'never', redirect: 'error' }));
+      const response = await control.run(() => fetchWithTimeout(folder.next!, { diagnostic: folder.folder === 'Inbox' ? 'inbox' : 'junk', headers: { Authorization: `Bearer ${token}` }, retries: 0, retryMode: 'never', redirect: 'error' }));
       assertCurrentCredentials(context);
+      if (!response.ok) await response.body?.cancel();
       if (response.status === 401 || response.status === 403) throw new MailApiRejectedError(state.apiType as 'graph' | 'outlook', response.status);
       if (!response.ok) throw new UpstreamHttpError('Outlook history mail API error', response.status, response.headers.get('Retry-After'));
       const page = await control.run(() => response.json()) as Record<string, unknown>;
@@ -817,8 +830,10 @@ async function checkAccessToken(email: string, token: string, context?: OutlookC
         return { status: 'valid', apiType: 'imap' };
       }
       const res = await fetchWithTimeout(`${probe.url}?$top=1`, {
+        diagnostic: 'token_check',
         headers: { Authorization: `Bearer ${token}` },
       });
+      await res.body?.cancel();
       if (context) assertCurrentCredentials(context);
       if (res.ok) return { status: 'valid', apiType: probe.apiType };
       if (res.status !== 401 && res.status !== 403) inconclusive = true;

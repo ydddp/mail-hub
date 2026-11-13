@@ -23,6 +23,22 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 // This new suite locks the credential-output boundary shared by every backend
 // logger, including errors whose opaque secrets have no recognizable prefix.
 describe('credential-safe backend logs', () => {
+  it.each(['TimeoutError', 'AbortError'])('retains the native DOMException %s verdict', name => {
+    const output = captureOutput();
+    createLogger('safe-test').warn('read stopped', { error: new DOMException('opaque-stop-secret', name) });
+    expect(output.entries()[0].error).toMatchObject({ class: name, category: name === 'TimeoutError' ? 'timeout' : 'aborted' });
+    expect(output.text()).not.toContain('opaque-stop-secret');
+  });
+  it('retains bounded cause codes without messages, hooks or cyclic payloads', () => {
+    const output = captureOutput();
+    const cause = Object.assign(new Error('private-confirmation-link'), { code: 'ECONNREFUSED' });
+    const failure = new TypeError('private-token', { cause });
+    cause.cause = failure;
+    createLogger('safe-test').warn('read failed', { error: failure });
+    expect(output.entries()[0].error.cause).toMatchObject({ class: 'Error', category: 'network', code: 'ECONNREFUSED' });
+    expect(output.text()).not.toMatch(/private-/);
+    expect(output.text().length).toBeLessThan(1000);
+  });
   it.each([
     { failure: Object.assign(new Error('opaque-diagnostic-secret https://user:opaque-diagnostic-secret@private.test/body'), { code: 'ENOSPC', body: 'opaque-diagnostic-secret' }), category: 'error', errorClass: 'Error', code: 'ENOSPC' },
     { failure: Object.assign(new TypeError('opaque-diagnostic-secret'), { code: 'ECONNRESET', body: 'opaque-diagnostic-secret' }), category: 'network', errorClass: 'TypeError', code: 'ECONNRESET' },

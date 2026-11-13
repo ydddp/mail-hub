@@ -8,10 +8,12 @@ const ERROR_CLASSES = new Set([
   'Error', 'TypeError', 'RangeError', 'SyntaxError', 'ReferenceError', 'URIError', 'EvalError', 'AggregateError',
   'UpstreamHttpError', 'NoAssetCreatedError', 'MessageNotFoundError', 'ImapAddressConflictError', 'InvalidImapUsernameError',
   'AbortError', 'TimeoutError',
+  'ConnectTimeoutError', 'HeadersTimeoutError', 'BodyTimeoutError', 'SocketError',
 ]);
 const ERROR_CODES = new Set([
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND',
   'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_ABORTED', 'UND_ERR_PRX_TLS', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT',
   'ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'ENOSPC', 'EBUSY',
   'SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_CONSTRAINT', 'SQLITE_CONSTRAINT_TRIGGER', 'SQLITE_CONSTRAINT_UNIQUE',
 ]);
@@ -28,9 +30,16 @@ function ownData(object: object): Record<string, PropertyDescriptor> {
   catch { return {}; }
 }
 
-function errorMetadata(error: object): Record<string, unknown> {
+function errorMetadata(error: object, seen = new WeakSet<object>(), depth = 0): Record<string, unknown> {
+  if (seen.has(error) || depth >= 6) return { class: 'Error', category: 'truncated' };
+  seen.add(error);
   const fields = ownData(error);
-  const name = fields.name?.value;
+  let name = fields.name?.value;
+  // Use the platform's brand-checked accessor, never an upstream getter.
+  if (name === undefined) {
+    try { name = Object.getOwnPropertyDescriptor(DOMException.prototype, 'name')?.get?.call(error); }
+    catch { /* Not a native DOMException. */ }
+  }
   const code = fields.code?.value;
   const status = fields.status?.value ?? fields.statusCode?.value;
   const nativeError = isNativeError(error);
@@ -46,7 +55,12 @@ function errorMetadata(error: object): Record<string, unknown> {
     : errorClass === 'TimeoutError' ? 'timeout'
     : errorClass === 'AbortError' ? 'aborted'
     : safeStatus !== undefined ? 'upstream_http' : 'error';
-  return { class: errorClass, category, ...(safeStatus === undefined ? {} : { status: safeStatus }), ...(safeCode ? { code: safeCode } : {}) };
+  const cause = fields.cause?.value;
+  const causes = fields.errors?.value;
+  return { class: errorClass, category, ...(safeStatus === undefined ? {} : { status: safeStatus }), ...(safeCode ? { code: safeCode } : {}),
+    ...(cause && typeof cause === 'object' ? { cause: errorMetadata(cause, seen, depth + 1) } : {}),
+    ...(Array.isArray(causes) ? { errors: Object.values(ownData(causes)).slice(0, 6).flatMap(field => field.value && typeof field.value === 'object' ? [errorMetadata(field.value, seen, depth + 1)] : []) } : {}),
+  };
 }
 
 function sanitizeValue(value: unknown, seen: WeakSet<object>, depth: number): unknown {
@@ -75,7 +89,7 @@ function sanitizeValue(value: unknown, seen: WeakSet<object>, depth: number): un
       continue;
     }
     if (key === 'code' && !(typeof descriptor.value === 'string' && ERROR_CODES.has(descriptor.value))) continue;
-    if (key === 'requestid' && !(typeof descriptor.value === 'string' && /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(descriptor.value))) continue;
+    if (key.endsWith('requestid') && !(typeof descriptor.value === 'string' && /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(descriptor.value))) continue;
     if (key === 'ip' && !(typeof descriptor.value === 'string' && isIP(descriptor.value))) continue;
     // Request completion, malformed JSON and unhandled-error logs all use
     // path. A private recovery ID must not escape through any of those sites.
