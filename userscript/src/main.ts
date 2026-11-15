@@ -1,6 +1,7 @@
 import { ApiError, createApiClient, normalizeBaseUrl } from './api.js';
 import type { ApiClient, ProviderSummary } from './api.js';
 import { fillPage, trackPageFocus } from './fill.js';
+import { resolveLang, setLang, t } from './i18n.js';
 import type { FillKind } from './fill.js';
 import { createGmKeyValueStore, createGmTransport, detectGm, readTabState, writeTabState } from './gm.js';
 import type { GmApi } from './gm.js';
@@ -23,7 +24,7 @@ import {
   sessionKey,
   upsertProfile,
 } from './storage.js';
-import type { ConnectionBook, ConnectionProfile, Phase, StoredResult, ThemePreference } from './storage.js';
+import type { ConnectionBook, ConnectionProfile, LanguagePreference, Phase, StoredResult, ThemePreference } from './storage.js';
 import { capsuleFor, drawerPlan, isLive, resultShape, stageOf } from './view.js';
 import type { CapsuleAction } from './view.js';
 
@@ -63,15 +64,15 @@ interface UiState {
 function describeError(error: unknown): string {
   if (error instanceof ApiError) {
     switch (error.kind) {
-      case 'unauthorized': return 'API Key 无效或已停用';
-      case 'forbidden': return '这个 Key 没有该操作的权限';
-      case 'not-found': return '邮箱不存在或已被删除';
-      case 'quota': return error.retryAfter ? `触发限流，${error.retryAfter} 后再试` : '触发 Mail Hub 限流，稍后再试';
-      case 'upstream': return 'Mail Hub 或上游出错（5xx），稍后再试';
-      case 'network': return '连不上 Mail Hub（这不代表网站拒绝了注册）';
-      case 'timeout': return '请求超时，结果待确认';
-      case 'aborted': return '请求已取消';
-      case 'protocol': return '响应格式不对，已丢弃';
+      case 'unauthorized': return t('err.unauthorized');
+      case 'forbidden': return t('err.forbidden');
+      case 'not-found': return t('err.notFound');
+      case 'quota': return error.retryAfter ? t('err.quotaAfter', { after: error.retryAfter }) : t('err.quota');
+      case 'upstream': return t('err.upstream');
+      case 'network': return t('err.network');
+      case 'timeout': return t('err.timeout');
+      case 'aborted': return t('err.aborted');
+      case 'protocol': return t('err.protocol');
       default: return error.message;
     }
   }
@@ -115,6 +116,15 @@ export async function main(): Promise<void> {
 
   const store = createGmKeyValueStore(gm);
   const settings = await loadSettings(store);
+  const browserLanguages = () => (navigator.languages?.length ? navigator.languages : [navigator.language ?? '']);
+  setLang(resolveLang(settings.language, browserLanguages()));
+
+  /** Switching language re-labels the open panel in place; no state is lost. */
+  function applyLanguage(): void {
+    setLang(resolveLang(settings.language, browserLanguages()));
+    panel?.relabel();
+    render();
+  }
   let book: ConnectionBook = await loadConnectionBook(store);
   let connection: ConnectionProfile | null = activeProfile(book);
   let client: ApiClient | null = null;
@@ -180,7 +190,7 @@ export async function main(): Promise<void> {
       notice: ui.notice ? { text: ui.notice.text, tone: ui.notice.tone } : null,
       providerLabel: ui.provider
         ? ui.providers.find((provider) => provider.name === ui.provider)?.displayName ?? ui.provider
-        : '自动分配',
+        : t('cap.auto'),
     });
 
     panel.render({
@@ -207,6 +217,7 @@ export async function main(): Promise<void> {
       noticeTone: ui.notice?.tone ?? null,
       unseen: ui.unseen,
       theme: settings.theme,
+      language: settings.language,
       shortcut: settings.shortcut || DEFAULT_SHORTCUT,
       connectionLabel: connection ? profileTitle(connection) : null,
       connections: book.profiles.map((profile) => ({
@@ -222,7 +233,7 @@ export async function main(): Promise<void> {
 
   // ----------------------------------------------------------------- feedback
 
-  async function copy(value: string, label = '已复制'): Promise<void> {
+  async function copy(value: string, label = t('fb.copied')): Promise<void> {
     try {
       await navigator.clipboard.writeText(value);
       panel?.flash(label);
@@ -239,7 +250,7 @@ export async function main(): Promise<void> {
       area.remove();
       panel?.flash(label);
     } catch {
-      panel?.flash('无法自动复制，请手动选中');
+      panel?.flash(t('fb.copyFailed'));
     }
   }
 
@@ -299,18 +310,19 @@ export async function main(): Promise<void> {
         if (error instanceof ApiError && error.kind === 'aborted') return;
         if (error instanceof ApiError && error.kind === 'not-found') {
           ui.waiting = false;
-          setNotice('邮箱已被关闭或删除');
+          setNotice(t('note.inboxGone'));
           render();
           return;
         }
-        if (error instanceof ApiError && error.kind === 'invalid' && error.message.includes('排除')) {
+        // Branch on the error's code, never on its (translated) message.
+        if (error instanceof ApiError && error.code === 'exclusions-full') {
           ui.waiting = false;
-          setNotice('收件记录已满', 'warn', '已排除的邮件到了上限。到设置里点「重置收件记录」后继续收件。');
+          setNotice(t('note.seenFull'), 'warn', t('note.seenFullDetail'));
           render();
           return;
         }
         // Transient: say so, back off, keep the run alive.
-        setNotice('收件出错，稍后自动重试', 'warn', describeError(error));
+        setNotice(t('note.pollError'), 'warn', describeError(error));
         render();
         await sleep(ERROR_BACKOFF_MS);
       }
@@ -350,7 +362,7 @@ export async function main(): Promise<void> {
       // A remembered provider that can no longer poll would fail every dispatch.
       if (ui.provider && (!remembered || !remembered.enabled || !remembered.features.pollInbox)) ui.provider = null;
     } catch (error) {
-      setNotice('读取提供商失败', 'error', describeError(error));
+      setNotice(t('note.providersFailed'), 'error', describeError(error));
     }
     render();
   }
@@ -376,9 +388,9 @@ export async function main(): Promise<void> {
     const phase = active.state.phase;
     // These phases mean an action may have reached the server unanswered.
     // Reloading must not turn that into a retry.
-    if (phase === 'creating') { setNotice('上次获取结果未知', 'error', '请求发出后没收到回应，邮箱可能已经创建。确认后再获取。'); render(); return; }
-    if (phase === 'reporting' || phase === 'report-unknown') { setNotice('上报结果待确认', 'error', '没收到服务端确认，可能已经计数，所以不会自动重发。'); render(); return; }
-    if (phase === 'closing') { setNotice('关闭结果待确认', 'error', '可以再点「结束使用」重试。'); render(); return; }
+    if (phase === 'creating') { setNotice(t('note.createUnknown'), 'error', t('note.createUnknownDetail')); render(); return; }
+    if (phase === 'reporting' || phase === 'report-unknown') { setNotice(t('note.reportUnknown'), 'error', t('note.reportUnknownDetail')); render(); return; }
+    if (phase === 'closing') { setNotice(t('note.closeUnknown'), 'error', t('note.closeUnknownDetail')); render(); return; }
     if (phase === 'closed') return;
 
     try {
@@ -395,12 +407,19 @@ export async function main(): Promise<void> {
     } catch (error) {
       if (error instanceof ApiError && error.kind === 'not-found') {
         stopPolling();
-        setNotice('这个邮箱在服务端已不存在');
+        setNotice(t('note.serverGone'));
       } else {
-        setNotice('核对邮箱状态失败', 'warn', describeError(error));
+        setNotice(t('note.verifyFailed'), 'warn', describeError(error));
       }
       render();
     }
+  }
+
+  /** Warn about plaintext only for http that leaves this machine. */
+  function plaintextWarning(baseUrl: string): boolean {
+    if (!baseUrl) return false;
+    const parsed = normalizeBaseUrl(baseUrl);
+    return parsed.ok && parsed.insecure;
   }
 
   /**
@@ -411,7 +430,7 @@ export async function main(): Promise<void> {
     const servedFrom = __MAILHUB_SERVED_FROM__.startsWith('%%') ? '' : __MAILHUB_SERVED_FROM__;
     const baseUrl = book.profiles.length === 0 ? servedFrom : '';
     return {
-      editingId: null, label: '', baseUrl, apiKey: '', insecure: baseUrl.startsWith('http:'), error: null, busy: false,
+      editingId: null, label: '', baseUrl, apiKey: '', insecure: plaintextWarning(baseUrl), error: null, busy: false,
     };
   }
 
@@ -446,7 +465,7 @@ export async function main(): Promise<void> {
     if (id === book.activeId) return;
     book = selectProfile(book, id);
     await useProfile(activeProfile(book));
-    panel?.flash(`已切换到 ${connection ? profileTitle(connection) : '—'}`);
+    panel?.flash(t('fb.switched', { name: connection ? profileTitle(connection) : '—' }));
   }
 
   async function deleteConnection(id: string): Promise<void> {
@@ -458,7 +477,7 @@ export async function main(): Promise<void> {
     } else {
       await saveConnectionBook(store, book);
     }
-    panel?.flash('已删除这套连接');
+    panel?.flash(t('fb.deleted'));
     render();
   }
 
@@ -471,7 +490,7 @@ export async function main(): Promise<void> {
       render();
     };
     if (!base.ok) { fail(base.message); return; }
-    if (!apiKey) { fail('请填写 API Key', base.insecure); return; }
+    if (!apiKey) { fail(t('connect.needKey'), base.insecure); return; }
     ui.connect = { editingId, label: input.label, baseUrl: base.baseUrl, apiKey, insecure: base.insecure, error: null, busy: true };
     render();
 
@@ -505,7 +524,7 @@ export async function main(): Promise<void> {
     if (getting) return;
     const service = pageService();
     if (!service) {
-      setNotice('先填写服务标识', 'warn', '认不出当前网站的主域名（例如本机地址或 IP），填一个服务标识后再获取。');
+      setNotice(t('note.needService'), 'warn', t('note.needServiceDetail'));
       ui.drawer = 'main';
       render();
       return;
@@ -524,8 +543,8 @@ export async function main(): Promise<void> {
       await markTab(true);
       startPolling(Date.now());
     } catch (error) {
-      if (isUnknownOutcome(error)) setNotice('获取结果未知', 'error', `${describeError(error)}。邮箱可能已经创建，确认后再重试。`);
-      else setNotice('获取失败', 'error', describeError(error));
+      if (isUnknownOutcome(error)) setNotice(t('note.createUnknown'), 'error', t('note.createUnknownAfter', { error: describeError(error) }));
+      else setNotice(t('note.createFailed'), 'error', describeError(error));
     } finally {
       getting = false;
       render();
@@ -547,8 +566,8 @@ export async function main(): Promise<void> {
         // Clear the in-flight marker before rendering, or the capsule stays on 上报中.
         ui.pending = null;
         // Never pretend a success, and never continue into closing as if it had counted.
-        if (isUnknownOutcome(error)) setNotice('上报结果待确认', 'error', `${describeError(error)}。不会自动重发，也不会自动关闭。`);
-        else setNotice('上报失败', 'error', `${describeError(error)}。邮箱没有关闭。`);
+        if (isUnknownOutcome(error)) setNotice(t('note.reportUnknown'), 'error', t('note.reportUnknownAfter', { error: describeError(error) }));
+        else setNotice(t('note.reportFailed'), 'error', t('note.reportFailedAfter', { error: describeError(error) }));
         render();
         return;
       } finally {
@@ -567,11 +586,11 @@ export async function main(): Promise<void> {
     render();
     try {
       await reporting;
-      panel?.flash('已上报成功，邮箱继续收件');
+      panel?.flash(t('fb.reportedKeep'));
       if (!ui.waiting) startPolling(Date.now());
     } catch (error) {
-      if (isUnknownOutcome(error)) setNotice('上报结果待确认', 'error', `${describeError(error)}。不会自动重发。`);
-      else setNotice('上报失败', 'error', describeError(error));
+      if (isUnknownOutcome(error)) setNotice(t('note.reportUnknown'), 'error', t('note.reportUnknownKeep', { error: describeError(error) }));
+      else setNotice(t('note.reportFailed'), 'error', describeError(error));
     } finally {
       ui.pending = null;
     }
@@ -597,7 +616,7 @@ export async function main(): Promise<void> {
       return true;
     } catch (error) {
       ui.pending = null;
-      setNotice('关闭失败', 'error', `${describeError(error)}。可以重试。`);
+      setNotice(t('note.closeFailed'), 'error', t('note.closeFailedAfter', { error: describeError(error) }));
       render();
       return false;
     }
@@ -624,7 +643,7 @@ export async function main(): Promise<void> {
       const detail = await session?.fetchMessage(messageId);
       if (detail) ui.bodies.set(messageId, detail.bodyText);
     } catch (error) {
-      ui.bodies.set(messageId, `读取失败：${describeError(error)}`);
+      ui.bodies.set(messageId, t('note.readFailed', { error: describeError(error) }));
     }
     render();
   }
@@ -643,22 +662,22 @@ export async function main(): Promise<void> {
       if (outcome.target) panel?.highlight(outcome.target);
       if (kind === 'email') ui.addressUsed = true;
       else await markUsed();
-      panel?.flash(kind === 'email' ? '已填入邮箱' : '已填入验证码');
+      panel?.flash(kind === 'email' ? t('fb.filledEmail') : t('fb.filledCode'));
       // Give the page its room back; the capsule stays for the next step.
       ui.drawer = 'closed';
       render();
       return;
     }
-    await copy(value, kind === 'email' ? '没找到邮箱输入框，已复制' : '没找到验证码输入框，已复制');
+    await copy(value, kind === 'email' ? t('fb.noEmailField') : t('fb.noCodeField'));
     if (kind === 'code') await markUsed();
     render();
   }
 
   function openLink(url: string): void {
     let parsed: URL;
-    try { parsed = new URL(url); } catch { panel?.flash('链接不可用'); return; }
+    try { parsed = new URL(url); } catch { panel?.flash(t('fb.badLink')); return; }
     // One-time links are opened deliberately, as a plain web navigation only.
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { panel?.flash('只支持 http(s) 链接'); return; }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { panel?.flash(t('fb.httpOnly')); return; }
     window.open(parsed.toString(), '_blank', 'noopener,noreferrer');
     void markUsed().then(render);
   }
@@ -732,13 +751,13 @@ export async function main(): Promise<void> {
       saveService: (value) => {
         const page = resolveService(location.href);
         const resolved = resolveService(location.href, { mappings: settings.mappings, override: value });
-        if (!resolved.ok) { panel?.flash('服务标识不可用'); return; }
+        if (!resolved.ok) { panel?.flash(t('fb.badService')); return; }
         // Remembered under the page's host so its subdomains inherit it.
         if (page.ok) settings.mappings[page.host] = resolved.service;
         else settings.mappings[location.hostname] = resolved.service;
         void persistSettings();
         setNotice(null);
-        panel?.flash(`服务标识：${resolved.service}`);
+        panel?.flash(t('fb.serviceSet', { service: resolved.service }));
         render();
       },
       selectProvider: (provider) => {
@@ -761,11 +780,17 @@ export async function main(): Promise<void> {
       },
       movePanel: (position: Position) => { settings.panelPositions[siteKey()] = position; void persistSettings(); },
       moveTab: (position: Position) => { settings.fabPositions[siteKey()] = position; void persistSettings(); },
-      recordShortcut: () => { capturingShortcut = true; panel?.flash('按下新的组合键（要含 Ctrl / Alt / Shift），Esc 取消'); },
+      recordShortcut: () => { capturingShortcut = true; panel?.flash(t('fb.recordShortcut')); },
+      setLanguage: (language: LanguagePreference) => {
+        settings.language = language;
+        void persistSettings();
+        applyLanguage();
+        panel?.flash(t('fb.language'));
+      },
       resetSeen: () => {
         void session?.resetSeen().then(() => {
           setNotice(null);
-          panel?.flash('已重置收件记录');
+          panel?.flash(t('fb.seenReset'));
           if (session && POLLING_PHASES.has(session.state.phase) && !ui.waiting) startPolling(Date.now());
           render();
         });
@@ -792,15 +817,15 @@ export async function main(): Promise<void> {
 
   window.addEventListener('keydown', (event) => {
     if (capturingShortcut) {
-      if (event.key === 'Escape') { capturingShortcut = false; panel?.flash('已取消'); return; }
+      if (event.key === 'Escape') { capturingShortcut = false; panel?.flash(t('fb.cancelled')); return; }
       const spec = shortcutFromEvent(event);
-      if (!spec) { panel?.flash('要同时按 Ctrl / Alt / Shift 中的至少一个'); return; }
+      if (!spec) { panel?.flash(t('fb.needModifier')); return; }
       event.preventDefault();
       event.stopPropagation();
       capturingShortcut = false;
       settings.shortcut = formatShortcut(spec);
       void persistSettings().then(render);
-      panel?.flash(`唤出快捷键：${settings.shortcut}`);
+      panel?.flash(t('fb.shortcutSet', { shortcut: settings.shortcut }));
       return;
     }
     // Matched on event.code, so a non-Latin layout works; never mid-composition.
@@ -811,8 +836,8 @@ export async function main(): Promise<void> {
 
   window.addEventListener('resize', () => { panel?.reclamp(); }, true);
 
-  gm.registerMenuCommand?.('打开 Mail Hub 邮箱助手', summon);
-  gm.registerMenuCommand?.('删除当前 Mail Hub 连接', () => {
+  gm.registerMenuCommand?.(t('menu.open'), summon);
+  gm.registerMenuCommand?.(t('menu.deleteConnection'), () => {
     void (async () => {
       if (book.activeId) await deleteConnection(book.activeId);
       summon();

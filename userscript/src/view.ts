@@ -5,6 +5,7 @@
  * drifted (a failed create rendered as the previous inbox's closed state with
  * no error, and "换邮箱" was forgotten on the next fold).
  */
+import { t } from './i18n.js';
 import type { Phase } from './storage.js';
 
 export type Stage =
@@ -132,14 +133,14 @@ function resultFace(result: ResultShape): CapsuleValue {
   switch (result.kind) {
     case 'code': return { text: result.value, kind: 'code' };
     case 'link': return { text: result.link.domain, kind: 'domain' };
-    case 'choose': return { text: `${result.count} 个候选码`, kind: 'text' };
-    case 'message': return { text: result.subject || '（无标题）', kind: 'text' };
+    case 'choose': return { text: t('cap.candidates', { n: result.count }), kind: 'text' };
+    case 'message': return { text: result.subject || t('cap.noSubject'), kind: 'text' };
   }
 }
 
 function base(input: CapsuleInput): Capsule {
   const { stage, address, service, result, addressUsed, resultUsed, providerLabel } = input;
-  const addressFace: CapsuleValue = address ? { text: address, kind: 'address' } : { text: '还没有邮箱', kind: 'muted' };
+  const addressFace: CapsuleValue = address ? { text: address, kind: 'address' } : { text: t('cap.noInbox'), kind: 'muted' };
   const capsule = (value: CapsuleValue, status: string, tone: Tone, primary: Capsule['primary'], extra: Partial<Capsule> = {}): Capsule => ({
     value, status, tone, primary, ticking: false, needsDrawer: false, link: null, ...extra,
   });
@@ -148,42 +149,42 @@ function base(input: CapsuleInput): Capsule {
     case 'empty':
       // "Which provider, for which site" is exactly what the get button will do.
       return service
-        ? capsule({ text: service, kind: 'domain' }, providerLabel, 'idle', action('get', '获取邮箱'))
-        : capsule({ text: '认不出当前网站', kind: 'muted' }, '先填写服务标识', 'warn', null, { needsDrawer: true });
+        ? capsule({ text: service, kind: 'domain' }, providerLabel, 'idle', action('get', t('act.get')))
+        : capsule({ text: t('cap.unknownSite'), kind: 'muted' }, t('cap.needService'), 'warn', null, { needsDrawer: true });
     case 'creating':
       return capsule(addressFace.kind === 'address' ? { ...addressFace, kind: 'muted' } : addressFace,
-        '正在获取邮箱…', 'wait', action('get', '获取中', { busy: true }));
+        t('cap.getting'), 'wait', action('get', t('act.getting'), { busy: true }));
     case 'create-unknown':
-      return capsule(addressFace, '获取结果未知', 'error', action('get', '重新获取'));
+      return capsule(addressFace, t('cap.createUnknown'), 'error', action('get', t('act.retryGet')));
     case 'waiting':
-      return capsule(addressFace, '等待验证邮件', 'wait',
-        action('fill-address', addressUsed ? '再填一次' : '填入', { quiet: addressUsed }), { ticking: true });
+      return capsule(addressFace, t('cap.waiting'), 'wait',
+        action('fill-address', addressUsed ? t('act.fillAgain') : t('act.fill'), { quiet: addressUsed }), { ticking: true });
     case 'result': {
-      if (!result) return capsule(addressFace, '等待验证邮件', 'wait', action('fill-address', '填入'), { ticking: true });
+      if (!result) return capsule(addressFace, t('cap.waiting'), 'wait', action('fill-address', t('act.fill')), { ticking: true });
       const face = resultFace(result);
       if (result.kind === 'choose') {
-        return capsule(face, '有多个候选，选出验证码', 'ok', action('choose', '选一个'), { needsDrawer: true });
+        return capsule(face, t('cap.choose'), 'ok', action('choose', t('act.choose')), { needsDrawer: true });
       }
       if (result.kind === 'message') {
-        return capsule(face, '邮件到了，但没认出验证码', 'warn', action('view-message', '查看邮件'));
+        return capsule(face, t('cap.noCode'), 'warn', action('view-message', t('act.viewMessage')));
       }
-      if (resultUsed) return capsule(face, result.kind === 'link' ? '已打开验证链接' : '已填入验证码', 'ok', action('finish', '注册成功并结束'));
+      if (resultUsed) return capsule(face, result.kind === 'link' ? t('cap.linkOpened') : t('cap.codeFilled'), 'ok', action('finish', t('act.finish')));
       return result.kind === 'code'
-        ? capsule(face, result.link ? '验证码 + 链接' : '收到验证码', 'ok', action('fill-code', '填入'), { link: result.link })
-        : capsule(face, '收到验证链接', 'ok', action('open-link', '打开'));
+        ? capsule(face, result.link ? t('cap.codeAndLink') : t('cap.codeArrived'), 'ok', action('fill-code', t('act.fill')), { link: result.link })
+        : capsule(face, t('cap.linkArrived'), 'ok', action('open-link', t('act.open')));
     }
     case 'reporting':
-      return capsule(result ? resultFace(result) : addressFace, '正在上报注册成功…', 'wait', action('finish', '上报中', { busy: true }));
+      return capsule(result ? resultFace(result) : addressFace, t('cap.reporting'), 'wait', action('finish', t('act.reportingBusy'), { busy: true }));
     case 'report-unknown':
-      return capsule(result ? resultFace(result) : addressFace, '上报结果待确认', 'error', action('end', '结束使用'));
+      return capsule(result ? resultFace(result) : addressFace, t('cap.reportUnknown'), 'error', action('end', t('act.end')));
     case 'reported':
-      return capsule(result ? resultFace(result) : addressFace, '已上报成功，邮箱仍在收件', 'ok', action('end', '结束使用'));
+      return capsule(result ? resultFace(result) : addressFace, t('cap.reported'), 'ok', action('end', t('act.end')));
     case 'closing':
-      return capsule(result ? resultFace(result) : addressFace, '正在关闭邮箱…', 'wait', action('end', '关闭中', { busy: true }));
+      return capsule(result ? resultFace(result) : addressFace, t('cap.closing'), 'wait', action('end', t('act.closingBusy'), { busy: true }));
     case 'close-failed':
-      return capsule(addressFace, '关闭邮箱失败', 'error', action('retry-close', '重试关闭'));
+      return capsule(addressFace, t('cap.closeFailed'), 'error', action('retry-close', t('act.retryClose')));
     case 'closed':
-      return capsule({ text: address ?? '—', kind: 'muted' }, `已结束 · ${providerLabel}`, 'idle', action('get', '获取新邮箱'));
+      return capsule({ text: address ?? '—', kind: 'muted' }, t('cap.closed', { provider: providerLabel }), 'idle', action('get', t('act.getNew')));
   }
 }
 

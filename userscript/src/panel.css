@@ -227,6 +227,8 @@ button:focus-visible, .value:focus-visible { outline: 2px solid var(--emerald); 
 .line.head { min-height: 40px; }
 .line.edit { gap: 8px; padding-top: 8px; padding-bottom: 8px; }
 .key { flex: none; width: 44px; font-size: 12px; color: var(--text2); }
+/* English labels (Language, Provider, Shortcut) are longer than two characters. */
+:host([lang='en']) .key { width: auto; min-width: 60px; }
 .val { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
 .val.missing { color: var(--amber); }
 .mono { font-family: var(--mono); font-size: 13px; letter-spacing: -.01em; }

@@ -159,6 +159,7 @@ export function keyValueSessionStore(store: KeyValueStore, key: string): Session
 }
 
 export type ThemePreference = 'system' | 'light' | 'dark';
+export type LanguagePreference = 'auto' | 'zh' | 'en';
 
 export interface StoredPosition {
   x: number;
@@ -168,6 +169,8 @@ export interface StoredPosition {
 export interface AssistantSettings {
   version: 1;
   theme: ThemePreference;
+  /** auto = follow the browser's language. */
+  language: LanguagePreference;
   /** Remembered "current site → service" corrections, keyed by host or main domain. */
   mappings: Record<string, string>;
   /** Main domains where the assistant is enabled at all. */
@@ -192,6 +195,7 @@ export function emptySettings(): AssistantSettings {
   return {
     version: SETTINGS_VERSION,
     theme: 'system',
+    language: 'auto',
     mappings: {},
     enabledSites: [],
     hiddenForVisit: [],

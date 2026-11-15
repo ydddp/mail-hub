@@ -1,3 +1,4 @@
+import { t } from './i18n.js';
 import { ApiError } from './api.js';
 import type { ApiClient, CodeResult, InboxStatus, MessageDetail, ProviderSummary, ReportResult } from './api.js';
 import { normalizeService } from './service.js';
@@ -119,7 +120,7 @@ export class AssistantSession {
 
   private assertCurrent(generation: number): void {
     if (generation !== this.generation) {
-      throw new ApiError('aborted', '请求已取消');
+      throw new ApiError('aborted', t('err.aborted'));
     }
   }
 
@@ -149,7 +150,7 @@ export class AssistantSession {
   async createInbox(request: CreateInboxRequest): Promise<SessionState> {
     if (this.busy === 'create') return this.state;
     const service = normalizeService(request.service);
-    if (!service) throw new Error('服务标识不可用');
+    if (!service) throw new Error(t('err.badService'));
 
     const generation = ++this.generation;
     this.busy = 'create';
@@ -202,7 +203,7 @@ export class AssistantSession {
 
   async reportSuccess(): Promise<ReportResult> {
     const inbox = this.current.inbox;
-    if (!inbox) throw new Error('还没有可上报的邮箱');
+    if (!inbox) throw new Error(t('err.noInbox'));
     // report is not idempotent upstream: two calls count as two successes.
     if (this.busy === 'report') return { ok: this.current.reported, action: 'in_flight' };
     if (this.current.reported || this.current.phase === 'report-unknown') {
@@ -281,7 +282,7 @@ export class AssistantSession {
 
   async pollOnce(timeoutSeconds: number): Promise<WaitForCodeResult> {
     const inbox = this.current.inbox;
-    if (!inbox) throw new Error('还没有可收件的邮箱');
+    if (!inbox) throw new Error(t('err.noInbox'));
     const generation = this.generation;
 
     const result = await this.client.waitForCode({
@@ -342,7 +343,7 @@ export class AssistantSession {
   /** Fetch one message and reduce it to plain text for display. */
   async fetchMessage(messageId: string): Promise<MessageDetail & { bodyText: string }> {
     const inbox = this.current.inbox;
-    if (!inbox) throw new Error('还没有可收件的邮箱');
+    if (!inbox) throw new Error(t('err.noInbox'));
     const detail = await this.client.getMessage(inbox.id, messageId);
     const text = detail.text && detail.text.trim() ? detail.text : htmlToText(detail.html ?? '');
     const bodyText = text.trim() || detail.excerpt.trim();

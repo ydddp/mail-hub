@@ -16,9 +16,11 @@ const SCRIPT_URL = `${ORIGIN_MARK}/userscript/mail-hub.user.js`;
 
 const metadata = `// ==UserScript==
 // @name         Mail Hub 邮箱助手
+// @name:en      Mail Hub Assistant
 // @namespace    ${REPOSITORY}/userscript
 // @version      ${pkg.version}
 // @description  用你自己的 Mail Hub 临时邮箱收取验证码，手动上报成功并关闭。
+// @description:en  Get a disposable inbox from your own Mail Hub on signup pages, fill in the address and code, then report and close.
 // @author       ydddp
 // @match        http://*/*
 // @match        https://*/*

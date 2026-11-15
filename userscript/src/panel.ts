@@ -1,9 +1,11 @@
 import styles from './panel.css';
 import { icon } from './icons.js';
+import { currentLang, t } from './i18n.js';
+import type { MessageKey } from './i18n.js';
 import { clampPosition, dockPosition, snapToEdge } from './layout.js';
 import type { Position } from './layout.js';
 import type { ProviderSummary } from './api.js';
-import type { ThemePreference } from './storage.js';
+import type { LanguagePreference, ThemePreference } from './storage.js';
 import type { Capsule, CapsuleAction, DrawerPlan, LinkInfo, Stage } from './view.js';
 export type { Position };
 
@@ -66,6 +68,7 @@ export interface PanelView {
   /** A result arrived while only the edge tab was showing. */
   unseen: boolean;
   theme: ThemePreference;
+  language: LanguagePreference;
   shortcut: string;
   connectionLabel: string | null;
   connections: Array<{ id: string; title: string; host: string; active: boolean }>;
@@ -96,6 +99,7 @@ export interface PanelCallbacks {
   toggleBody(): void;
   setDrawer(drawer: 'closed' | 'main' | 'settings'): void;
   setTheme(theme: ThemePreference): void;
+  setLanguage(language: LanguagePreference): void;
   fold(): void;
   unfold(): void;
   hideForVisit(): void;
@@ -109,8 +113,10 @@ export interface PanelCallbacks {
 export interface PanelHandle {
   host: HTMLDivElement;
   render(view: PanelView): void;
-  /** Short confirmation under the capsule, e.g. "已复制". */
+  /** Short confirmation in the status line, e.g. "Copied". */
   flash(message: string): void;
+  /** Re-apply every fixed label after a language change. */
+  relabel(): void;
   /** Ring the page element we just wrote into. */
   highlight(target: Element): void;
   reclamp(): void;
@@ -118,77 +124,77 @@ export interface PanelHandle {
 }
 
 const MARKUP = `
-<section class="shell" aria-label="Mail Hub 邮箱助手" hidden>
+<section class="shell" data-i18n-aria="ui.assistant" hidden>
   <div class="capsule" data-tone="idle">
     <span class="mark" aria-hidden="true">M</span>
     <div class="face">
       <span class="status"><i class="dot" aria-hidden="true"></i><span data-ref="status"></span><span class="tick" data-ref="tick"></span></span>
-      <span class="value-slot"><button class="value" type="button" data-ref="value" title="点击复制"></button></span>
+      <span class="value-slot"><button class="value" type="button" data-ref="value"></button></span>
     </div>
-    <button class="icon" type="button" data-action="capsule-link" aria-label="打开验证链接" title="打开验证链接" hidden>${icon('external')}</button>
+    <button class="icon" type="button" data-action="capsule-link" data-i18n-aria="ui.openLink" hidden>${icon('external')}</button>
     <button class="cta" type="button" data-action="primary"></button>
-    <button class="icon" type="button" data-action="drawer" aria-expanded="false" aria-label="展开详情">${icon('chevron')}</button>
-    <button class="icon" type="button" data-action="fold" aria-label="收起到边缘" title="收起到边缘">${icon('close')}</button>
+    <button class="icon" type="button" data-action="drawer" aria-expanded="false" data-i18n-aria="ui.expand">${icon('chevron')}</button>
+    <button class="icon" type="button" data-action="fold" data-i18n-aria="ui.fold" data-i18n-title="ui.fold">${icon('close')}</button>
   </div>
 
   <div class="drawer" data-open="false" inert>
     <div class="drawer-clip"><div class="drawer-body">
 
       <div class="pane" data-pane="connect" hidden>
-        <p class="lead" data-ref="connect-lead">连接你自己的 Mail Hub。密钥只存在脚本管理器里，不会写进当前网页。</p>
-        <label class="field"><span>名称（可选）</span><input data-ref="label" type="text" autocomplete="off" spellcheck="false" placeholder="比如 家里、VPS"></label>
-        <label class="field"><span>服务地址</span><input data-ref="base" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="mail.example.com"></label>
+        <p class="lead" data-ref="connect-lead"></p>
+        <label class="field"><span data-i18n="connect.label"></span><input data-ref="label" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="connect.labelPlaceholder"></label>
+        <label class="field"><span data-i18n="connect.base"></span><input data-ref="base" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="mail.example.com"></label>
         <label class="field"><span>API Key</span><input data-ref="key" type="password" autocomplete="off" spellcheck="false" placeholder="mk_..."></label>
-        <p class="note warn" data-ref="insecure" hidden>这是 HTTP 连接，密钥会明文经过网络，只建议本机使用。</p>
+        <p class="note warn" data-ref="insecure" data-i18n="connect.insecure" hidden></p>
         <p class="note error" data-ref="connect-error" role="alert" hidden></p>
         <div class="row end">
-          <button class="btn" type="button" data-action="cancel-connect" data-ref="cancel-connect">取消</button>
-          <button class="btn primary" type="button" data-action="connect" data-ref="connect-submit">连接</button>
+          <button class="btn" type="button" data-action="cancel-connect" data-ref="cancel-connect" data-i18n="connect.cancel"></button>
+          <button class="btn primary" type="button" data-action="connect" data-ref="connect-submit"></button>
         </div>
       </div>
 
       <div class="pane" data-pane="main" hidden>
         <p class="note banner" data-ref="notice" role="alert" hidden></p>
         <div class="line meta" data-ref="site-line">
-          <span class="key">服务</span>
+          <span class="key" data-i18n="drawer.service"></span>
           <span class="val" data-ref="service"></span>
-          <button class="icon sm" type="button" data-action="edit-service" aria-label="修改服务标识" title="修改服务标识">${icon('pencil', 14)}</button>
+          <button class="icon sm" type="button" data-action="edit-service" data-i18n-aria="drawer.editService" data-i18n-title="drawer.editService">${icon('pencil', 14)}</button>
         </div>
         <div class="line edit meta" data-ref="service-edit" hidden>
-          <input data-ref="service-input" type="text" aria-label="服务标识" autocomplete="off" spellcheck="false">
-          <button class="btn" type="button" data-action="save-service">保存</button>
+          <input data-ref="service-input" type="text" data-i18n-aria="drawer.serviceInput" autocomplete="off" spellcheck="false">
+          <button class="btn" type="button" data-action="save-service" data-i18n="drawer.save"></button>
         </div>
         <p class="note meta" data-ref="foreign" hidden></p>
 
         <div class="line meta">
-          <span class="key">提供商</span>
+          <span class="key" data-i18n="drawer.provider"></span>
           <span class="val" data-ref="provider-text"></span>
-          <select data-ref="provider" aria-label="邮箱提供商"></select>
+          <select data-ref="provider" data-i18n-aria="drawer.providerSelect"></select>
         </div>
 
         <div class="block addr" data-ref="address-block">
           <div class="line">
-            <span class="key">邮箱</span>
+            <span class="key" data-i18n="drawer.address"></span>
             <span class="val mono" data-ref="address"></span>
-            <button class="btn sm" type="button" data-action="copy-address" data-ref="copy-inline">${icon('copy', 14)}复制</button>
+            <button class="btn sm" type="button" data-action="copy-address" data-ref="copy-inline">${icon('copy', 14)}<span data-i18n="drawer.copy"></span></button>
           </div>
           <div class="row" data-ref="address-actions">
-            <button class="btn" type="button" data-action="fill-address">填入</button>
-            <button class="btn" type="button" data-action="copy-address">${icon('copy', 14)}复制</button>
-            <button class="link" type="button" data-action="replace">换一个</button>
+            <button class="btn" type="button" data-action="fill-address" data-i18n="drawer.fill"></button>
+            <button class="btn" type="button" data-action="copy-address">${icon('copy', 14)}<span data-i18n="drawer.copy"></span></button>
+            <button class="link" type="button" data-action="replace" data-i18n="drawer.replace"></button>
           </div>
           <div class="confirm" data-ref="replace-confirm" hidden>
-            <p>当前邮箱会被关闭，不上报结果。</p>
+            <p data-i18n="drawer.replaceWarning"></p>
             <div class="row end">
-              <button class="btn" type="button" data-action="cancel-replace">取消</button>
-              <button class="btn danger" type="button" data-action="confirm-replace">结束并换邮箱</button>
+              <button class="btn" type="button" data-action="cancel-replace" data-i18n="drawer.cancel"></button>
+              <button class="btn danger" type="button" data-action="confirm-replace" data-i18n="drawer.replaceConfirm"></button>
             </div>
           </div>
         </div>
 
         <div class="block res" data-ref="result-block">
           <div class="line head">
-            <span class="key" data-ref="result-title">邮件</span>
+            <span class="key" data-ref="result-title"></span>
             <span class="time" data-ref="result-time"></span>
           </div>
           <p class="subject" data-ref="subject"></p>
@@ -196,58 +202,66 @@ const MARKUP = `
           <ul class="codes" data-ref="codes"></ul>
           <div class="linkrow" data-ref="link-row">
             <span class="val" data-ref="link-domain"></span>
-            <button class="btn" type="button" data-action="open-link">${icon('external', 14)}打开</button>
-            <button class="btn" type="button" data-action="copy-link">${icon('copy', 14)}复制</button>
+            <button class="btn" type="button" data-action="open-link">${icon('external', 14)}<span data-i18n="drawer.open"></span></button>
+            <button class="btn" type="button" data-action="copy-link">${icon('copy', 14)}<span data-i18n="drawer.copy"></span></button>
           </div>
           <div class="row">
-            <button class="link" type="button" data-action="toggle-body" data-ref="body-toggle">查看邮件</button>
-            <button class="link" type="button" data-action="continue" data-ref="continue">${icon('refresh', 14)}继续收取</button>
+            <button class="link" type="button" data-action="toggle-body" data-ref="body-toggle"></button>
+            <button class="link" type="button" data-action="continue" data-ref="continue">${icon('refresh', 14)}<span data-i18n="drawer.continue"></span></button>
           </div>
           <pre class="body" data-ref="body" hidden></pre>
         </div>
 
         <div class="block finish" data-ref="finish">
           <div class="row">
-            <button class="btn primary grow" type="button" data-action="finish" data-ref="finish-btn">注册成功并结束</button>
-            <button class="btn" type="button" data-action="end" data-ref="end-btn">结束使用</button>
+            <button class="btn primary grow" type="button" data-action="finish" data-ref="finish-btn" data-i18n="drawer.finish"></button>
+            <button class="btn" type="button" data-action="end" data-ref="end-btn" data-i18n="drawer.end"></button>
           </div>
-          <button class="link" type="button" data-action="report-only" data-ref="report-only">只上报成功，邮箱继续收件</button>
+          <button class="link" type="button" data-action="report-only" data-ref="report-only" data-i18n="drawer.reportOnly"></button>
         </div>
 
         <div class="foot">
           <span class="conn-now" data-ref="conn-now"></span>
-          <span class="key" data-ref="conn-key" hidden>连接</span>
-          <select class="conn-pick" data-ref="conn-pick" aria-label="切换连接" hidden></select>
-          <button class="icon sm" type="button" data-action="settings" aria-label="设置" title="设置">${icon('settings', 15)}</button>
+          <span class="key" data-ref="conn-key" data-i18n="drawer.connection" hidden></span>
+          <select class="conn-pick" data-ref="conn-pick" data-i18n-aria="drawer.switchConnection" hidden></select>
+          <button class="icon sm" type="button" data-action="settings" data-i18n-aria="drawer.settings" data-i18n-title="drawer.settings">${icon('settings', 15)}</button>
         </div>
       </div>
 
       <div class="pane" data-pane="settings" hidden>
         <div class="line head">
-          <button class="icon sm" type="button" data-action="back" aria-label="返回">${icon('back', 15)}</button>
-          <span class="title">设置</span>
+          <button class="icon sm" type="button" data-action="back" data-i18n-aria="set.back">${icon('back', 15)}</button>
+          <span class="title" data-i18n="set.title"></span>
         </div>
         <div class="line">
-          <span class="key">外观</span>
-          <div class="seg" role="radiogroup" aria-label="外观">
-            <button type="button" role="radio" data-theme-choice="system">跟随系统</button>
-            <button type="button" role="radio" data-theme-choice="light">亮色</button>
-            <button type="button" role="radio" data-theme-choice="dark">暗色</button>
+          <span class="key" data-i18n="set.appearance"></span>
+          <div class="seg" role="radiogroup" data-i18n-aria="set.appearance">
+            <button type="button" role="radio" data-theme-choice="system" data-i18n="set.themeSystem"></button>
+            <button type="button" role="radio" data-theme-choice="light" data-i18n="set.themeLight"></button>
+            <button type="button" role="radio" data-theme-choice="dark" data-i18n="set.themeDark"></button>
           </div>
         </div>
         <div class="line">
-          <span class="key">唤出</span>
+          <span class="key" data-i18n="set.language"></span>
+          <div class="seg" role="radiogroup" data-i18n-aria="set.language">
+            <button type="button" role="radio" data-language-choice="auto" data-i18n="set.langAuto"></button>
+            <button type="button" role="radio" data-language-choice="zh" lang="zh">中文</button>
+            <button type="button" role="radio" data-language-choice="en" lang="en">English</button>
+          </div>
+        </div>
+        <div class="line">
+          <span class="key" data-i18n="set.summon"></span>
           <span class="val mono" data-ref="shortcut"></span>
-          <button class="btn" type="button" data-action="record-shortcut">修改</button>
+          <button class="btn" type="button" data-action="record-shortcut" data-i18n="set.change"></button>
         </div>
         <div class="conns">
-          <div class="line head"><span class="key">连接</span><button class="link" type="button" data-action="add-connection">＋ 添加连接</button></div>
+          <div class="line head"><span class="key" data-i18n="set.connections"></span><button class="link" type="button" data-action="add-connection" data-i18n="set.addConnection"></button></div>
           <ul class="conn-list" data-ref="conn-list"></ul>
         </div>
         <div class="stack">
-          <button class="link" type="button" data-action="reset-seen">重置收件记录</button>
-          <button class="link" type="button" data-action="hide-visit">本次不显示（刷新或快捷键可唤回）</button>
-          <button class="link" type="button" data-action="hide-site">不再在这个网站显示</button>
+          <button class="link" type="button" data-action="reset-seen" data-i18n="set.resetSeen"></button>
+          <button class="link" type="button" data-action="hide-visit" data-i18n="set.hideVisit"></button>
+          <button class="link" type="button" data-action="hide-site" data-i18n="set.hideSite"></button>
         </div>
       </div>
 
@@ -256,7 +270,7 @@ const MARKUP = `
   <p class="sr" role="status" aria-live="polite" data-ref="announce"></p>
 </section>
 
-<button class="tab" type="button" data-action="unfold" aria-label="打开 Mail Hub 邮箱助手" hidden><span class="mark" aria-hidden="true">M</span></button>
+<button class="tab" type="button" data-action="unfold" data-i18n-aria="ui.openAssistant" data-i18n-title="ui.openAssistant" hidden><span class="mark" aria-hidden="true">M</span></button>
 <div class="ring" aria-hidden="true" hidden></div>
 `;
 
@@ -322,9 +336,9 @@ function shortenAddress(address: string, budget = 20): string {
 
 function relative(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return `${seconds} 秒前`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
-  return `${Math.floor(seconds / 3600)} 小时前`;
+  if (seconds < 60) return t('time.secondsAgo', { n: seconds });
+  if (seconds < 3600) return t('time.minutesAgo', { n: Math.floor(seconds / 60) });
+  return t('time.hoursAgo', { n: Math.floor(seconds / 3600) });
 }
 
 function elapsed(ms: number): string {
@@ -336,15 +350,15 @@ function expiresIn(expiresAt: string | null): string {
   if (!expiresAt) return '';
   const left = Date.parse(expiresAt) - Date.now();
   if (!Number.isFinite(left)) return '';
-  if (left <= 0) return '已过期';
+  if (left <= 0) return t('time.expired');
   const hours = Math.floor(left / 3_600_000);
-  return hours >= 1 ? `${hours} 小时后过期` : `${Math.max(1, Math.round(left / 60_000))} 分钟后过期`;
+  return hours >= 1 ? t('time.expiresHours', { n: hours }) : t('time.expiresMinutes', { n: Math.max(1, Math.round(left / 60_000)) });
 }
 
 function providerLabel(provider: ProviderSummary): string {
-  const suffix = !provider.enabled ? '（已停用）'
-    : !provider.features.pollInbox ? '（不支持收件）'
-      : !provider.rateStatus.available ? `（${provider.rateStatus.cooldownReason ?? '限流中'}）`
+  const suffix = !provider.enabled ? t('drawer.disabled')
+    : !provider.features.pollInbox ? t('drawer.noPolling')
+      : !provider.rateStatus.available ? (provider.rateStatus.cooldownReason ? ` (${provider.rateStatus.cooldownReason})` : t('drawer.limited'))
         : '';
   return `${provider.displayName}${suffix}`;
 }
@@ -399,6 +413,31 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
   let fullValue = '';
   let flashText: string | null = null;
   let flipToken = 0;
+
+  /**
+   * Fixed labels carry data-i18n (text), data-i18n-aria, data-i18n-title and
+   * data-i18n-placeholder keys. Changing language rewrites only these; the
+   * panel's state, inputs and the inbox stay as they are.
+   */
+  function relabel(): void {
+    host.lang = currentLang();
+    for (const element of Array.from(shadow.querySelectorAll<HTMLElement>('[data-i18n]'))) {
+      element.textContent = t(element.dataset.i18n as MessageKey);
+    }
+    for (const element of Array.from(shadow.querySelectorAll<HTMLElement>('[data-i18n-aria]'))) {
+      element.setAttribute('aria-label', t(element.dataset.i18nAria as MessageKey));
+    }
+    for (const element of Array.from(shadow.querySelectorAll<HTMLElement>('[data-i18n-title]'))) {
+      element.title = t(element.dataset.i18nTitle as MessageKey);
+    }
+    for (const element of Array.from(shadow.querySelectorAll<HTMLInputElement>('[data-i18n-placeholder]'))) {
+      element.placeholder = t(element.dataset.i18nPlaceholder as MessageKey);
+    }
+    // Labels that depend on state, and lists built from data, are redone too.
+    drawerToggle.setAttribute('aria-label', drawer.dataset.open === 'true' ? t('ui.collapse') : t('ui.expand'));
+    lastProviderSignature = '';
+    delete connPick.dataset.signature;
+  }
   let lastProviderSignature = '';
   let flashTimer: ReturnType<typeof setTimeout> | null = null;
   let presence: Presence = 'hidden';
@@ -598,7 +637,7 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     if ((drawer.dataset.open === 'true') === open) return;
     drawer.dataset.open = String(open);
     drawerToggle.setAttribute('aria-expanded', String(open));
-    drawerToggle.setAttribute('aria-label', open ? '收起详情' : '展开详情');
+    drawerToggle.setAttribute('aria-label', open ? t('ui.collapse') : t('ui.expand'));
     if (open) drawer.removeAttribute('inert');
     else drawer.setAttribute('inert', '');
     // The panel grows downward; keep its bottom inside the window.
@@ -647,7 +686,7 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
       for (const stale of Array.from(valueSlot.querySelectorAll('.leaving'))) stale.remove();
       valueSlot.classList.remove('rolling');
       current.textContent = text;
-      current.title = kind === 'code' || kind === 'address' ? '点击复制' : '';
+      current.title = kind === 'code' || kind === 'address' ? t('ui.clickToCopy') : '';
       fitValue(current);
       return;
     }
@@ -662,7 +701,7 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     leaving.tabIndex = -1;
     valueSlot.appendChild(leaving);
     current.textContent = text;
-    current.title = kind === 'code' || kind === 'address' ? '点击复制' : '';
+    current.title = kind === 'code' || kind === 'address' ? t('ui.clickToCopy') : '';
     fitValue(current);
     // Clip only while rolling, so the focus ring is not cut off at rest.
     valueSlot.classList.add('rolling');
@@ -685,7 +724,7 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
       providerSelect.replaceChildren();
       const auto = document.createElement('option');
       auto.value = 'auto';
-      auto.textContent = '自动分配 · 按服务顺序';
+      auto.textContent = t('drawer.providerAuto');
       providerSelect.appendChild(auto);
       for (const provider of next.providers) {
         const option = document.createElement('option');
@@ -712,9 +751,9 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     const result = next.result;
     block.hidden = !result;
     if (!result) return;
-    ref('result-title').textContent = next.resultIsPrevious ? '上一封邮件' : '邮件';
+    ref('result-title').textContent = next.resultIsPrevious ? t('drawer.previousMail') : t('drawer.mail');
     ref('result-time').dataset.at = result.receivedAt ?? '';
-    ref('subject').textContent = result.subject ?? '（无标题）';
+    ref('subject').textContent = result.subject ?? t('cap.noSubject');
     ref('from').textContent = result.from ?? '';
 
     const codes = ref<HTMLUListElement>('codes');
@@ -738,14 +777,15 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
         const fill = document.createElement('button');
         fill.type = 'button';
         fill.className = 'btn';
-        fill.textContent = '填入';
+        fill.textContent = t('drawer.fill');
         fill.addEventListener('click', () => callbacks.fill('code', candidate.value));
         actions.appendChild(fill);
       }
       const copy = document.createElement('button');
       copy.type = 'button';
       copy.className = 'btn';
-      copy.innerHTML = `${icon('copy', 14)}复制`;
+      copy.innerHTML = icon('copy', 14);
+      copy.append(t('drawer.copy'));
       copy.addEventListener('click', () => callbacks.copy(candidate.value));
       actions.appendChild(copy);
       item.appendChild(actions);
@@ -763,10 +803,10 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     const bodyToggle = ref<HTMLButtonElement>('body-toggle');
     // The body is fetched on demand; the toggle exists whenever a message does.
     bodyToggle.hidden = !result.messageId;
-    bodyToggle.textContent = next.bodyVisible ? '收起邮件' : '查看邮件';
+    bodyToggle.textContent = next.bodyVisible ? t('drawer.hideMail') : t('drawer.viewMail');
     const body = ref<HTMLPreElement>('body');
     body.hidden = !next.bodyVisible;
-    body.textContent = next.bodyVisible ? (result.bodyText ?? '正在读取…') : '';
+    body.textContent = next.bodyVisible ? (result.bodyText ?? t('drawer.loadingBody')) : '';
     ref('continue').hidden = !next.plan.canContinue;
   }
 
@@ -777,11 +817,11 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     notice.hidden = !next.noticeDetail;
     notice.textContent = next.noticeDetail ?? '';
     notice.dataset.tone = next.noticeTone ?? '';
-    ref('service').textContent = next.service ?? '认不出，需要填写';
+    ref('service').textContent = next.service ?? t('drawer.serviceMissing');
     ref('service').classList.toggle('missing', !next.service);
     const foreign = ref('foreign');
     foreign.hidden = !next.foreignService;
-    foreign.textContent = next.foreignService ? `这个邮箱属于 ${next.foreignService}，上报也算在它名下。` : '';
+    foreign.textContent = next.foreignService ? t('drawer.foreign', { service: next.foreignService }) : '';
     if (ref('service-edit').hidden) serviceInput.value = next.service ?? '';
     // An existing inbox's service is frozen; editing only makes sense before one exists.
     $<HTMLButtonElement>('[data-action="edit-service"]').hidden = !next.plan.providerEditable;
@@ -810,7 +850,7 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     // One connection: just say which. Several: switch right here.
     const many = next.connections.length > 1;
     ref('conn-now').hidden = many;
-    ref('conn-now').textContent = next.connectionLabel ? `连接：${next.connectionLabel}` : '';
+    ref('conn-now').textContent = next.connectionLabel ? t('drawer.connectionNow', { name: next.connectionLabel }) : '';
     connPick.hidden = !many;
     ref('conn-key').hidden = !many;
     if (many) {
@@ -832,6 +872,9 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     for (const button of Array.from(shadow.querySelectorAll<HTMLButtonElement>('[data-theme-choice]'))) {
       button.setAttribute('aria-checked', String(button.dataset.themeChoice === next.theme));
     }
+    for (const button of Array.from(shadow.querySelectorAll<HTMLButtonElement>('[data-language-choice]'))) {
+      button.setAttribute('aria-checked', String(button.dataset.languageChoice === next.language));
+    }
     ref('shortcut').textContent = next.shortcut;
     const list = ref<HTMLUListElement>('conn-list');
     list.replaceChildren(...next.connections.map((entry) => {
@@ -841,29 +884,29 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
       pick.type = 'button';
       pick.className = 'conn-pick-row';
       pick.setAttribute('aria-pressed', String(entry.active));
-      pick.title = entry.active ? '当前连接' : '切换到这套连接';
+      pick.title = entry.active ? t('set.currentConnection') : t('set.switchTo');
       const name = document.createElement('span');
       name.className = 'conn-name';
       name.textContent = entry.title;
       const host = document.createElement('span');
       host.className = 'conn-host';
-      host.textContent = entry.title === entry.host ? (entry.active ? '当前' : '') : entry.host;
+      host.textContent = entry.title === entry.host ? (entry.active ? t('set.current') : '') : entry.host;
       pick.append(name, host);
       pick.addEventListener('click', () => callbacks.switchConnection(entry.id));
       const editButton = document.createElement('button');
       editButton.type = 'button';
       editButton.className = 'icon sm';
-      editButton.setAttribute('aria-label', `编辑 ${entry.title}`);
-      editButton.title = '编辑';
+      editButton.setAttribute('aria-label', t('set.editNamed', { name: entry.title }));
+      editButton.title = t('set.edit');
       editButton.innerHTML = icon('pencil', 14);
       editButton.addEventListener('click', () => callbacks.editConnection(entry.id));
       const remove = document.createElement('button');
       remove.type = 'button';
       const armed = armedDelete?.id === entry.id && Date.now() - armedDelete.at < 4000;
       remove.className = armed ? 'btn danger sm' : 'icon sm';
-      remove.setAttribute('aria-label', armed ? `确认删除 ${entry.title}` : `删除 ${entry.title}`);
-      remove.title = armed ? '再点一次删除' : '删除';
-      if (armed) remove.textContent = '确认删除';
+      remove.setAttribute('aria-label', armed ? t('set.deleteConfirmNamed', { name: entry.title }) : t('set.deleteNamed', { name: entry.title }));
+      remove.title = armed ? t('set.deleteAgain') : t('set.delete');
+      if (armed) remove.textContent = t('set.deleteConfirm');
       else remove.innerHTML = icon('trash', 14);
       remove.addEventListener('click', () => {
         if (armedDelete?.id === entry.id && Date.now() - armedDelete.at < 4000) {
@@ -887,11 +930,11 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     if (shadow.activeElement !== labelInput) labelInput.value = form.label;
     if (shadow.activeElement !== baseInput) baseInput.value = form.baseUrl;
     ref('connect-lead').textContent = form.editingId
-      ? '编辑这套连接。地址和 Key 一起保存，切换时一起生效。'
+      ? t('connect.leadEdit')
       : next.connections.length
-        ? '添加一套连接。地址和 Key 一起保存，之后在抽屉底部就能切换。'
-        : '连接你自己的 Mail Hub。密钥只存在脚本管理器里，不会写进当前网页。';
-    ref('connect-submit').textContent = form.editingId ? '保存' : next.connections.length ? '添加并切换' : '连接';
+        ? t('connect.leadAdd')
+        : t('connect.leadFirst');
+    ref('connect-submit').textContent = form.editingId ? t('connect.submitEdit') : next.connections.length ? t('connect.submitAdd') : t('connect.submitFirst');
     if (shadow.activeElement !== keyInput) keyInput.value = form.apiKey;
     ref('insecure').hidden = !form.insecure;
     const error = ref('connect-error');
@@ -907,8 +950,8 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     const capsule = next.capsule;
     capsuleNode.dataset.tone = capsule.tone;
     if (next.mode === 'connect') {
-      ref('status').textContent = '还没连接';
-      setValue('连接你的 Mail Hub', 'muted');
+      ref('status').textContent = t('cap.notConnected');
+      setValue(t('cap.connectTitle'), 'muted');
       cta.hidden = true;
       return;
     }
@@ -918,7 +961,7 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     setValue(capsule.value.text, capsule.value.kind);
     const linkButton = $<HTMLButtonElement>('[data-action="capsule-link"]');
     linkButton.hidden = !capsule.link;
-    linkButton.title = capsule.link ? `打开验证链接：${capsule.link.domain}` : '';
+    linkButton.title = capsule.link ? t('ui.openLinkTo', { domain: capsule.link.domain }) : '';
     const primary = capsule.primary;
     cta.hidden = !primary;
     if (!primary) return;
@@ -1013,6 +1056,8 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     const target = event.target as Element | null;
     const themeChoice = target?.closest?.('[data-theme-choice]') as HTMLElement | null;
     if (themeChoice) { callbacks.setTheme(themeChoice.dataset.themeChoice as ThemePreference); return; }
+    const languageChoice = target?.closest?.('[data-language-choice]') as HTMLElement | null;
+    if (languageChoice) { callbacks.setLanguage(languageChoice.dataset.languageChoice as LanguagePreference); return; }
     if (target?.closest?.('[data-ref="value"]') && view) {
       const kind = view.capsule.value.kind;
       if (kind === 'code' || kind === 'address' || kind === 'muted') callbacks.copy(fullValue);
@@ -1095,6 +1140,7 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     }
   };
 
+  relabel();
   shadow.addEventListener('click', onClick);
   shadow.addEventListener('change', onChange);
   shadow.addEventListener('keydown', onKeyDown);
@@ -1106,6 +1152,7 @@ export function createPanel(callbacks: PanelCallbacks): PanelHandle {
     render,
     flash,
     highlight,
+    relabel,
     reclamp: place,
     destroy() {
       clearInterval(ticker);

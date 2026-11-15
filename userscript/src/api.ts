@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+import type { MessageKey } from './i18n.js';
 import type { HttpRequest, HttpResponse, HttpSend } from './gm.js';
 import { normalizeService } from './service.js';
 
@@ -34,6 +36,8 @@ export class ApiError extends Error {
     message: string,
     readonly status?: number,
     readonly retryAfter?: string | null,
+    /** Language-independent reason, for callers that branch on the cause. */
+    readonly code?: 'exclusions-full',
   ) {
     super(message);
   }
@@ -45,13 +49,13 @@ export type BaseUrlResult =
   | { ok: true; baseUrl: string; insecure: boolean }
   | { ok: false; reason: BaseUrlReason; message: string };
 
-const BASE_URL_MESSAGES: Record<BaseUrlReason, string> = {
-  empty: '请填写 Mail Hub 地址',
-  invalid: '地址无法解析',
-  scheme: '只支持 http 或 https 地址',
-  credentials: '地址里不能带用户名或密码',
-  query: '地址里不能带查询参数',
-  hash: '地址里不能带 # 片段',
+const BASE_URL_MESSAGES: Record<BaseUrlReason, MessageKey> = {
+  empty: 'url.empty',
+  invalid: 'url.invalid',
+  scheme: 'url.scheme',
+  credentials: 'url.credentials',
+  query: 'url.query',
+  hash: 'url.hash',
 };
 
 /**
@@ -62,24 +66,30 @@ const BASE_URL_MESSAGES: Record<BaseUrlReason, string> = {
  */
 export function normalizeBaseUrl(input: string): BaseUrlResult {
   const raw = String(input ?? '').trim();
-  if (!raw) return { ok: false, reason: 'empty', message: BASE_URL_MESSAGES.empty };
+  if (!raw) return { ok: false, reason: 'empty', message: t(BASE_URL_MESSAGES.empty) };
 
   const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
   let url: URL;
   try {
     url = new URL(withScheme);
   } catch {
-    return { ok: false, reason: 'invalid', message: BASE_URL_MESSAGES.invalid };
+    return { ok: false, reason: 'invalid', message: t(BASE_URL_MESSAGES.invalid) };
   }
 
-  const fail = (reason: BaseUrlReason): BaseUrlResult => ({ ok: false, reason, message: BASE_URL_MESSAGES[reason] });
+  const fail = (reason: BaseUrlReason): BaseUrlResult => ({ ok: false, reason, message: t(BASE_URL_MESSAGES[reason]) });
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return fail('scheme');
   if (url.username || url.password) return fail('credentials');
   if (url.search) return fail('query');
   if (url.hash) return fail('hash');
 
   const path = url.pathname.replace(/\/+$/, '');
-  return { ok: true, baseUrl: `${url.origin}${path}`, insecure: url.protocol === 'http:' };
+  return { ok: true, baseUrl: `${url.origin}${path}`, insecure: url.protocol === 'http:' && !isLoopbackHost(url.hostname) };
+}
+
+/** Hosts that resolve to this machine: plain http to them never leaves it. */
+export function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host.endsWith('.localhost') || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
 }
 
 export interface ProviderRateStatus {
@@ -330,7 +340,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     async createInbox(input) {
       const service = normalizeService(input.service);
-      if (!service) throw new ApiError('invalid', '服务标识不可用');
+      if (!service) throw new ApiError('invalid', t('err.badService'));
 
       const body: Record<string, unknown> = { for: service, needPolling: true };
       if (input.provider) body.provider = input.provider;
@@ -394,7 +404,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     async waitForCode(input) {
       if (!isExclusionWithinLimits(input.exclude)) {
-        throw new ApiError('invalid', '已排除的邮件过多，需要先重置收件记录');
+        throw new ApiError('invalid', t('err.seenFull'), undefined, null, 'exclusions-full');
       }
       const timeout = Math.min(MAX_CODE_WAIT_SECONDS, Math.max(1, Math.trunc(input.timeoutSeconds) || 1));
       const query: Array<[string, string]> = [
@@ -475,7 +485,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     async reportSuccess(inboxId, service) {
       const normalized = normalizeService(service);
-      if (!normalized) throw new ApiError('invalid', '上报的服务标识不可用');
+      if (!normalized) throw new ApiError('invalid', t('err.badService'));
       const { payload } = await request(
         'POST',
         endpoint(`/api/inbox/${encodeURIComponent(inboxId)}/report`),

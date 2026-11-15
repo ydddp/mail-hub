@@ -46,8 +46,15 @@ describe('normalizeBaseUrl', () => {
     ['mail.example.com', 'https://mail.example.com', false],
     ['  https://mail.example.com/  ', 'https://mail.example.com', false],
     ['https://mail.example.com/hub/', 'https://mail.example.com/hub', false],
-    ['http://localhost:3000', 'http://localhost:3000', true],
+    // Plain http to this machine never crosses a network, so it is not flagged
+    // (2026-11-15: the warning read as nonsense on a local test server).
+    ['http://localhost:3000', 'http://localhost:3000', false],
+    ['http://127.0.0.1:3199', 'http://127.0.0.1:3199', false],
+    ['http://[::1]:3000', 'http://[::1]:3000', false],
+    ['http://mail.localhost:8080', 'http://mail.localhost:8080', false],
+    // Anything else over http does cross a network: the key would travel in clear.
     ['http://192.168.1.10:8080/mail', 'http://192.168.1.10:8080/mail', true],
+    ['http://mail.example.com', 'http://mail.example.com', true],
   ])('%j → %j (insecure=%s)', (input, baseUrl, insecure) => {
     expect(normalizeBaseUrl(input)).toEqual({ ok: true, baseUrl, insecure });
   });
