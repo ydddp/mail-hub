@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Built by npm run build and served by the app; never edited by hand
+userscript/mail-hub.user.js
 data/
 backups/
 *.db

@@ -19,6 +19,7 @@
 - **权限控制** — API Key 分级（管理员 / 普通用户 + 配额限制）
 - **Gmail 别名生成器** — dot-trick / +后缀 / googlemail.com 等价域
 - **中文 Web 面板** — 仪表盘、渠道管理、封禁表、系统设置
+- **浏览器助手** — Tampermonkey 脚本，在注册网站上唤出面板取邮箱，自动填入地址和验证码；从你自己的 Mail Hub 安装和更新
 
 ## 快速开始
 
@@ -77,6 +78,14 @@ pm2 start ecosystem.config.cjs
 | `PROXY_URL` | 否 | — | 出站代理，支持 http/https/socks5 |
 
 详见 [.env.example](.env.example)。
+
+## 浏览器助手
+
+在注册网站上用的 Tampermonkey 脚本：唤出一条小面板取一个临时邮箱，点「填入」自动写进网页的邮箱框，收到邮件后再一键填入验证码或打开验证链接，最后上报成功并关闭邮箱。网页跳转（包括跳到第三方登录页）后会接着显示同一个邮箱。
+
+安装：装好 [Tampermonkey](https://www.tampermonkey.net/) 后，在后台「系统设置 → 浏览器助手」点「安装」，或打开 `https://<你的 Mail Hub>/userscript/mail-hub.user.js`。脚本从这台 Mail Hub 更新，地址已预先填好，只需再填一个普通 API Key。
+
+详见 [userscript/README.md](userscript/README.md)。
 
 ## 内置渠道
 

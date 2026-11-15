@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create account · Example (userscript preview)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 15px/1.6 system-ui, sans-serif; background: light-dark(#f3f4f6, #111214); color: light-dark(#1f2328, #e6e6e6); }
+  .site { max-width: 420px; margin: 72px auto 120px; background: light-dark(#fff, #1b1c1f); padding: 32px; border-radius: 12px; box-shadow: 0 1px 4px #0001; }
+  h1 { font-size: 22px; margin: 0 0 20px; }
+  label { display: block; font-size: 14px; margin-bottom: 6px; }
+  input { width: 100%; box-sizing: border-box; height: 42px; padding: 0 12px; margin: 0 0 16px; border: 1px solid light-dark(#cfd4da, #3a3d42); border-radius: 7px; font: inherit; background: transparent; color: inherit; }
+  .otp { display: flex; gap: 8px; margin-bottom: 16px; }
+  .otp input { width: 44px; text-align: center; margin: 0; padding: 0; font-size: 20px; }
+  .submit { height: 42px; padding: 0 18px; border: 0; border-radius: 7px; background: #24292f; color: #fff; font: inherit; }
+  .state { font: 12px/1.5 ui-monospace, monospace; color: light-dark(#57606a, #9aa0a6); margin-top: 16px; white-space: pre-wrap; }
+  .tall { height: 900px; }
+  /* Dev controls: deliberately plain so nobody mistakes them for the panel. */
+  .dev { position: fixed; left: 8px; bottom: 8px; z-index: 10; font: 12px system-ui, sans-serif; background: #fffbe6; color: #3d3300; border: 1px dashed #b8a200; border-radius: 6px; padding: 6px; max-width: 560px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .dev button, .dev select { font: inherit; padding: 2px 6px; }
+  .dev b { margin-right: 4px; }
+</style>
+<script src="/dev/gm-shim.js"></script>
+</head>
+<body>
+  <main class="site" id="site"></main>
+  <div class="tall" hidden id="tall"></div>
+
+  <div class="dev" id="dev">
+    <b>dev</b>
+    <button data-deliver="code">验证码</button>
+    <button data-deliver="multi">多候选</button>
+    <button data-deliver="link">链接</button>
+    <button data-deliver="both">码+链接</button>
+    <button data-deliver="long">8位码+链接</button>
+    <button data-deliver="alnum">10位字母码</button>
+    <button data-deliver="none">无码邮件</button>
+    <select data-fail="create"><option value="">创建正常</option><option>502</option><option>timeout</option></select>
+    <select data-fail="report"><option value="">上报正常</option><option>500</option><option>timeout</option></select>
+    <select data-fail="close"><option value="">关闭正常</option><option>500</option></select>
+    <select data-fail="code"><option value="">收件正常</option><option>429</option><option>502</option></select>
+    <button data-go="login">跳到第三方登录域</button>
+    <button data-go="signup">回注册页</button>
+    <select data-form><option value="plain">普通表单</option><option value="split">分格验证码</option><option value="controlled">受控输入</option><option value="nolabels">无标签表单</option></select>
+    <button data-reset>清空全部</button>
+  </div>
+
+<script>
+const params = new URLSearchParams(location.search);
+const form = params.get('form') || 'plain';
+const step = params.get('step') || 'signup';
+const site = document.getElementById('site');
+
+if (step === 'login') {
+  site.innerHTML = `<h1>Sign in with Other ID</h1>
+    <label for="u">Username</label><input id="u" name="username" autocomplete="username">
+    <label for="p">Password</label><input id="p" type="password" name="password">
+    <button class="submit">Continue</button>`;
+} else if (form === 'split') {
+  site.innerHTML = `<h1>Verify your email</h1>
+    <p>We sent a 6-digit code to your inbox.</p>
+    <div class="otp">${Array.from({ length: 6 }, (_, i) => `<input maxlength="1" inputmode="numeric" aria-label="Digit ${i + 1}">`).join('')}</div>
+    <button class="submit">Verify</button>`;
+} else if (form === 'nolabels') {
+  site.innerHTML = `<h1>Join</h1>
+    <input name="f1" placeholder="Your e-mail">
+    <input name="f2" placeholder="Nickname">
+    <input name="f3" type="password" placeholder="Password">
+    <input name="f4" placeholder="Code from the e-mail" inputmode="numeric" maxlength="6">
+    <button class="submit">Join</button>`;
+} else {
+  site.innerHTML = `<h1>Create your Example account</h1>
+    <label for="n">Display name</label><input id="n" name="name" autocomplete="name">
+    <label for="e">Email</label><input id="e" type="email" name="email" autocomplete="email" placeholder="you@example.com">
+    <label for="c">Verification code</label><input id="c" name="verification_code" autocomplete="one-time-code" inputmode="numeric">
+    <label for="pw">Password</label><input id="pw" type="password" name="password" autocomplete="new-password">
+    <button class="submit">Sign up</button>`;
+}
+
+// "Controlled" mode imitates a framework that keeps its own state and re-renders
+// the value from it: a fill that skips input events gets wiped on the next tick.
+const stateBox = document.createElement('div');
+stateBox.className = 'state';
+site.appendChild(stateBox);
+const state = {};
+for (const input of site.querySelectorAll('input')) {
+  const key = input.name || input.getAttribute('aria-label') || input.id;
+  state[key] = '';
+  input.addEventListener('input', () => { state[key] = input.value; render(); });
+}
+function render() { stateBox.textContent = `框架状态（只认 input 事件）：\n${JSON.stringify(state, null, 1)}`; }
+render();
+if (form === 'controlled') {
+  setInterval(() => {
+    for (const input of site.querySelectorAll('input')) {
+      const key = input.name || input.getAttribute('aria-label') || input.id;
+      if (document.activeElement !== input && input.value !== state[key]) input.value = state[key];
+    }
+  }, 400);
+}
+
+// Split OTP boxes advance focus like real widgets do.
+if (form === 'split') {
+  const boxes = [...site.querySelectorAll('.otp input')];
+  boxes.forEach((box, index) => box.addEventListener('input', () => { if (box.value && boxes[index + 1]) boxes[index + 1].focus(); }));
+}
+
+// ---- dev controls
+const dev = document.getElementById('dev');
+fetch('/__ctl/state').then((r) => r.json()).then((s) => {
+  for (const select of dev.querySelectorAll('[data-fail]')) select.value = s.fail[select.dataset.fail] ?? '';
+});
+dev.querySelector('[data-form]').value = form;
+dev.addEventListener('click', async (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (button.dataset.deliver) await fetch(`/__ctl/deliver?kind=${button.dataset.deliver}`);
+  if (button.dataset.reset) { await fetch('/__gm/reset'); sessionStorage.clear(); location.href = `http://signup.example.localhost:${location.port}/`; }
+  if (button.dataset.go === 'login') location.href = `http://login.other.localhost:${location.port}/dev/preview.html?step=login&__tab=${window.__mhDevTab}`;
+  if (button.dataset.go === 'signup') location.href = `http://signup.example.localhost:${location.port}/dev/preview.html?form=${form}&__tab=${window.__mhDevTab}`;
+});
+dev.addEventListener('change', async (event) => {
+  const target = event.target;
+  if (target.dataset.fail) await fetch(`/__ctl/fail?op=${target.dataset.fail}&value=${encodeURIComponent(target.value)}`);
+  if (target.matches('[data-form]')) location.search = `?form=${target.value}&__tab=${window.__mhDevTab}`;
+});
+</script>
+<script src="/mail-hub.user.js"></script>
+</body>
+</html>

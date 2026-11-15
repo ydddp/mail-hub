@@ -33,6 +33,7 @@ import { todayDateString } from './utils.js';
 import { APP_VERSION } from './version.js';
 import { httpStatus, jsonStatus } from './errors.js';
 import { loadPublicBundle, registerAssetRoutes, type PublicBundle } from './static-assets.js';
+import { loadUserscript, registerUserscriptRoute } from './userscript-route.js';
 import { requestLogger } from './request-logger.js';
 
 const log = createLogger('cleanup');
@@ -76,9 +77,13 @@ let cleanupRunning = false;
 let extRoutes: Hono<AdminEnv> | undefined;
 let publicBundle: PublicBundle = { indexHtml: '', assets: new Map() };
 let cachedExtensionsJs = '';
+/** Built browser assistant (userscript/), served at /userscript/mail-hub.user.js. */
+let userscriptSource: string | null = null;
 
 function preloadFiles(): void {
   publicBundle = loadPublicBundle(resolve(__dirname, 'public'));
+  // src/ under tsx and dist/ after a build both sit next to userscript/.
+  userscriptSource = loadUserscript(resolve(__dirname, '../userscript/mail-hub.user.js'));
   try {
     cachedExtensionsJs = readFileSync(resolve(__dirname, 'public/extensions.js'), 'utf-8');
   } catch {
@@ -745,6 +750,7 @@ export function createApp(): Hono<AdminEnv> {
   });
 
   registerAssetRoutes(app, publicBundle);
+  registerUserscriptRoute(app, userscriptSource);
 
   app.route('/api', inboxRoutes);
   app.route('/api', blockRoutes);

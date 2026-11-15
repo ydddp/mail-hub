@@ -11,6 +11,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=optional
 COPY tsconfig.json ./
 COPY src ./src
+# npm run build also bundles the browser assistant, which the app serves at
+# /userscript/mail-hub.user.js. esbuild's platform binary is an optional
+# package; with --omit=optional its install script fetches it itself.
+COPY userscript ./userscript
 RUN npm run build
 RUN npm prune --omit=dev
 
@@ -20,6 +24,7 @@ WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/userscript/mail-hub.user.js ./userscript/mail-hub.user.js
 RUN mkdir -p /app/data
 ENV PORT=3100 HOST=0.0.0.0 DB_PATH=/app/data/mail.db
 EXPOSE 3100
