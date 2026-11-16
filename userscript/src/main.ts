@@ -386,20 +386,24 @@ export async function main(): Promise<void> {
     if (!active?.state.inbox) return;
 
     const phase = active.state.phase;
-    // These phases mean an action may have reached the server unanswered.
-    // Reloading must not turn that into a retry.
-    if (phase === 'creating') { setNotice(t('note.createUnknown'), 'error', t('note.createUnknownDetail')); render(); return; }
-    if (phase === 'reporting' || phase === 'report-unknown') { setNotice(t('note.reportUnknown'), 'error', t('note.reportUnknownDetail')); render(); return; }
-    if (phase === 'closing') { setNotice(t('note.closeUnknown'), 'error', t('note.closeUnknownDetail')); render(); return; }
+    // An action may have reached the server unanswered (restore already turned
+    // a dead in-flight phase into its "unknown" outcome). Reloading must not
+    // turn that into a retry.
+    if (active.recoveredFrom === 'creating') { setNotice(t('note.createUnknown'), 'error', t('note.createUnknownDetail')); render(); return; }
+    if (phase === 'report-unknown') { setNotice(t('note.reportUnknown'), 'error', t('note.reportUnknownDetail')); render(); return; }
     if (phase === 'closed') return;
+    // Only this page's own live request can be in one of these now; let it answer.
+    if (phase === 'creating' || phase === 'reporting' || phase === 'closing') return;
 
     try {
+      // A close is idempotent, so an unanswered one is settled by asking.
       const status = await active.verify();
       if (status?.status === 'closed') {
         stopPolling();
         render();
         return;
       }
+      if (active.recoveredFrom === 'closing') setNotice(t('note.closeUnknown'), 'error', t('note.closeUnknownDetail'));
       if (POLLING_PHASES.has(active.state.phase) && !ui.waiting) {
         startPolling(active.state.lastResult ? Date.now() : active.state.inbox.createdAt);
       }

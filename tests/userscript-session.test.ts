@@ -10,6 +10,7 @@ import type {
 } from '../userscript/src/api.js';
 import { identityId, keyValueSessionStore, memorySessionStore, sessionKey } from '../userscript/src/storage.js';
 import { memoryKeyValueStore } from '../userscript/src/gm.js';
+import { capsuleFor, stageOf } from '../userscript/src/view.js';
 
 /**
  * Ownership invariants that must hold for the whole lifetime of a session.
@@ -300,32 +301,41 @@ describe('restoring a persisted run', () => {
     expect(after!.state.phase).toBe('closed');
   });
 
-  it('keeps an unanswered create unanswered rather than re-sending it', async () => {
+  // A page that unloads mid-request leaves its in-flight phase in storage with
+  // nothing left to answer it. Restored as-is, the panel showed a disabled busy
+  // button forever. It must come back as an outcome the user can act on, and
+  // nothing may be re-sent by itself.
+  it.each([
+    ['creating', 'create-unknown', 'get'],
+    ['reporting', 'report-unknown', 'end'],
+    ['closing', 'close-failed', 'retry-close'],
+  ] as const)('restores a %s left by an unloaded page as %s with %s enabled', async (stuck, expected, action) => {
     const recorded: Recorded = { createBody: null, reportBody: null, reportUrl: null };
     const store = memorySessionStore();
     const before = new AssistantSession({
       client: fakeClient(recorded), store, ownerId: 'owner-a', tabId: null, now: () => 1,
     });
     await before.createInbox({ service: 'discord.com', provider: null });
-    // Rewrite the persisted phase to what a crash mid-create leaves behind.
     const persisted = (await store.load())!;
-    await store.save({ ...persisted, phase: 'creating' });
+    await store.save({ ...persisted, phase: stuck });
 
-    let createCalls = 0;
-    const after = await AssistantSession.restore({
-      client: {
-        ...fakeClient(recorded),
-        createInbox: async () => { createCalls += 1; throw new Error('must not retry'); },
-      },
-      store,
-      ownerId: 'owner-a',
-      tabId: null,
-      now: () => 2,
+    const { client, calls } = counting(recorded);
+    const after = await AssistantSession.restore({ client, store, ownerId: 'owner-a', tabId: null, now: () => 2 });
+    const state = after!.state;
+
+    expect(state.phase).toBe(expected);
+    expect(after!.recoveredFrom).toBe(stuck);
+    expect(state.inbox?.address).toBe(persisted.inbox?.address);
+    expect(calls).toEqual({ create: 0, report: 0, close: 0 });
+    // Another tab may still be waiting on that request; its answer wins.
+    expect((await store.load())!.phase).toBe(stuck);
+
+    const stage = stageOf({ phase: state.phase, hasInbox: true, reported: state.reported, hasResult: false });
+    const capsule = capsuleFor({
+      stage, address: state.inbox!.address, service: 'discord.com', result: null,
+      addressUsed: false, resultUsed: false, notice: null, providerLabel: 'auto',
     });
-
-    expect(after?.state.phase).toBe('creating');
-    expect(after?.state.inbox?.address).toBe(persisted.inbox?.address);
-    expect(createCalls).toBe(0);
+    expect(capsule.primary).toMatchObject({ action, busy: false });
   });
 });
 
@@ -492,6 +502,17 @@ describe('no duplicate operations', () => {
     await session.closeInbox();
     expect(session.state.phase).toBe('closed');
     expect(session.state.reported).toBe(false);
+  });
+
+  it('ends the run when the inbox to close no longer exists', async () => {
+    const recorded: Recorded = { createBody: null, reportBody: null, reportUrl: null };
+    const { client } = counting(recorded);
+    // A retry could only ever get this 404 again, so close-failed would be a dead end.
+    const session = sessionWith({ ...client, closeInbox: async () => { throw new ApiError('not-found', 'Inbox not found', 404); } });
+
+    await session.createInbox({ service: 'discord.com', provider: null });
+    await expect(session.closeInbox()).resolves.toMatchObject({ ok: true, action: 'gone' });
+    expect(session.state.phase).toBe('closed');
   });
 
   it('keeps two connections in separate partitions', async () => {

@@ -7,7 +7,7 @@ import {
   cloneSessionState,
   emptySessionState,
 } from './storage.js';
-import type { SessionPage, SessionState, SessionStore, StoredResult } from './storage.js';
+import type { Phase, SessionPage, SessionState, SessionStore, StoredResult } from './storage.js';
 
 export interface SessionDeps {
   client: ApiClient;
@@ -55,6 +55,18 @@ export function htmlToText(html: string): string {
 
 const UNKNOWN_OUTCOME: ReadonlySet<string> = new Set(['timeout', 'network', 'protocol']);
 
+/**
+ * A persisted in-flight phase whose page is gone. Nothing will ever answer it,
+ * so on restore it becomes the outcome a lost answer means: the panel shows an
+ * action instead of a busy button that never comes back.
+ */
+const ORPHANED: Readonly<Partial<Record<Phase, Phase>>> = {
+  creating: 'create-unknown',
+  reporting: 'report-unknown',
+  // Server-side close is idempotent, so "failed, retry" is safe.
+  closing: 'close-failed',
+};
+
 function isUnknownOutcome(error: unknown): boolean {
   return error instanceof ApiError && UNKNOWN_OUTCOME.has(error.kind);
 }
@@ -76,6 +88,8 @@ export class AssistantSession {
    * be a no-op rather than a second non-idempotent request.
    */
   private busy: 'create' | 'report' | 'close' | null = null;
+  /** The in-flight phase found in storage on restore, already resolved; null otherwise. */
+  recoveredFrom: Phase | null = null;
 
   constructor(deps: SessionDeps) {
     this.client = deps.client;
@@ -105,7 +119,15 @@ export class AssistantSession {
   static async restore(deps: SessionDeps): Promise<AssistantSession | null> {
     const stored = deps.initialState !== undefined ? deps.initialState : await deps.store.load();
     if (!stored) return null;
-    return new AssistantSession({ ...deps, initialState: stored });
+    // Not written back: another tab may still be waiting on that request, and
+    // its answer must not be overwritten by this tab's guess.
+    const resolved = ORPHANED[stored.phase];
+    const initialState = resolved
+      ? { ...stored, phase: resolved, requestStartedAt: resolved === 'close-failed' ? null : stored.requestStartedAt }
+      : stored;
+    const session = new AssistantSession({ ...deps, initialState });
+    session.recoveredFrom = resolved ? stored.phase : null;
+    return session;
   }
 
   private async patch(changes: Partial<SessionState>): Promise<void> {
@@ -264,6 +286,12 @@ export class AssistantSession {
       return result;
     } catch (error) {
       this.assertCurrent(generation);
+      // No such inbox for this key: there is nothing left to close, and
+      // "retry" would only ever answer 404 again.
+      if (error instanceof ApiError && error.kind === 'not-found') {
+        await this.patch({ phase: 'closed', requestStartedAt: null });
+        return { ok: true, action: 'gone' };
+      }
       await this.patch({ phase: 'close-failed', requestStartedAt: null });
       throw error;
     } finally {
