@@ -1,0 +1,124 @@
+name: Publish browser assistant
+
+# The browser assistant has two install channels. A Mail Hub serves it at
+# /userscript/mail-hub.user.js with its own origin filled in. This workflow
+# publishes the other one: the same build on the `userscript` branch, for
+# people who use someone else's Mail Hub and only have an API key. That copy
+# updates from GitHub and starts with an empty service address.
+#
+# Only release tags publish, so the GitHub copy never runs ahead of the
+# released server it talks to.
+
+on:
+  push:
+    tags: ['v*']
+  # Same shape as docker.yml: the tag arrives as an input and the job checks it
+  # out itself, because older tags predate this workflow.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish (e.g. v0.13.2)'
+        required: true
+
+concurrency:
+  # Every run writes the same branch; let them queue instead of racing.
+  group: userscript-channel
+  cancel-in-progress: false
+
+env:
+  CHANNEL_BRANCH: userscript
+  SCRIPT_FILE: mail-hub.user.js
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # refs/tags/… so a branch named like a tag cannot be published.
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Check the tag matches package.json
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match package.json version $version"
+            exit 1
+          fi
+
+      # --omit=optional as in the Dockerfile: keeps keytar from compiling;
+      # esbuild's install script fetches its binary itself.
+      - run: npm ci --omit=optional
+
+      - run: npm run build:userscript
+
+      - name: Point the update URL at GitHub
+        env:
+          RAW_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ env.CHANNEL_BRANCH }}/${{ env.SCRIPT_FILE }}
+        run: |
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            const file = "userscript/" + process.env.SCRIPT_FILE;
+            const mark = "%%MAILHUB_ORIGIN%%";
+            let s = readFileSync(file, "utf8");
+            // Only the two metadata lines change. The mark inside the code stays,
+            // which leaves the service address of the first connection empty.
+            for (const key of ["@updateURL", "@downloadURL"]) {
+              const old = `// ${key.padEnd(14)}${mark}/userscript/mail-hub.user.js`;
+              const n = s.split(old).length - 1;
+              if (n !== 1) throw new Error(`${key}: expected 1 line, found ${n}`);
+              s = s.replace(old, `// ${key.padEnd(14)}${process.env.RAW_URL}`);
+            }
+            if (s.includes(mark + "/")) throw new Error("an origin-relative URL is left in the script");
+            if (!s.includes(JSON.stringify(mark))) throw new Error("default-address mark missing from the code");
+            writeFileSync(file, s);
+          '
+          grep -E '^// @(version|updateURL|downloadURL)' "userscript/$SCRIPT_FILE"
+
+      - name: Commit to the userscript branch
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          dir=$(mktemp -d)
+          if git ls-remote --exit-code --heads origin "$CHANNEL_BRANCH" >/dev/null; then
+            git fetch --depth=1 origin "$CHANNEL_BRANCH"
+            git worktree add -B "$CHANNEL_BRANCH" "$dir" FETCH_HEAD
+          else
+            git worktree add --detach "$dir"
+            git -C "$dir" checkout --orphan "$CHANNEL_BRANCH"
+            git -C "$dir" rm -rfq --ignore-unmatch .
+          fi
+
+          new=${TAG#v}
+          if [ -f "$dir/$SCRIPT_FILE" ]; then
+            old=$(sed -n 's|^// @version *||p' "$dir/$SCRIPT_FILE" | head -n1)
+            # Republishing an older tag would hand new installs an old script
+            # (script managers never downgrade, so existing installs would not
+            # even notice).
+            if [ "$old" != "$new" ] && [ "$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -n1)" = "$old" ]; then
+              echo "::error::the branch already has $old, newer than $new"
+              exit 1
+            fi
+          fi
+
+          cp "userscript/$SCRIPT_FILE" "$dir/$SCRIPT_FILE"
+          git -C "$dir" add "$SCRIPT_FILE"
+          if git -C "$dir" diff --cached --quiet; then
+            echo "already published: $TAG"
+            exit 0
+          fi
+          git -C "$dir" commit -qm "Browser assistant $TAG"
+          git -C "$dir" push origin "HEAD:refs/heads/$CHANNEL_BRANCH"

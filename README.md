@@ -83,7 +83,12 @@ pm2 start ecosystem.config.cjs
 
 在注册网站上用的 Tampermonkey 脚本：唤出一条小面板取一个临时邮箱，点「填入」自动写进网页的邮箱框，收到邮件后再一键填入验证码或打开验证链接，最后上报成功并关闭邮箱。网页跳转（包括跳到第三方登录页）后会接着显示同一个邮箱。
 
-安装：装好 [Tampermonkey](https://www.tampermonkey.net/) 后，在后台「系统设置 → 浏览器助手」点「安装」，或打开 `https://<你的 Mail Hub>/userscript/mail-hub.user.js`。脚本从这台 Mail Hub 更新，地址已预先填好，只需再填一个普通 API Key。
+先装好 [Tampermonkey](https://www.tampermonkey.net/)，再从下面两处任选一处安装：
+
+- **从你的 Mail Hub 安装**：在后台「系统设置 → 浏览器助手」点「安装」，或打开 `https://<你的 Mail Hub>/userscript/mail-hub.user.js`。服务地址已预先填好，只需再填一个普通 API Key；以后从这台 Mail Hub 更新，版本始终和它一致。
+- **从 GitHub 安装**：👉 [点此一键安装](https://raw.githubusercontent.com/ydddp/mail-hub/userscript/mail-hub.user.js)。适合用别人的 Mail Hub、手里只有一个 API Key 的情况。第一次连接要自己填服务地址；以后从 GitHub 更新，跟随最新正式版本。
+
+脚本只是 Mail Hub 的客户端，两种装法都需要一台能连上的 Mail Hub 和一个 API Key。两处装的是同一个脚本，后装的会覆盖先装的，更新来源也随之改变。
 
 详见 [userscript/README.md](userscript/README.md)。
 

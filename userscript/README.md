@@ -3,16 +3,18 @@
 在注册网站时主动唤出一个小面板，用你自己的 Mail Hub 取一个临时邮箱、复制地址、读取验证码或验证链接，然后手动上报成功并关闭邮箱。
 
 - 首个支持组合：**Chrome + Tampermonkey**。
-- 由你自己的 Mail Hub 分发：脚本从哪台 Mail Hub 安装，就从哪台更新，默认也连它。不上架扩展商店或公共脚本站。
+- 两个安装来源：你的 Mail Hub（从哪台装就从哪台更新，默认也连它），或本仓库的 `userscript` 分支（跟随最新正式版本，服务地址自己填）。不上架扩展商店或公共脚本站。
 - 不做：页面内输入框按钮、整张表单自动填写、自动提交注册、自动打开验证链接、对外发信。「填入」只在你点它时写一个框。
 
 ## 安装
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/)。
-2. 在 Mail Hub 后台「系统设置 → 浏览器助手」点「安装」，或直接打开 `https://<你的 Mail Hub>/userscript/mail-hub.user.js`，Tampermonkey 会弹出安装页。这个地址不需要登录，脚本里不含任何密钥。
+2. 二选一，Tampermonkey 会弹出安装页。两个地址都不需要登录，脚本里不含任何密钥。
+   - 在 Mail Hub 后台「系统设置 → 浏览器助手」点「安装」，或直接打开 `https://<你的 Mail Hub>/userscript/mail-hub.user.js`。
+   - 不方便登录那台 Mail Hub 的后台（比如你只拿到了一个 API Key）时，打开 <https://raw.githubusercontent.com/ydddp/mail-hub/userscript/mail-hub.user.js>。
 3. 打开任意 http(s) 网站，按 **Alt+Shift+M** 唤出面板，或从 Tampermonkey 菜单点「打开 Mail Hub 邮箱助手」。
 4. 第一次连接：
-   - **服务地址**：已预先填成安装它的那台 Mail Hub；要连别的实例可以改（默认按 HTTPS 解析，本机调试可以写 `http://localhost:3000`。http 地址指向别的机器（如局域网 IP）时，面板会提醒 Key 将明文经过网络；`localhost`、`127.0.0.1` 等本机地址不提醒）。
+   - **服务地址**：从 Mail Hub 安装的，已预先填成那台 Mail Hub；从 GitHub 安装的是空的，自己填。要连别的实例可以改（默认按 HTTPS 解析，本机调试可以写 `http://localhost:3000`。http 地址指向别的机器（如局域网 IP）时，面板会提醒 Key 将明文经过网络；`localhost`、`127.0.0.1` 等本机地址不提醒）。
    - **API Key**：普通 `mk_...` 用户 Key 就够，**不需要管理员密钥**。
 5. 点「连接」。脚本会先用这个 Key 请求一次 `GET /api/providers` 验证，失败会保留你填的内容并说明原因，不会保存坏配置。
 
@@ -92,6 +94,13 @@
 - `npm run build` 会顺带构建脚本到 `userscript/mail-hub.user.js`（不进 git），服务启动时读入；没构建过时这个地址返回 404 并提示构建。
 - 反向代理后面部署时，按 `X-Forwarded-Proto` / `X-Forwarded-Host` 取对外地址，和 `/v1/llms.txt` 相同；不是普通 http(s) 地址的值会被拒绝（400），不会写进脚本。
 
+GitHub 来源由 `.github/workflows/userscript.yml` 发布：
+
+- 推送 `v*` tag 时构建同一份脚本，只把 `@updateURL` / `@downloadURL` 换成 `userscript` 分支上的 raw 地址，代码里的占位符保留，所以默认服务地址是空的。然后提交到 `userscript` 分支（分支上只有这一个文件）。
+- 只有正式 tag 会发布，所以 GitHub 上的脚本不会比已发布的服务端新。tag 必须和 `package.json` 版本一致；分支上已有更高版本时拒绝发布（新安装的人不会拿到旧版）。
+- 旧 tag 可以在 Actions 里手动运行这个工作流补发，tag 作为输入。
+- 两个来源的 `@name` / `@namespace` 相同，脚本管理器视为同一个脚本：后装的覆盖先装的，更新来源跟着换，不会装出两份。
+
 ## 开发
 
 ```bash
@@ -123,5 +132,6 @@ npx vitest run tests/userscript-*.test.ts
 | `src/layout.ts` | 面板夹紧、贴边吸附、边缘按钮定位（纯函数） |
 | `build.mjs` | 打包单文件并加 userscript 元数据（地址留占位，由服务端下发时填入） |
 | `../src/userscript-route.ts` | 服务端：`GET /userscript/mail-hub.user.js`，填入本实例地址 |
+| `../.github/workflows/userscript.yml` | 打 tag 时把 GitHub 来源的脚本发布到 `userscript` 分支 |
 
 逻辑测试覆盖服务归属、请求边界与失败分类、生命周期不变量、阶段推导、填入选框；**界面靠真实浏览器截图与操作验证**，不写镜像 DOM 结构的测试。

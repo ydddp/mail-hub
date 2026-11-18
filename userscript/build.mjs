@@ -8,9 +8,10 @@ const root = join(here, '..');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 const REPOSITORY = 'https://github.com/ydddp/mail-hub';
-// The script is installed from the user's own Mail Hub, which replaces this
-// mark with its origin when serving it (src/userscript-route.ts). Update URL
-// and the default connection address therefore always point back at it.
+// A Mail Hub serving the script replaces this mark with its origin
+// (src/userscript-route.ts), so update URL and default connection address
+// point back at it. The GitHub copy (.github/workflows/userscript.yml) swaps
+// only the update URLs and leaves the default address empty.
 const ORIGIN_MARK = '%%MAILHUB_ORIGIN%%';
 const SCRIPT_URL = `${ORIGIN_MARK}/userscript/mail-hub.user.js`;
 
