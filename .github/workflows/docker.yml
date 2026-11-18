@@ -30,7 +30,7 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Pin the input into the tags namespace. A bare `${{ inputs.tag }}`
           # resolves any ref, so a branch named v0.9.9 could overwrite the
@@ -39,17 +39,17 @@ jobs:
           # which is the validation.
           ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@v6
         id: meta
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -65,7 +65,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ github.ref_name }},enable=${{ github.event_name != 'workflow_dispatch' }}
             type=semver,pattern={{major}},value=${{ github.ref_name }},enable=${{ github.event_name != 'workflow_dispatch' }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
